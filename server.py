@@ -520,7 +520,10 @@ class Handler(BaseHTTPRequestHandler):
                     "JOIN conversations c ON c.id = p.conversation_id "
                     "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                     "WHERE COALESCE(cm.deleted, 0) = 0 "
-                    "ORDER BY p.order_index ASC, p.pinned_at DESC "
+                    # Ordered newest-first like the other views so the list's
+                    # month headers stay chronological. (The pinned view is now
+                    # a filter, not the old drag-to-reorder top section.)
+                    "ORDER BY c.update_time DESC, c.create_time DESC "
                     "LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
