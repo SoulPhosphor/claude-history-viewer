@@ -90,6 +90,24 @@ def _ensure_runtime_schema(db_path: Path) -> None:
                 conn.execute(idx_sql)
             except sqlite3.Error:
                 pass
+        # Ensure the import-audit columns exist on databases built before they
+        # were added. ADD COLUMN is non-destructive; it errors if the column
+        # already exists (fresh build) so we swallow that. Values stay NULL
+        # until the next rebuild populates them.
+        for col_sql in (
+            "ALTER TABLE conversations ADD COLUMN import_status TEXT DEFAULT 'normal'",
+            "ALTER TABLE conversations ADD COLUMN source_index INTEGER",
+        ):
+            try:
+                conn.execute(col_sql)
+            except sqlite3.Error:
+                pass
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_conv_status ON conversations (import_status)"
+            )
+        except sqlite3.Error:
+            pass
         conn.execute(
             "UPDATE conversation_meta SET custom_title = NULL WHERE TRIM(COALESCE(custom_title, '')) = ''"
         )
@@ -303,6 +321,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_gallery()
         elif path == "/api/attachment-report":
             self._api_attachment_report()
+        elif path == "/api/import-audit":
+            self._api_import_audit(qs)
         elif path == "/api/memories":
             self._api_memories()
         elif path == "/api/projects":
@@ -972,6 +992,67 @@ class Handler(BaseHTTPRequestHandler):
                         "context":    ctx,
                     })
         self.send_json({"missing": missing, "total": len(missing)})
+
+    def _api_import_audit(self, qs):
+        """Import-audit inspection view.
+
+        Without ?status=… : return per-status counts over the whole database.
+        With    ?status=X : return the conversations whose import_status = X,
+        so the UI can browse the records that came in as metadata_only, etc.
+        """
+        status = ((qs.get("status") or [""])[0]).strip().lower()
+        valid = {"normal", "fallback", "metadata_only", "parse_error"}
+        conn = open_db(self.db_path)
+        try:
+            # import_status/source_index may be absent on very old DBs; the
+            # runtime schema adds them, but stay defensive.
+            try:
+                if status:
+                    if status not in valid:
+                        self.send_json({"error": "unknown status"}, 400); return
+                    rows = conn.execute(
+                        "SELECT c.id, "
+                        "COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
+                        "c.create_time, c.update_time, c.message_count, c.preview, "
+                        "c.import_status, c.source_index "
+                        "FROM conversations c "
+                        "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                        # No archived/deleted filter: this is an import audit, so
+                        # it must show every record of the status (counts match).
+                        "WHERE COALESCE(c.import_status, 'normal') = ? "
+                        "ORDER BY c.source_index IS NULL, c.source_index ASC, c.create_time DESC",
+                        (status,),
+                    ).fetchall()
+                    self.send_json({
+                        "status": status,
+                        "conversations": [dict(r) for r in rows],
+                        "total": len(rows),
+                    })
+                    return
+
+                counts = {}
+                for r in conn.execute(
+                    "SELECT COALESCE(import_status, 'normal') AS s, COUNT(*) AS n "
+                    "FROM conversations GROUP BY COALESCE(import_status, 'normal')"
+                ).fetchall():
+                    counts[r["s"]] = r["n"]
+                total = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+                synthetic = conn.execute(
+                    "SELECT COUNT(*) FROM conversations WHERE id LIKE 'synthetic-%'"
+                ).fetchone()[0]
+            except sqlite3.Error as e:
+                self.send_json({"error": f"audit unavailable: {e}"}, 500); return
+
+            self.send_json({
+                "total":         total,
+                "normal":        counts.get("normal", 0),
+                "fallback":      counts.get("fallback", 0),
+                "metadata_only": counts.get("metadata_only", 0),
+                "parse_error":   counts.get("parse_error", 0),
+                "synthetic":     synthetic,
+            })
+        finally:
+            conn.close()
 
     def _api_memories(self):
         conn = open_db(self.db_path)

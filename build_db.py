@@ -768,7 +768,8 @@ CREATE TABLE conversations (
     update_time   REAL,
     message_count INTEGER,
     preview       TEXT,
-    import_status TEXT DEFAULT 'normal'
+    import_status TEXT DEFAULT 'normal',
+    source_index  INTEGER
 );
 
 CREATE TABLE conversation_meta (
@@ -918,6 +919,9 @@ def build(source: Path, db_path: Path) -> None:
     for cid, recs in by_id.items():
         best = sorted(recs, key=lambda r: (-len(r["msgs"]), r["index"]))[0]
         meta, msgs, artifacts = best["meta"], best["msgs"], best["artifacts"]
+        # Record which top-level object in conversations.json this row came from,
+        # so an audit view can trace a DB record back to the exact source entry.
+        meta["source_index"] = best["index"]
         conv_rows.append(meta)
         msg_rows.extend(msgs)
         artifact_rows.extend(artifacts)
@@ -929,8 +933,8 @@ def build(source: Path, db_path: Path) -> None:
 
     db.executemany(
         "INSERT OR REPLACE INTO conversations "
-        "(id, title, create_time, update_time, message_count, preview, import_status) "
-        "VALUES (:id, :title, :create_time, :update_time, :message_count, :preview, :import_status)",
+        "(id, title, create_time, update_time, message_count, preview, import_status, source_index) "
+        "VALUES (:id, :title, :create_time, :update_time, :message_count, :preview, :import_status, :source_index)",
         conv_rows,
     )
     db.executemany(

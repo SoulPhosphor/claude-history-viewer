@@ -188,6 +188,14 @@
           <span class="sidebar-menu-item-icon" aria-hidden="true">🔗</span>
           <span class="sidebar-menu-item-label">Attachment Report</span>
         </button>
+        <button
+          class="sidebar-menu-item"
+          role="menuitem"
+          data-action="import-audit"
+        >
+          <span class="sidebar-menu-item-icon" aria-hidden="true">📋</span>
+          <span class="sidebar-menu-item-label">Import Audit</span>
+        </button>
       </div>
       <div id="sidebar-resize" aria-hidden="true"></div>
 
@@ -284,6 +292,16 @@
             <div id="projects-meta"></div>
           </div>
           <div id="projects-content"></div>
+        </div>
+
+        <div id="import-audit-panel" hidden>
+          <div class="thread-header">
+            <h2>Import Audit</h2>
+            <div id="import-audit-meta">
+              How every conversation in conversations.json was imported
+            </div>
+          </div>
+          <div id="import-audit-content"></div>
         </div>
 
         <div id="att-report-panel" hidden>
