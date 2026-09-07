@@ -33,6 +33,7 @@ const searchHistoryListEl = $("search-history-list");
 const viewFilterEl = $("view-filter");
 const resultCount = $("result-count");
 const convList = $("conv-list");
+const listSectionTitle = $("list-section-title");
 const pinnedSection = $("pinned-section");
 const pinnedList = $("pinned-list");
 const loadMoreWrap = $("load-more-wrap");
@@ -1174,6 +1175,10 @@ async function refreshPinnedList() {
   const pinned = data.pinned || [];
   state.pinnedIds = new Set(pinned.map((x) => x.conversation_id));
   if (pinnedTitleEl) pinnedTitleEl.textContent = `Pinned (${pinned.length})`;
+  // The pinned conversations now live in the "Pinned" filter view, not a
+  // separate top section. We still refresh state.pinnedIds above so the pin/
+  // unpin stars stay correct; there's no dedicated pinned list to render.
+  if (!pinnedList) return;
   pinnedList.innerHTML = "";
   for (const p of pinned) {
     const el = document.createElement("div");
@@ -1249,15 +1254,34 @@ function syncPinnedSectionVisibility() {
   if (pinnedHintEl) pinnedHintEl.hidden = !shouldShow;
 }
 
+const VIEW_LABELS = {
+  recent: "Recent",
+  pinned: "Pinned",
+  archived: "Archived",
+  all: "All",
+};
+
+// The one list header reflects whichever view the dropdown has selected, so it
+// never says "Recent" while showing Pinned/Archived/All results.
+function updateListSectionTitle() {
+  if (!listSectionTitle) return;
+  listSectionTitle.textContent = state.q
+    ? "Search results"
+    : VIEW_LABELS[state.view] || "Recent";
+}
+
 async function loadUiPreferences() {
   const data = await apiPreferences();
   const p = data.preferences || {};
   state.preferences.sidebarCollapsed = Boolean(p.sidebarCollapsed);
   state.preferences.sidebarWidth = Number(p.sidebarWidth || 300);
   const savedView = String(p.conversationView || "recent");
-  state.preferences.conversationView = ["recent", "archived", "all"].includes(
-    savedView,
-  )
+  state.preferences.conversationView = [
+    "recent",
+    "pinned",
+    "archived",
+    "all",
+  ].includes(savedView)
     ? savedView
     : "recent";
   state.preferences.searchHistory = Array.isArray(p.searchHistory)
@@ -1269,6 +1293,7 @@ async function loadUiPreferences() {
       : {};
   state.view = state.preferences.conversationView;
   if (viewFilterEl) viewFilterEl.value = state.view;
+  updateListSectionTitle();
   document.documentElement.style.setProperty(
     "--sidebar-w",
     `${Math.max(220, Math.min(520, state.preferences.sidebarWidth))}px`,
@@ -2014,6 +2039,7 @@ searchEl.addEventListener("input", () => {
   debounce = setTimeout(() => {
     state.q = searchEl.value.trim();
     syncPinnedSectionVisibility();
+    updateListSectionTitle();
     if (!state.q) {
       clearSearchNav();
     } else if (state.activeId) {
@@ -2029,6 +2055,7 @@ searchEl.addEventListener("keydown", (e) => {
     searchEl.value = "";
     state.q = "";
     clearSearchNav();
+    updateListSectionTitle();
     loadConversations(false);
     searchEl.blur();
   }
@@ -2050,6 +2077,7 @@ viewFilterEl?.addEventListener("change", () => {
   state.view = viewFilterEl.value || "recent";
   state.offset = 0;
   syncPinnedSectionVisibility();
+  updateListSectionTitle();
   saveUiPreferences({ conversationView: state.view });
   loadConversations(false);
 });

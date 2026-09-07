@@ -62,27 +62,16 @@
           </div>
           <select id="view-filter" title="Filter conversations">
             <option value="recent">Recent</option>
+            <option value="pinned">Pinned</option>
             <option value="archived">Archived</option>
             <option value="all">All</option>
           </select>
           <div id="result-count"></div>
         </div>
         <div id="conv-sections">
-          <section class="conv-section" id="pinned-section">
-            <div class="conv-section-header">
-              <div class="section-title-wrap">
-                <span class="section-title" id="pinned-title">Pinned</span>
-                <span class="section-subtitle" id="pinned-hint"
-                  >Shown separately from Recent</span
-                >
-              </div>
-              <button id="pinned-refresh" title="Refresh pinned">↻</button>
-            </div>
-            <div id="pinned-list"></div>
-          </section>
           <section class="conv-section" id="recent-section">
             <div class="conv-section-header">
-              <span>Recent</span>
+              <span id="list-section-title">Recent</span>
             </div>
             <div id="conv-list"></div>
           </section>
