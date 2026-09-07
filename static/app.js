@@ -60,6 +60,8 @@ const projectsMeta = $("projects-meta");
 const attReportPanel = $("att-report-panel");
 const attReportContent = $("att-report-content");
 const attReportMeta = $("att-report-meta");
+const importAuditPanel = $("import-audit-panel");
+const importAuditContent = $("import-audit-content");
 const artifactPanel = $("artifact-panel");
 const artifactPanelTitle = $("artifact-panel-title");
 const artifactPanelBody = $("artifact-panel-body");
@@ -1573,6 +1575,8 @@ async function activateActiveTab() {
     if (state.activeSpecialView === "projects") return openProjects(false);
     if (state.activeSpecialView === "attachment_report")
       return openAttReport(false, false);
+    if (state.activeSpecialView === "import_audit")
+      return openImportAudit(false);
     hideAllPanels();
     emptyState.hidden = false;
     return;
@@ -1646,6 +1650,7 @@ function hideAllPanels() {
   memoriesPanel.hidden = true;
   projectsPanel.hidden = true;
   attReportPanel.hidden = true;
+  importAuditPanel.hidden = true;
   closeArtifactPanel();
   closeFilePanel();
   clearSearchNav();
@@ -1799,6 +1804,15 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   threadMeta.textContent = `${ts} · ${conv.message_count} messages`;
 
   messagesEl.innerHTML = "";
+  if (!messages.length) {
+    // Metadata-only import: the record was kept for the audit, but the export
+    // had no displayable human/assistant messages to show here.
+    const note = document.createElement("div");
+    note.className = "no-results";
+    note.textContent =
+      "This conversation has no displayable messages (metadata-only import).";
+    messagesEl.appendChild(note);
+  }
   for (const msg of messages) {
     const div = document.createElement("div");
     div.className = `message ${msg.role}`;
@@ -2618,6 +2632,138 @@ $("att-report-refresh-btn").addEventListener("click", () =>
   openAttReport(true),
 );
 
+// ── Import Audit ────────────────────────────────────────────────────────────────
+// An inspection view: shows how every conversation in conversations.json was
+// imported, and lets you drill into each status to see (and open) the records
+// that came in as fallback / metadata_only / parse_error.
+
+async function openImportAudit() {
+  rememberReturnTab();
+  state.activeSpecialView = "import_audit";
+  state.activeTabId = null;
+  document
+    .querySelectorAll(".conv-item.active")
+    .forEach((el) => el.classList.remove("active"));
+  state.activeId = null;
+  await ensureSpecialTab("import_audit", "Import Audit");
+  hideAllPanels();
+  importAuditPanel.hidden = false;
+  renderImportAuditSummary();
+}
+
+async function renderImportAuditSummary() {
+  importAuditContent.innerHTML = '<div class="loading">Loading…</div>';
+  let data;
+  try {
+    const resp = await fetch("/api/import-audit");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (e) {
+    importAuditContent.innerHTML = `<div class="no-results">Could not load the import audit: ${escHtml(e.message)}.</div>`;
+    return;
+  }
+  if (data.error) {
+    importAuditContent.innerHTML = `<div class="no-results">${escHtml(data.error)}</div>`;
+    return;
+  }
+
+  const rows = [
+    { key: null, label: "Total conversations", n: data.total },
+    { key: "normal", label: "Normal", n: data.normal },
+    { key: "fallback", label: "Fallback", n: data.fallback },
+    { key: "metadata_only", label: "Metadata only", n: data.metadata_only },
+    { key: "parse_error", label: "Parse errors", n: data.parse_error },
+  ];
+
+  importAuditContent.innerHTML = "";
+  const listEl = document.createElement("div");
+  listEl.className = "audit-summary";
+  for (const r of rows) {
+    const clickable = r.key !== null;
+    const row = document.createElement(clickable ? "button" : "div");
+    row.className =
+      "audit-row" +
+      (clickable ? " audit-row-clickable" : " audit-row-total");
+    row.innerHTML = `<span class="audit-row-label">${escHtml(r.label)}</span><span class="audit-row-count">${(r.n || 0).toLocaleString()}</span>`;
+    if (clickable) {
+      row.title = `Browse the "${r.label}" conversations`;
+      row.addEventListener("click", () =>
+        renderImportAuditList(r.key, r.label),
+      );
+    }
+    listEl.appendChild(row);
+  }
+  importAuditContent.appendChild(listEl);
+
+  if (data.synthetic) {
+    const note = document.createElement("div");
+    note.className = "audit-note";
+    note.textContent = `${data.synthetic.toLocaleString()} of these have synthetic IDs (no original Claude UUID).`;
+    importAuditContent.appendChild(note);
+  }
+}
+
+async function renderImportAuditList(status, label) {
+  importAuditContent.innerHTML = '<div class="loading">Loading…</div>';
+  let data;
+  try {
+    const resp = await fetch(
+      `/api/import-audit?status=${encodeURIComponent(status)}`,
+    );
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (e) {
+    importAuditContent.innerHTML = `<div class="no-results">Could not load this category: ${escHtml(e.message)}.</div>`;
+    return;
+  }
+
+  importAuditContent.innerHTML = "";
+
+  const header = document.createElement("div");
+  header.className = "audit-list-header";
+  const back = document.createElement("button");
+  back.className = "audit-back-btn";
+  back.textContent = "← Back to summary";
+  back.addEventListener("click", () => renderImportAuditSummary());
+  header.appendChild(back);
+  const title = document.createElement("div");
+  title.className = "audit-list-title";
+  const n = (data.total || 0).toLocaleString();
+  title.textContent = `${label} — ${n} conversation${data.total !== 1 ? "s" : ""}`;
+  header.appendChild(title);
+  importAuditContent.appendChild(header);
+
+  const convs = data.conversations || [];
+  if (!convs.length) {
+    const empty = document.createElement("div");
+    empty.className = "no-results";
+    empty.textContent = "No conversations in this category.";
+    importAuditContent.appendChild(empty);
+    return;
+  }
+
+  const listEl = document.createElement("div");
+  listEl.className = "audit-conv-list";
+  for (const c of convs) {
+    const item = document.createElement("button");
+    item.className = "audit-conv-item";
+    const date = formatDate(c.update_time || c.create_time);
+    const srcIdx =
+      c.source_index != null ? `source #${c.source_index}` : "source index n/a";
+    item.innerHTML = `
+      <div class="audit-conv-title">${escHtml(c.title || "Untitled")}</div>
+      <div class="audit-conv-meta">
+        <span>${escHtml(date)}</span>
+        <span>${c.message_count} msg${c.message_count !== 1 ? "s" : ""}</span>
+        <span>${escHtml(srcIdx)}</span>
+      </div>
+      <div class="audit-conv-id">${escHtml(c.id)}</div>`;
+    item.addEventListener("click", () => openConversation(c.id, null));
+    listEl.appendChild(item);
+  }
+  importAuditContent.appendChild(listEl);
+}
+
 // ── Sidebar popup menu ("More" button) ─────────────────────────────────────────
 // The "More" button opens a small menu anchored to it instead of jumping
 // straight to a screen. Add future entries as .sidebar-menu-item buttons in
@@ -2675,6 +2821,7 @@ sidebarMenu.querySelectorAll(".sidebar-menu-item").forEach((item) => {
     const action = item.dataset.action;
     closeSidebarMenu();
     if (action === "attachment-report") openAttReport(false);
+    else if (action === "import-audit") openImportAudit(false);
   });
 });
 
