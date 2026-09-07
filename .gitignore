@@ -1,5 +1,6 @@
 .claude/
 history.db
+userdata.db
 __pycache__/
 *.pyc
 .venv/

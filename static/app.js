@@ -14,6 +14,8 @@ const state = {
   },
   specialReturnTabId: null,
   pinnedIds: new Set(),
+  folders: [],
+  folderOf: new Map(), // conversation_id -> folder_id (for chats inside folders)
   tabs: [],
   activeTabId: null,
   preferences: {
@@ -34,6 +36,8 @@ const viewFilterEl = $("view-filter");
 const resultCount = $("result-count");
 const convList = $("conv-list");
 const listSectionTitle = $("list-section-title");
+const foldersToggle = $("folders-toggle");
+const foldersTree = $("folders-tree");
 const pinnedSection = $("pinned-section");
 const pinnedList = $("pinned-list");
 const loadMoreWrap = $("load-more-wrap");
@@ -1040,11 +1044,15 @@ function buildConvActions(c) {
   renameBtn.textContent = "✎";
   renameBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
-    const next = window.prompt("Rename conversation", c.title || "");
-    if (next == null) return;
-    await apiUpdateConversationMeta(c.id, { title: next.trim() });
+    const next = await openNameModal({
+      title: "Rename conversation",
+      value: c.title || "",
+    });
+    if (!next || next === c.title) return;
+    await apiUpdateConversationMeta(c.id, { title: next });
     loadConversations(false);
     refreshPinnedList();
+    loadFolders();
   });
 
   const archiveBtn = document.createElement("button");
@@ -1105,6 +1113,13 @@ function appendListItems(convs, targetEl = convList) {
     const el = document.createElement("div");
     el.className = "conv-item" + (c.id === state.activeId ? " active" : "");
     el.dataset.id = c.id;
+    el.draggable = true; // drag into a folder
+    el.addEventListener("dragstart", (e) => {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", c.id);
+      el.classList.add("dragging");
+    });
+    el.addEventListener("dragend", () => el.classList.remove("dragging"));
 
     const snippet = (c.preview || c.snippet || "").trim();
     const top = document.createElement("div");
@@ -1776,9 +1791,9 @@ function createArtifactChips(artifactIds, artifactsMeta) {
 
 async function openConversation(id, clickedEl, targetSeq = null) {
   state.activeSpecialView = null;
-  // Update sidebar selection
+  // Update sidebar selection (main list and folder tree)
   document
-    .querySelectorAll(".conv-item.active")
+    .querySelectorAll(".conv-item.active, .folder-conv-item.active")
     .forEach((el) => el.classList.remove("active"));
   if (clickedEl) clickedEl.classList.add("active");
   state.activeId = id;
@@ -2967,10 +2982,422 @@ $("projects-btn").addEventListener("click", () => openProjects(true));
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
+// ── Naming modal (create folder, rename chat, rename folder) ────────────────────
+const nameModal = $("name-modal");
+const nameModalTitle = $("name-modal-title");
+const nameModalInput = $("name-modal-input");
+const nameModalCancel = $("name-modal-cancel");
+const nameModalOk = $("name-modal-ok");
+let _nameModalResolve = null;
+
+function openNameModal({ title = "Rename", value = "", okLabel = "Okay" } = {}) {
+  nameModalTitle.textContent = title;
+  nameModalInput.value = value;
+  nameModalOk.textContent = okLabel;
+  nameModal.hidden = false;
+  setTimeout(() => {
+    nameModalInput.focus();
+    nameModalInput.select();
+  }, 0);
+  return new Promise((resolve) => {
+    _nameModalResolve = resolve;
+  });
+}
+function closeNameModal(result) {
+  nameModal.hidden = true;
+  const r = _nameModalResolve;
+  _nameModalResolve = null;
+  if (r) r(result);
+}
+nameModalCancel?.addEventListener("click", () => closeNameModal(null));
+nameModalOk?.addEventListener("click", () =>
+  closeNameModal(nameModalInput.value.trim() || null),
+);
+nameModalInput?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    closeNameModal(nameModalInput.value.trim() || null);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    closeNameModal(null);
+  }
+});
+nameModal?.addEventListener("mousedown", (e) => {
+  if (e.target === nameModal) closeNameModal(null);
+});
+
+// ── Folders ─────────────────────────────────────────────────────────────────
+async function apiFolders() {
+  return fetch("/api/folders").then((r) => r.json());
+}
+async function apiCreateFolder(name) {
+  return fetch("/api/folders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  }).then((r) => r.json());
+}
+async function apiRenameFolder(id, name) {
+  return fetch(`/api/folders/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  }).then((r) => r.json());
+}
+async function apiMoveToFolder(folderId, conversationId) {
+  return fetch("/api/folder-items", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ folder_id: folderId, conversation_id: conversationId }),
+  }).then((r) => r.json());
+}
+async function apiRemoveFromFolder(conversationId) {
+  return fetch(`/api/folder-items/${encodeURIComponent(conversationId)}`, {
+    method: "DELETE",
+  }).then((r) => r.json());
+}
+async function apiFolderPin(conversationId, pinned) {
+  return fetch(`/api/folder-items/${encodeURIComponent(conversationId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pinned }),
+  }).then((r) => r.json());
+}
+
+function _lsGet(key, fallback) {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+function _lsSet(key, val) {
+  try {
+    localStorage.setItem(key, val);
+  } catch {}
+}
+let _expandedFolders = (() => {
+  try {
+    return new Set(JSON.parse(_lsGet("expandedFolders", "[]")));
+  } catch {
+    return new Set();
+  }
+})();
+const foldersSectionOpen = () => _lsGet("foldersOpen", "0") === "1";
+
+function folderIconSvg(open) {
+  const d = open
+    ? "M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm0 12H4V8h16v10z"
+    : "M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z";
+  return `<svg class="folder-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="${d}" fill="currentColor"/></svg>`;
+}
+
+async function loadFolders() {
+  let data;
+  try {
+    data = await apiFolders();
+  } catch {
+    data = { folders: [] };
+  }
+  state.folders = data.folders || [];
+  state.folderOf = new Map();
+  for (const f of state.folders)
+    for (const c of f.conversations || []) state.folderOf.set(c.id, f.id);
+  renderFolders();
+}
+
+function renderFolders() {
+  if (!foldersTree || !foldersToggle) return;
+  const open = foldersSectionOpen();
+  foldersToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  foldersTree.hidden = !open;
+  if (!open) return;
+
+  foldersTree.innerHTML = "";
+  if (!state.folders.length) {
+    const empty = document.createElement("div");
+    empty.className = "folders-empty";
+    empty.textContent = 'None yet — use "Move to" in a conversation to make one.';
+    foldersTree.appendChild(empty);
+    return;
+  }
+
+  for (const f of state.folders) {
+    const expanded = _expandedFolders.has(f.id);
+
+    const row = document.createElement("div");
+    row.className = "folder-row";
+    row.dataset.folderId = f.id;
+    row.innerHTML =
+      folderIconSvg(expanded) +
+      `<span class="folder-name">${escHtml(f.name)}</span>` +
+      `<span class="folder-count">${(f.conversations || []).length}</span>` +
+      `<button class="folder-rename-btn" title="Rename folder">✎</button>`;
+
+    row.addEventListener("click", (e) => {
+      if (e.target.closest(".folder-rename-btn")) return;
+      if (_expandedFolders.has(f.id)) _expandedFolders.delete(f.id);
+      else _expandedFolders.add(f.id);
+      _lsSet("expandedFolders", JSON.stringify([..._expandedFolders]));
+      renderFolders();
+    });
+    row
+      .querySelector(".folder-rename-btn")
+      .addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const name = await openNameModal({
+          title: "Rename folder",
+          value: f.name,
+        });
+        if (name && name !== f.name) {
+          await apiRenameFolder(f.id, name);
+          await loadFolders();
+        }
+      });
+
+    // Drop target: move a dragged conversation into this folder.
+    row.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      row.classList.add("folder-drop");
+    });
+    row.addEventListener("dragleave", () => row.classList.remove("folder-drop"));
+    row.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      row.classList.remove("folder-drop");
+      const cid = e.dataTransfer.getData("text/plain");
+      if (cid) {
+        await apiMoveToFolder(f.id, cid);
+        await afterFolderChange();
+      }
+    });
+
+    foldersTree.appendChild(row);
+
+    if (expanded) {
+      const kids = document.createElement("div");
+      kids.className = "folder-children";
+      const convs = f.conversations || [];
+      if (!convs.length) {
+        const none = document.createElement("div");
+        none.className = "folder-children-empty";
+        none.textContent = "Empty";
+        kids.appendChild(none);
+      }
+      for (const c of convs) {
+        const item = document.createElement("div");
+        item.className =
+          "folder-conv-item" + (c.id === state.activeId ? " active" : "");
+        item.dataset.id = c.id;
+        item.draggable = true;
+        item.innerHTML =
+          (c.pinned ? '<span class="folder-pin-dot" title="Pinned">★</span>' : "") +
+          `<span class="folder-conv-title">${escHtml(c.title || "Untitled")}</span>`;
+        item.addEventListener("click", () => openConversation(c.id, item));
+        item.addEventListener("dragstart", (e) => {
+          e.dataTransfer.effectAllowed = "move";
+          e.dataTransfer.setData("text/plain", c.id);
+          item.classList.add("dragging");
+        });
+        item.addEventListener("dragend", () => item.classList.remove("dragging"));
+        kids.appendChild(item);
+      }
+      foldersTree.appendChild(kids);
+    }
+  }
+}
+
+// After a folder-membership change: refresh folders + the main list (a chat may
+// have entered/left it) and the open conversation's Move-to menu state.
+async function afterFolderChange() {
+  await loadFolders();
+  await loadConversations(false);
+}
+
+foldersToggle?.addEventListener("click", () => {
+  _lsSet("foldersOpen", foldersSectionOpen() ? "0" : "1");
+  renderFolders();
+});
+
+// Drag a conversation OUT of a folder by dropping it on the main list.
+function wireFolderDropOut(el) {
+  if (!el) return;
+  el.addEventListener("dragover", (e) => {
+    const cid = e.dataTransfer.getData("text/plain");
+    // types check (getData is empty during dragover in some browsers)
+    if ([...e.dataTransfer.types].includes("text/plain")) e.preventDefault();
+  });
+  el.addEventListener("drop", async (e) => {
+    const cid = e.dataTransfer.getData("text/plain");
+    if (cid && state.folderOf.has(cid)) {
+      e.preventDefault();
+      await apiRemoveFromFolder(cid);
+      await afterFolderChange();
+    }
+  });
+}
+wireFolderDropOut(convList);
+
+// ── Thread header actions (Move to / ⋮) ─────────────────────────────────────────
+const moveToBtn = $("move-to-btn");
+const moveToMenu = $("move-to-menu");
+const threadMoreBtn = $("thread-more-btn");
+const threadMoreMenu = $("thread-more-menu");
+
+function closeThreadMenus() {
+  if (moveToMenu) moveToMenu.hidden = true;
+  if (threadMoreMenu) threadMoreMenu.hidden = true;
+  document.removeEventListener("mousedown", onThreadMenuOutside, true);
+}
+function onThreadMenuOutside(e) {
+  if (
+    moveToMenu.contains(e.target) ||
+    moveToBtn.contains(e.target) ||
+    threadMoreMenu.contains(e.target) ||
+    threadMoreBtn.contains(e.target)
+  )
+    return;
+  closeThreadMenus();
+}
+
+function buildMoveToMenu() {
+  const cid = state.activeId;
+  moveToMenu.innerHTML = "";
+
+  const addNew = document.createElement("button");
+  addNew.className = "thread-dropdown-item";
+  addNew.textContent = "Add New Folder";
+  addNew.addEventListener("click", async () => {
+    closeThreadMenus();
+    const name = await openNameModal({ title: "New folder", value: "" });
+    if (!name) return;
+    const res = await apiCreateFolder(name);
+    if (res && res.id) {
+      await apiMoveToFolder(res.id, cid);
+      await afterFolderChange();
+    }
+  });
+  moveToMenu.appendChild(addNew);
+
+  if (state.folderOf.has(cid)) {
+    const remove = document.createElement("button");
+    remove.className = "thread-dropdown-item";
+    remove.textContent = "Remove from Folder";
+    remove.addEventListener("click", async () => {
+      closeThreadMenus();
+      await apiRemoveFromFolder(cid);
+      await afterFolderChange();
+    });
+    moveToMenu.appendChild(remove);
+  }
+
+  if (state.folders.length) {
+    const sep = document.createElement("div");
+    sep.className = "thread-dropdown-sep";
+    moveToMenu.appendChild(sep);
+  }
+  for (const f of state.folders) {
+    const b = document.createElement("button");
+    b.className = "thread-dropdown-item";
+    if (state.folderOf.get(cid) === f.id) b.classList.add("current");
+    b.textContent = f.name;
+    b.addEventListener("click", async () => {
+      closeThreadMenus();
+      await apiMoveToFolder(f.id, cid);
+      await afterFolderChange();
+    });
+    moveToMenu.appendChild(b);
+  }
+}
+
+moveToBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!state.activeId) return;
+  const wasOpen = !moveToMenu.hidden;
+  closeThreadMenus();
+  if (wasOpen) return;
+  buildMoveToMenu();
+  moveToMenu.hidden = false;
+  document.addEventListener("mousedown", onThreadMenuOutside, true);
+});
+
+threadMoreBtn?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  if (!state.activeId) return;
+  const wasOpen = !threadMoreMenu.hidden;
+  closeThreadMenus();
+  if (wasOpen) return;
+  const pinItem = threadMoreMenu.querySelector('[data-action="pin"]');
+  if (pinItem) {
+    if (state.folderOf.has(state.activeId)) {
+      const fid = state.folderOf.get(state.activeId);
+      const folder = state.folders.find((f) => f.id === fid);
+      const conv = folder?.conversations.find((c) => c.id === state.activeId);
+      pinItem.textContent = conv && conv.pinned ? "Unpin" : "Pin";
+    } else {
+      pinItem.textContent = state.pinnedIds.has(state.activeId) ? "Unpin" : "Pin";
+    }
+  }
+  threadMoreMenu.hidden = false;
+  document.addEventListener("mousedown", onThreadMenuOutside, true);
+});
+
+threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
+  item.addEventListener("click", async () => {
+    const action = item.dataset.action;
+    const cid = state.activeId;
+    closeThreadMenus();
+    if (!cid) return;
+    if (action === "rename") {
+      const cur = threadTitle.textContent || "";
+      const name = await openNameModal({
+        title: "Rename conversation",
+        value: cur,
+      });
+      if (!name || name === cur) return;
+      await apiUpdateConversationMeta(cid, { title: name });
+      threadTitle.textContent = name;
+      await loadConversations(false);
+      await refreshPinnedList();
+      await loadFolders();
+      const tab = state.tabs.find((t) => t.conversation_id === cid);
+      if (tab) {
+        tab.title = name;
+        renderTabs();
+        apiUpdateTab(tab.id, {
+          title: name,
+          conversation_id: cid,
+          tab_type: "conversation",
+        });
+      }
+    } else if (action === "pin") {
+      if (state.folderOf.has(cid)) {
+        const fid = state.folderOf.get(cid);
+        const folder = state.folders.find((f) => f.id === fid);
+        const conv = folder?.conversations.find((c) => c.id === cid);
+        await apiFolderPin(cid, !(conv && conv.pinned));
+        await loadFolders();
+      } else if (state.pinnedIds.has(cid)) {
+        await apiUnpinConversation(cid);
+        await refreshPinnedList();
+        await loadConversations(false);
+      } else {
+        await apiPinConversation(cid);
+        await refreshPinnedList();
+        await loadConversations(false);
+      }
+    } else if (action === "archive") {
+      await apiUpdateConversationMeta(cid, { archived: true });
+      await refreshPinnedList();
+      await afterFolderChange();
+    }
+  });
+});
+
 async function initApp() {
   await loadUiPreferences();
   renderSearchHistory();
   await refreshPinnedList();
+  await loadFolders();
   await loadTabs();
   await loadConversations(false);
   if (state.activeTabId) {

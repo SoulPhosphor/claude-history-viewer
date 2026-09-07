@@ -69,6 +69,30 @@
           <div id="result-count"></div>
         </div>
         <div id="conv-sections">
+          <section class="conv-section" id="folders-section">
+            <button
+              class="folders-header"
+              id="folders-toggle"
+              aria-expanded="false"
+            >
+              <svg
+                class="folders-chevron"
+                viewBox="0 0 16 16"
+                fill="none"
+                aria-hidden="true"
+              >
+                <path
+                  d="M6 4l4 4-4 4"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+              <span>Folders</span>
+            </button>
+            <div id="folders-tree" hidden></div>
+          </section>
           <section class="conv-section" id="recent-section">
             <div class="conv-section-header">
               <span id="list-section-title">Recent</span>
@@ -253,8 +277,59 @@
 
         <div id="thread" hidden>
           <div class="thread-header">
-            <h2 id="thread-title"></h2>
-            <div id="thread-meta"></div>
+            <div class="thread-header-main">
+              <h2 id="thread-title"></h2>
+              <div id="thread-meta"></div>
+            </div>
+            <div id="thread-actions">
+              <div class="thread-menu-wrap">
+                <button id="move-to-btn" class="thread-action-btn">
+                  <span>Move to</span>
+                  <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path
+                      d="M4 6l4 4 4-4"
+                      stroke="currentColor"
+                      stroke-width="1.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </button>
+                <div
+                  id="move-to-menu"
+                  class="thread-dropdown"
+                  role="menu"
+                  hidden
+                ></div>
+              </div>
+              <div class="thread-menu-wrap">
+                <button
+                  id="thread-more-btn"
+                  class="thread-action-btn thread-more-btn"
+                  title="More"
+                  aria-label="More"
+                  aria-haspopup="true"
+                >
+                  ⋮
+                </button>
+                <div
+                  id="thread-more-menu"
+                  class="thread-dropdown"
+                  role="menu"
+                  hidden
+                >
+                  <button class="thread-dropdown-item" data-action="rename">
+                    Rename
+                  </button>
+                  <button class="thread-dropdown-item" data-action="pin">
+                    Pin
+                  </button>
+                  <button class="thread-dropdown-item" data-action="archive">
+                    Archive
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
           <div id="messages"></div>
           <!-- Artifact side panel (absolute, inside #thread) -->
@@ -318,6 +393,25 @@
           <div id="att-report-content"></div>
         </div>
       </main>
+    </div>
+
+    <!-- Reusable naming dialog: create folder, rename chat, rename folder -->
+    <div id="name-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-title" id="name-modal-title">Rename</div>
+        <input
+          id="name-modal-input"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <div class="modal-buttons">
+          <button id="name-modal-cancel" class="modal-btn">Cancel</button>
+          <button id="name-modal-ok" class="modal-btn modal-btn-primary">
+            Okay
+          </button>
+        </div>
+      </div>
     </div>
     <script src="/static/app.js"></script>
     <script
