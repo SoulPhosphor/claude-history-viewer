@@ -18,6 +18,13 @@ except Exception:
     _DocxDocument = None
     _DOCX_OK = False
 
+def _userdata_path(db_path) -> Path:
+    """Path to the persistent user-data DB (folders etc.), a sibling of the
+    history DB. Kept in its own file so it survives history.db being rebuilt or
+    deleted — conversation IDs are stable across rebuilds, so membership holds."""
+    return Path(db_path).parent / "userdata.db"
+
+
 def open_db(db_path):
     # One short-lived connection per request. With ThreadingHTTPServer several
     # requests can run at once, so give SQLite a busy timeout (waits instead of
@@ -35,6 +42,12 @@ def open_db(db_path):
         conn.execute("PRAGMA synchronous = NORMAL")
     except sqlite3.Error:
         pass  # pragmas are best-effort; never fail a request over them
+    try:
+        # Attach the persistent user-data DB as schema `udb` so folder tables
+        # can be joined against conversations in the same query.
+        conn.execute("ATTACH DATABASE ? AS udb", (str(_userdata_path(db_path)),))
+    except sqlite3.Error:
+        pass
     return conn
 
 
@@ -129,6 +142,36 @@ def _ensure_runtime_schema(db_path: Path) -> None:
     finally:
         conn.close()
 
+
+def _ensure_userdata_schema(db_path: Path) -> None:
+    """Create the persistent user-data DB (folders + folder membership)."""
+    conn = sqlite3.connect(_userdata_path(db_path))
+    try:
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.Error:
+            pass
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS folders (
+                id         TEXT PRIMARY KEY,
+                name       TEXT NOT NULL,
+                created_at REAL,
+                updated_at REAL
+            );
+            CREATE TABLE IF NOT EXISTS folder_items (
+                conversation_id TEXT PRIMARY KEY,
+                folder_id       TEXT NOT NULL,
+                added_at        REAL,
+                pinned          INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_folder_items_folder ON folder_items (folder_id);
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 def _norm_filename(s: str) -> str:
     """Normalize for matching: lowercase + spaces→underscores."""
     return s.lower().replace(" ", "_")
@@ -213,6 +256,10 @@ class Handler(BaseHTTPRequestHandler):
             self._api_pinned_reorder()
         elif path == "/api/tabs":
             self._api_tabs_create()
+        elif path == "/api/folders":
+            self._api_folder_create()
+        elif path == "/api/folder-items":
+            self._api_folder_item_add()
         else:
             self.send_error(404)
 
@@ -222,6 +269,10 @@ class Handler(BaseHTTPRequestHandler):
             self._api_preferences_update()
         elif path.startswith("/api/tabs/"):
             self._api_tab_update(urllib.parse.unquote(path[len("/api/tabs/"):]))
+        elif path.startswith("/api/folder-items/"):
+            self._api_folder_item_update(urllib.parse.unquote(path[len("/api/folder-items/"):]))
+        elif path.startswith("/api/folders/"):
+            self._api_folder_update(urllib.parse.unquote(path[len("/api/folders/"):]))
         elif path.startswith("/api/conversation/"):
             self._api_conversation_update(urllib.parse.unquote(path[len("/api/conversation/"):]))
         else:
@@ -233,6 +284,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_pinned_remove(urllib.parse.unquote(path[len("/api/pinned/"):]))
         elif path.startswith("/api/tabs/"):
             self._api_tab_remove(urllib.parse.unquote(path[len("/api/tabs/"):]))
+        elif path.startswith("/api/folder-items/"):
+            self._api_folder_item_remove(urllib.parse.unquote(path[len("/api/folder-items/"):]))
         else:
             self.send_error(404)
 
@@ -323,6 +376,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_attachment_report()
         elif path == "/api/import-audit":
             self._api_import_audit(qs)
+        elif path == "/api/folders":
+            self._api_folders_list()
         elif path == "/api/memories":
             self._api_memories()
         elif path == "/api/projects":
@@ -540,6 +595,9 @@ class Handler(BaseHTTPRequestHandler):
                     "JOIN conversations c ON c.id = p.conversation_id "
                     "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                     "WHERE COALESCE(cm.deleted, 0) = 0 "
+                    # Foldered chats live only in their folder, never the loose
+                    # Pinned view.
+                    "AND c.id NOT IN (SELECT conversation_id FROM udb.folder_items) "
                     # Ordered newest-first like the other views so the list's
                     # month headers stay chronological. (The pinned view is now
                     # a filter, not the old drag-to-reorder top section.)
@@ -550,7 +608,8 @@ class Handler(BaseHTTPRequestHandler):
                 total = conn.execute(
                     "SELECT COUNT(*) FROM pinned_conversations p "
                     "LEFT JOIN conversation_meta cm ON cm.conversation_id = p.conversation_id "
-                    "WHERE COALESCE(cm.deleted, 0) = 0"
+                    "WHERE COALESCE(cm.deleted, 0) = 0 "
+                    "AND p.conversation_id NOT IN (SELECT conversation_id FROM udb.folder_items)"
                 ).fetchone()[0]
                 self.send_json({"conversations": [dict(r) for r in rows],
                                 "total": total, "offset": offset, "limit": limit})
@@ -575,6 +634,11 @@ class Handler(BaseHTTPRequestHandler):
                 where_clauses.append(
                     "c.id NOT IN (SELECT conversation_id FROM pinned_conversations)"
                 )
+            # Foldered chats never appear in the main list (any view); they live
+            # only in their folder in the sidebar.
+            where_clauses.append(
+                "c.id NOT IN (SELECT conversation_id FROM udb.folder_items)"
+            )
             where_sql = " AND ".join(where_clauses)
 
             if q:
@@ -1054,6 +1118,144 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    # ── Folders ────────────────────────────────────────────────────────────────
+
+    def _api_folders_list(self):
+        """Return every folder and the conversations it holds (for the sidebar)."""
+        conn = open_db(self.db_path)
+        try:
+            folders = conn.execute(
+                "SELECT id, name, created_at, updated_at FROM udb.folders "
+                # Alphabetical by default; a folder that has been used (a chat
+                # moved into it → updated_at set) floats to the top by recency.
+                "ORDER BY (updated_at IS NULL), updated_at DESC, LOWER(name) ASC"
+            ).fetchall()
+            rows = conn.execute(
+                "SELECT fi.folder_id AS folder_id, fi.pinned AS pinned, "
+                "c.id AS id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
+                "c.create_time AS create_time, c.update_time AS update_time, "
+                "c.message_count AS message_count "
+                "FROM udb.folder_items fi "
+                "JOIN conversations c ON c.id = fi.conversation_id "
+                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                "WHERE COALESCE(cm.deleted, 0) = 0 "
+                # Pinned chats float to the top within the folder, then newest.
+                "ORDER BY fi.pinned DESC, c.update_time DESC, c.create_time DESC"
+            ).fetchall()
+            by_folder: dict = {}
+            for r in rows:
+                by_folder.setdefault(r["folder_id"], []).append({
+                    "id":            r["id"],
+                    "title":         r["title"],
+                    "create_time":   r["create_time"],
+                    "update_time":   r["update_time"],
+                    "message_count": r["message_count"],
+                    "pinned":        bool(r["pinned"]),
+                })
+            out = [{
+                "id":            f["id"],
+                "name":          f["name"],
+                "created_at":    f["created_at"],
+                "updated_at":    f["updated_at"],
+                "conversations": by_folder.get(f["id"], []),
+            } for f in folders]
+            self.send_json({"folders": out})
+        finally:
+            conn.close()
+
+    def _api_folder_create(self):
+        payload = self._read_json_body()
+        name = (payload.get("name") or "").strip()
+        if not name:
+            self.send_json({"error": "missing name"}, 400); return
+        fid = uuid.uuid4().hex
+        conn = open_db(self.db_path)
+        try:
+            conn.execute(
+                "INSERT INTO udb.folders (id, name, created_at, updated_at) "
+                "VALUES (?, ?, ?, NULL)",
+                (fid, name, time.time()),
+            )
+            conn.commit()
+            self.send_json({"ok": True, "id": fid, "name": name})
+        finally:
+            conn.close()
+
+    def _api_folder_update(self, fid):
+        payload = self._read_json_body()
+        name = (payload.get("name") or "").strip()
+        if not fid or not name:
+            self.send_json({"error": "missing name"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            conn.execute("UPDATE udb.folders SET name = ? WHERE id = ?", (name, fid))
+            conn.commit()
+            self.send_json({"ok": True})
+        finally:
+            conn.close()
+
+    def _api_folder_item_add(self):
+        """Move a conversation into a folder. Clears any loose pin and the
+        archived flag (foldered chats are not archived, and never show in the
+        loose Pinned view)."""
+        payload = self._read_json_body()
+        fid = (payload.get("folder_id") or "").strip()
+        cid = (payload.get("conversation_id") or "").strip()
+        if not fid or not cid:
+            self.send_json({"error": "missing folder_id or conversation_id"}, 400); return
+        now = time.time()
+        conn = open_db(self.db_path)
+        try:
+            if not conn.execute("SELECT 1 FROM udb.folders WHERE id = ?", (fid,)).fetchone():
+                self.send_json({"error": "folder not found"}, 404); return
+            conn.execute("DELETE FROM pinned_conversations WHERE conversation_id = ?", (cid,))
+            conn.execute(
+                "INSERT OR IGNORE INTO conversation_meta(conversation_id, custom_title, archived, deleted) "
+                "VALUES (?, NULL, 0, 0)", (cid,),
+            )
+            conn.execute("UPDATE conversation_meta SET archived = 0 WHERE conversation_id = ?", (cid,))
+            conn.execute(
+                "INSERT INTO udb.folder_items (conversation_id, folder_id, added_at, pinned) "
+                "VALUES (?, ?, ?, 0) "
+                "ON CONFLICT(conversation_id) DO UPDATE SET "
+                "  folder_id = excluded.folder_id, added_at = excluded.added_at, pinned = 0",
+                (cid, fid, now),
+            )
+            conn.execute("UPDATE udb.folders SET updated_at = ? WHERE id = ?", (now, fid))
+            conn.commit()
+            self.send_json({"ok": True})
+        finally:
+            conn.close()
+
+    def _api_folder_item_update(self, cid):
+        """Toggle the pinned-within-folder flag for one conversation."""
+        payload = self._read_json_body()
+        if not cid:
+            self.send_json({"error": "missing conversation id"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            if "pinned" in payload:
+                conn.execute(
+                    "UPDATE udb.folder_items SET pinned = ? WHERE conversation_id = ?",
+                    (1 if payload.get("pinned") else 0, cid),
+                )
+                conn.commit()
+            self.send_json({"ok": True})
+        finally:
+            conn.close()
+
+    def _api_folder_item_remove(self, cid):
+        """Remove a conversation from its folder → it returns to the main list."""
+        if not cid:
+            self.send_json({"error": "missing conversation id"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            conn.execute("DELETE FROM udb.folder_items WHERE conversation_id = ?", (cid,))
+            conn.commit()
+            self.send_json({"ok": True})
+        finally:
+            conn.close()
+
     def _api_memories(self):
         conn = open_db(self.db_path)
         try:
@@ -1298,6 +1500,13 @@ class Handler(BaseHTTPRequestHandler):
                     "UPDATE conversation_meta SET archived = ? WHERE conversation_id = ?",
                     (1 if archive else 0, conv_id),
                 )
+                # Archiving a foldered chat removes it from its folder (a chat
+                # cannot be both archived and in a folder).
+                if archive:
+                    conn.execute(
+                        "DELETE FROM udb.folder_items WHERE conversation_id = ?",
+                        (conv_id,),
+                    )
             if deleted is not None:
                 conn.execute(
                     "UPDATE conversation_meta SET deleted = ? WHERE conversation_id = ?",
@@ -1311,6 +1520,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source")):
     _ensure_runtime_schema(db_path)
+    _ensure_userdata_schema(db_path)
     _build_source_index(source_dir)
     Handler.db_path = db_path
     # ThreadingHTTPServer: handle each request on its own thread so one slow or
