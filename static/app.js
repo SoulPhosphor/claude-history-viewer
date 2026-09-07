@@ -1058,8 +1058,18 @@ function buildConvActions(c) {
     } else {
       await apiUpdateConversationMeta(c.id, { archived: !archivedView });
     }
-    loadConversations(false);
-    refreshPinnedList();
+    // Does this action remove the row from the CURRENT view? recent+archive,
+    // archived+unarchive and deleted+undelete all do; "all" view keeps it.
+    const leavesView =
+      (state.view === "recent" && !restoreMode) || archivedView || deletedView;
+    const wasPinned = state.pinnedIds.has(c.id);
+    const itemEl = findConvItemEl(c.id);
+    if (leavesView && itemEl && !state.q) {
+      removeConvItemFromList(itemEl); // fast path: drop just this row
+    } else {
+      loadConversations(false); // fallback preserves prior behavior
+    }
+    if (wasPinned) refreshPinnedList();
   });
 
   wrap.append(pinBtn, renameBtn, archiveBtn);
@@ -1122,6 +1132,42 @@ function appendListItems(convs, targetEl = convList) {
 // ── Load / refresh conversation list ─────────────────────────────────────────
 
 let _convListAbort = null;
+
+// Find a conversation row in the main list by id (no querySelector escaping games).
+function findConvItemEl(id) {
+  return (
+    Array.from(convList.querySelectorAll(".conv-item")).find(
+      (el) => el.dataset.id === id,
+    ) || null
+  );
+}
+
+// Remove a single row from the list in place and keep the count/"Load more" in
+// sync — used after archive/delete/restore so we don't tear down and refetch the
+// entire list just to drop one row (that full rebuild is what felt like a freeze).
+function removeConvItemFromList(el) {
+  const section = el.parentElement;
+  el.remove();
+  if (
+    section &&
+    section.classList.contains("month-section") &&
+    !section.children.length
+  ) {
+    const header = section.previousElementSibling;
+    section.remove();
+    if (header && header.classList.contains("month-header")) header.remove();
+  }
+  if (typeof state.total === "number" && state.total > 0) state.total -= 1;
+  if (state.offset > 0) state.offset -= 1;
+  if (!convList.querySelector(".conv-item")) {
+    convList.innerHTML = '<div class="no-results">No conversations found.</div>';
+  }
+  if (!state.q) {
+    const n = (state.total || 0).toLocaleString();
+    resultCount.textContent = `${n} conversation${state.total !== 1 ? "s" : ""}`;
+  }
+  loadMoreWrap.hidden = state.offset >= state.total;
+}
 
 async function refreshPinnedList() {
   const data = await apiPinnedList();
@@ -1723,18 +1769,6 @@ async function openConversation(id, clickedEl, targetSeq = null) {
 
   const { conversation: conv, messages, artifacts: artifactsMeta = {} } = data;
 
-  await ensureConversationTab(id, conv.title);
-  const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
-  if (activeTab) {
-    activeTab.title = conv.title;
-    await apiUpdateTab(activeTab.id, {
-      title: conv.title,
-      conversation_id: id,
-      tab_type: "conversation",
-    });
-    renderTabs();
-  }
-
   threadTitle.textContent = conv.title;
   const ts = formatDate(conv.update_time || conv.create_time);
   threadMeta.textContent = `${ts} · ${conv.message_count} messages`;
@@ -1953,6 +1987,22 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   // ── Search nav bar: show in-thread match navigation when search is active ──
   if (state.q) {
     buildSearchNavBar(id, state.q);
+  }
+
+  // Tab bookkeeping runs AFTER the conversation is on screen so it never delays
+  // rendering. Only persist the tab title when it actually changed (e.g. after a
+  // rename) — the previous code re-wrote the same title on every open. The write
+  // is fire-and-forget; ensureConversationTab already refreshes the tab strip.
+  await ensureConversationTab(id, conv.title);
+  const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
+  if (activeTab && activeTab.title !== conv.title) {
+    activeTab.title = conv.title;
+    renderTabs();
+    apiUpdateTab(activeTab.id, {
+      title: conv.title,
+      conversation_id: id,
+      tab_type: "conversation",
+    });
   }
 }
 
