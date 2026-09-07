@@ -20,7 +20,7 @@
             <div class="sidebar-title">Claude History</div>
             <button
               id="sidebar-toggle"
-              title="折叠/展开侧边栏"
+              title="Collapse / expand sidebar"
               aria-label="Toggle sidebar"
             >
               ☰
@@ -60,7 +60,7 @@
             />
             <datalist id="search-history-list"></datalist>
           </div>
-          <select id="view-filter" title="会话筛选视图">
+          <select id="view-filter" title="Filter conversations">
             <option value="recent">Recent</option>
             <option value="archived">Archived</option>
             <option value="all">All</option>
@@ -76,7 +76,7 @@
                   >Shown separately from Recent</span
                 >
               </div>
-              <button id="pinned-refresh" title="刷新置顶">↻</button>
+              <button id="pinned-refresh" title="Refresh pinned">↻</button>
             </div>
             <div id="pinned-list"></div>
           </section>
@@ -164,7 +164,13 @@
               />
             </svg>
           </button>
-          <button id="att-report-btn" title="附件诊断报告">
+          <button
+            id="sidebar-menu-btn"
+            title="More"
+            aria-label="More"
+            aria-haspopup="true"
+            aria-expanded="false"
+          >
             <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <path
                 d="M10 2a8 8 0 100 16A8 8 0 0010 2z"
@@ -181,6 +187,19 @@
           </button>
         </div>
       </aside>
+
+      <!-- Popup menu anchored to the sidebar "More" button.
+           Add future items as more .sidebar-menu-item buttons with a data-action. -->
+      <div id="sidebar-menu" class="sidebar-menu" role="menu" hidden>
+        <button
+          class="sidebar-menu-item"
+          role="menuitem"
+          data-action="attachment-report"
+        >
+          <span class="sidebar-menu-item-icon" aria-hidden="true">🔗</span>
+          <span class="sidebar-menu-item-label">Attachment Report</span>
+        </button>
+      </div>
       <div id="sidebar-resize" aria-hidden="true"></div>
 
       <main id="main">
@@ -246,7 +265,7 @@
             <div id="artifact-panel-resize"></div>
             <div class="artifact-panel-header">
               <span id="artifact-panel-title"></span>
-              <button id="artifact-panel-close" title="关闭">✕</button>
+              <button id="artifact-panel-close" title="Close">✕</button>
             </div>
             <div id="artifact-panel-body"></div>
           </div>
@@ -280,12 +299,13 @@
 
         <div id="att-report-panel" hidden>
           <div class="thread-header">
-            <h2>附件诊断报告</h2>
-            <button id="att-report-refresh-btn" title="重新扫描">
-              🔄 刷新
+            <h2>Attachment Report</h2>
+            <button id="att-report-refresh-btn" title="Rescan">
+              🔄 Refresh
             </button>
             <div id="att-report-meta">
-              以下附件在 Claude 导出中无内容，且未在 source/files/ 找到对应文件
+              Attachments below have no content in the Claude export and no
+              matching file was found in source/files/
             </div>
           </div>
           <div id="att-report-content"></div>

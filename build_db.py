@@ -12,11 +12,12 @@ search_index [fts5](conversation_id UNINDEXED, title, body)
 Can also be run directly:
     python3 build_db.py [--source source/conversations.json] [--db history.db]
 """
+import hashlib
 import json
 import re
 import sqlite3
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -278,7 +279,7 @@ def _apply_artifact_ops(msg: dict, msg_seq: int, state: dict):
                     state[aid]["msg_seq"] = msg_seq
 
 
-def parse_claude_conversation(conv: dict):
+def _claude_active_path(conv: dict, cid: str, raw_msgs: list):
     """
     Parse a single Claude conversation dict using tree traversal.
 
@@ -288,15 +289,12 @@ def parse_claude_conversation(conv: dict):
     We walk the active path (always taking the LAST sibling = most recent edit)
     and record all siblings so the UI can show ← / → navigation.
 
-    Returns (meta, msgs, artifacts) where artifacts is a list of artifact rows.
+    Returns (msgs, artifacts).  Returns ([], []) when no active path can be
+    recovered — the caller decides how to fall back rather than dropping the
+    conversation.
     """
-    cid = conv.get("uuid")
-    if not cid:
-        return None, [], []
-
-    raw_msgs = conv.get("chat_messages") or []
     if not raw_msgs:
-        return None, [], []
+        return [], []
 
     # All message UUIDs in this conversation.
     msg_uuid_set = {m.get("uuid") for m in raw_msgs}
@@ -327,7 +325,7 @@ def parse_claude_conversation(conv: dict):
 
     cur_human = get_last(VIRTUAL_ROOT, "human")
     if not cur_human:
-        return None, [], []
+        return [], []
 
     for _ in range(300):          # hard iteration cap
         h_uuid = cur_human.get("uuid", "")
@@ -484,28 +482,136 @@ def parse_claude_conversation(conv: dict):
             "content": a["content"],
         })
 
-    if not result:
-        return None, [], []
+    return result, artifacts_out
 
-    # Skip conversations that have no actual text content
-    if not any(m["content"] for m in result):
-        return None, [], []
 
-    preview = next((m["content"][:300] for m in result if m["role"] == "user" and m["content"]), "")
+# ── Synthetic IDs, fallback parsing, and meta ─────────────────────────────────
+
+
+def _synthetic_id(conv: dict) -> str:
+    """
+    Deterministic synthetic ID for a conversation that has no Claude UUID.
+
+    Based on a stable SHA-256 of the raw conversation object, so re-importing
+    the same export always produces the same ID.  Two byte-for-byte identical
+    raw records intentionally map to the same ID (see duplicate reporting).
+    """
+    canonical = json.dumps(conv, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"synthetic-{digest}"
+
+
+def _claude_fallback_messages(conv: dict, cid: str, raw_msgs: list) -> list:
+    """
+    Recover displayable human/assistant messages when the branch parser cannot
+    find an active path.  Ignores tree structure entirely: takes every message
+    that yields text or attachments, ordered by timestamp then source order.
+    """
+    rows = []
+    seq = 0
+    ordered = sorted(
+        enumerate(raw_msgs),
+        key=lambda pair: (_iso_to_ts(pair[1].get("created_at") or ""), pair[0]),
+    )
+    for _idx, m in ordered:
+        if not isinstance(m, dict):
+            continue
+        sender = m.get("sender", m.get("role", ""))
+        if sender not in ("human", "assistant"):
+            continue
+        text, atts = claude_message_parts(m)
+        if not text and not atts:
+            continue
+        rows.append({
+            "conversation_id": cid,
+            "role":            "user" if sender == "human" else "assistant",
+            "content":         text,
+            "attachments":     json.dumps(atts, ensure_ascii=False) if atts else None,
+            "artifact_ids":    None,
+            "siblings":        None,
+            "branch_index":    1,
+            "create_time":     _iso_to_ts(m.get("created_at") or ""),
+            "seq":             seq,
+        })
+        seq += 1
+    return rows
+
+
+def _claude_meta(conv: dict, cid: str, msgs: list, status: str) -> dict:
+    """Build the conversations-table row for a Claude conversation."""
+    preview = next(
+        (m["content"][:300] for m in msgs if m["role"] == "user" and m["content"]),
+        "",
+    )
+    if not preview:
+        preview = next((m["content"][:300] for m in msgs if m["content"]), "")
     raw_name = (conv.get("name") or "").strip()
     if not raw_name and preview:
         raw_name = preview[:60].replace("\n", " ").strip()
     if not raw_name:
         raw_name = "Untitled"
-    meta = {
+    return {
         "id":            cid,
         "title":         raw_name,
         "create_time":   _iso_to_ts(conv.get("created_at") or ""),
         "update_time":   _iso_to_ts(conv.get("updated_at") or ""),
-        "message_count": len(result),
+        "message_count": len(msgs),
         "preview":       preview,
+        "import_status": status,
     }
-    return meta, result, artifacts_out
+
+
+def import_claude_conversation(conv: dict, index: int) -> dict:
+    """
+    Import one Claude conversation with full accounting — never drops a record.
+
+    Returns a record dict:
+        {meta, msgs, artifacts, status, synthetic, error, index}
+
+    status is one of: normal | fallback | metadata_only | parse_error
+    """
+    raw_uuid = conv.get("uuid")
+    if raw_uuid and str(raw_uuid).strip():
+        cid = str(raw_uuid).strip()          # preserve the real Claude UUID exactly
+        synthetic = False
+    else:
+        cid = _synthetic_id(conv)
+        synthetic = True
+
+    raw_msgs = conv.get("chat_messages") or []
+    error = None
+
+    try:
+        active_msgs, active_arts = _claude_active_path(conv, cid, raw_msgs)
+        if active_msgs:
+            # Branch parser recovered messages (with text and/or attachments).
+            msgs, artifacts, status = active_msgs, active_arts, "normal"
+        else:
+            # Branch parsing failed — try the structure-agnostic fallback.
+            fb = _claude_fallback_messages(conv, cid, raw_msgs)
+            if fb:
+                msgs, artifacts, status = fb, [], "fallback"
+            else:
+                # Nothing displayable at all — keep as a metadata-only record.
+                msgs, artifacts, status = [], [], "metadata_only"
+    except Exception as e:  # noqa: BLE001 — must never let one record abort import
+        error = f"{type(e).__name__}: {e}"
+        try:
+            msgs = _claude_fallback_messages(conv, cid, raw_msgs)
+        except Exception:
+            msgs = []
+        artifacts, status = [], "parse_error"
+
+    meta = _claude_meta(conv, cid, msgs, status)
+    return {
+        "meta":      meta,
+        "msgs":      msgs,
+        "artifacts": artifacts,
+        "status":    status,
+        "synthetic": synthetic,
+        "error":     error,
+        "index":     index,
+    }
 
 
 # ── Thread extraction ─────────────────────────────────────────────────────────
@@ -588,6 +694,59 @@ def parse_conversation(conv: dict):
     return meta, msgs
 
 
+def import_chatgpt_conversation(conv: dict, index: int) -> dict:
+    """
+    Import one ChatGPT conversation with the same never-drop accounting used for
+    Claude, so the audit totals are consistent regardless of source format.
+
+    status is one of: normal | metadata_only | parse_error
+    """
+    raw_id = conv.get("id") or conv.get("conversation_id")
+    if raw_id and str(raw_id).strip():
+        cid = str(raw_id).strip()
+        synthetic = False
+    else:
+        cid = _synthetic_id(conv)
+        synthetic = True
+
+    error = None
+    msgs = []
+    try:
+        _meta, parsed = parse_conversation(conv)
+        if parsed:
+            for m in parsed:
+                m["conversation_id"] = cid
+            msgs, status = parsed, "normal"
+        else:
+            status = "metadata_only"
+    except Exception as e:  # noqa: BLE001
+        error = f"{type(e).__name__}: {e}"
+        msgs, status = [], "parse_error"
+
+    title = (conv.get("title") or "").strip() or "Untitled"
+    preview = next((m["content"][:300] for m in msgs if m["role"] == "user" and m["content"]), "")
+    if not preview:
+        preview = next((m["content"][:300] for m in msgs if m["content"]), "")
+    meta = {
+        "id":            cid,
+        "title":         title,
+        "create_time":   conv.get("create_time") or 0,
+        "update_time":   conv.get("update_time") or 0,
+        "message_count": len(msgs),
+        "preview":       preview,
+        "import_status": status,
+    }
+    return {
+        "meta":      meta,
+        "msgs":      msgs,
+        "artifacts": [],
+        "status":    status,
+        "synthetic": synthetic,
+        "error":     error,
+        "index":     index,
+    }
+
+
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 SCHEMA = """\
@@ -608,7 +767,8 @@ CREATE TABLE conversations (
     create_time   REAL,
     update_time   REAL,
     message_count INTEGER,
-    preview       TEXT
+    preview       TEXT,
+    import_status TEXT DEFAULT 'normal'
 );
 
 CREATE TABLE conversation_meta (
@@ -716,22 +876,48 @@ def build(source: Path, db_path: Path) -> None:
     db = sqlite3.connect(db_path)
     db.executescript(SCHEMA)
 
-    conv_rows, msg_rows, fts_rows = [], [], []
-    artifact_rows: list[dict] = []
-
+    # ── Pass 1: import every top-level conversation (never drop) ───────────────
+    records: list[dict] = []
     for i, conv in enumerate(data):
         if i % 100 == 0:
             sys.stderr.write(f"\r  {i:>5}/{total}")
             sys.stderr.flush()
 
-        if fmt == "claude":
-            meta, msgs, artifacts = parse_claude_conversation(conv)
-        else:
-            meta, msgs = parse_conversation(conv)
-            artifacts = []
-        if meta is None:
+        if not isinstance(conv, dict):
+            # Even a malformed top-level entry is accounted for, not dropped.
+            records.append({
+                "meta": {
+                    "id": _synthetic_id({"__raw__": repr(conv), "__index__": i}),
+                    "title": "Untitled", "create_time": 0, "update_time": 0,
+                    "message_count": 0, "preview": "", "import_status": "parse_error",
+                },
+                "msgs": [], "artifacts": [], "status": "parse_error",
+                "synthetic": True,
+                "error": f"top-level entry is {type(conv).__name__}, not an object",
+                "index": i,
+            })
             continue
 
+        if fmt == "claude":
+            records.append(import_claude_conversation(conv, i))
+        else:
+            records.append(import_chatgpt_conversation(conv, i))
+
+    sys.stderr.write(f"\r  {total}/{total}\n")
+
+    # ── Pass 2: collapse only genuine exact-duplicate IDs, keeping the record
+    #            with the most recovered messages (tie → earliest source index).
+    by_id: dict[str, list] = defaultdict(list)
+    for rec in records:
+        by_id[rec["meta"]["id"]].append(rec)
+
+    duplicates = {cid: recs for cid, recs in by_id.items() if len(recs) > 1}
+
+    conv_rows, msg_rows, fts_rows = [], [], []
+    artifact_rows: list[dict] = []
+    for cid, recs in by_id.items():
+        best = sorted(recs, key=lambda r: (-len(r["msgs"]), r["index"]))[0]
+        meta, msgs, artifacts = best["meta"], best["msgs"], best["artifacts"]
         conv_rows.append(meta)
         msg_rows.extend(msgs)
         artifact_rows.extend(artifacts)
@@ -741,11 +927,10 @@ def build(source: Path, db_path: Path) -> None:
             "\n".join(m["content"] for m in msgs),
         ))
 
-    sys.stderr.write(f"\r  {total}/{total}\n")
-
     db.executemany(
         "INSERT OR REPLACE INTO conversations "
-        "VALUES (:id, :title, :create_time, :update_time, :message_count, :preview)",
+        "(id, title, create_time, update_time, message_count, preview, import_status) "
+        "VALUES (:id, :title, :create_time, :update_time, :message_count, :preview, :import_status)",
         conv_rows,
     )
     db.executemany(
@@ -825,7 +1010,52 @@ def build(source: Path, db_path: Path) -> None:
 
     db.commit()
     db.close()
-    print(f"Done — {len(conv_rows)} conversations indexed → {db_path}")
+
+    # ── Import audit ───────────────────────────────────────────────────────────
+    n_normal   = sum(1 for r in records if r["status"] == "normal")
+    n_fallback = sum(1 for r in records if r["status"] == "fallback")
+    n_meta     = sum(1 for r in records if r["status"] == "metadata_only")
+    n_error    = sum(1 for r in records if r["status"] == "parse_error")
+    n_synth    = sum(1 for r in records if r["synthetic"])
+    db_total   = len(conv_rows)               # distinct records actually stored
+    dup_extra  = sum(len(recs) - 1 for recs in duplicates.values())
+
+    print("\n─── Import audit ───────────────────────────")
+    print(f"Raw conversations: {total}")
+    print(f"Normal imports:    {n_normal}")
+    print(f"Fallback imports:  {n_fallback}")
+    print(f"Metadata only:     {n_meta}")
+    print(f"Synthetic IDs:     {n_synth}")
+    print(f"Parse errors:      {n_error}")
+    print(f"Database total:    {db_total}")
+    print("────────────────────────────────────────────")
+
+    # Every raw record carries exactly one status — these must sum to the total.
+    accounted = n_normal + n_fallback + n_meta + n_error
+    if accounted != total:
+        print(f"WARNING: status counts ({accounted}) do not sum to raw total ({total}).")
+
+    # Report duplicates explicitly instead of silently removing them.
+    if duplicates:
+        print(f"\nDuplicate source records: {len(duplicates)} ID(s), "
+              f"{dup_extra} extra record(s) collapsed:")
+        for cid, recs in duplicates.items():
+            idxs = ", ".join(str(r["index"]) for r in recs)
+            title = recs[0]["meta"]["title"]
+            print(f"  id={cid}  title={title!r}  source indices=[{idxs}]")
+        print(f"(Database total {db_total} + {dup_extra} duplicate(s) = {total} raw.)")
+
+    # Any parse error names its source record so it can never disappear silently.
+    if n_error:
+        print(f"\nParse errors ({n_error}):")
+        for r in records:
+            if r["status"] != "parse_error":
+                continue
+            m = r["meta"]
+            print(f"  index={r['index']}  id={m['id']}  title={m['title']!r}  "
+                  f"error={r['error']}")
+
+    print(f"\nDone — {db_total} conversations indexed → {db_path}")
 
 
 if __name__ == "__main__":

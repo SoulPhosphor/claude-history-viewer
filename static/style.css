@@ -522,7 +522,7 @@ mark.search-term-highlight {
 #gallery-btn,
 #memories-btn,
 #projects-btn,
-#att-report-btn {
+#sidebar-menu-btn {
   flex: 1;
   display: flex;
   align-items: center;
@@ -540,7 +540,8 @@ mark.search-term-highlight {
 #gallery-btn:hover,
 #memories-btn:hover,
 #projects-btn:hover,
-#att-report-btn:hover {
+#sidebar-menu-btn:hover,
+#sidebar-menu-btn[aria-expanded="true"] {
   background: var(--hover);
   color: var(--text);
   border-color: var(--border);
@@ -548,9 +549,46 @@ mark.search-term-highlight {
 #gallery-btn svg,
 #memories-btn svg,
 #projects-btn svg,
-#att-report-btn svg {
+#sidebar-menu-btn svg {
   width: 17px;
   height: 17px;
+  flex-shrink: 0;
+}
+
+/* ── Sidebar popup menu (anchored to the "More" button) ────────────────────── */
+.sidebar-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  padding: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.16);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sidebar-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.sidebar-menu-item:hover {
+  background: var(--hover);
+}
+.sidebar-menu-item-icon {
+  font-size: 15px;
+  line-height: 1;
   flex-shrink: 0;
 }
 
