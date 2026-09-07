@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Minimal HTTP server for Claude History Viewer."""
 from __future__ import annotations
-import html, json, mimetypes, os, re, sqlite3, time, urllib.parse, uuid
+import html, json, mimetypes, os, re, sqlite3, sys, time, urllib.parse, uuid
 import importlib
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
+
+# Set CHV_TIMING=1 to log each request's method, path, and duration to stderr.
+# Off by default so normal runs stay quiet; useful for spotting slow endpoints.
+_TIMING = os.environ.get("CHV_TIMING", "").strip() not in ("", "0", "false", "no")
 
 try:
     _docx_module = importlib.import_module("docx")
@@ -15,14 +19,34 @@ except Exception:
     _DOCX_OK = False
 
 def open_db(db_path):
-    conn = sqlite3.connect(db_path)
+    # One short-lived connection per request. With ThreadingHTTPServer several
+    # requests can run at once, so give SQLite a busy timeout (waits instead of
+    # immediately raising "database is locked") and enable WAL so readers never
+    # block the occasional small writer. Each connection is created and closed
+    # inside a single request/thread, so check_same_thread stays at its default.
+    conn = sqlite3.connect(db_path, timeout=10.0)
     conn.row_factory = sqlite3.Row
+    try:
+        # Per-connection, lock-free settings only. journal_mode=WAL is a
+        # persistent DB property set once at startup (see _ensure_runtime_schema)
+        # — setting it here per request would make many cold connections contend
+        # on the WAL switch's exclusive lock.
+        conn.execute("PRAGMA busy_timeout = 10000")
+        conn.execute("PRAGMA synchronous = NORMAL")
+    except sqlite3.Error:
+        pass  # pragmas are best-effort; never fail a request over them
     return conn
 
 
 def _ensure_runtime_schema(db_path: Path) -> None:
     conn = sqlite3.connect(db_path)
     try:
+        # Enable WAL once (persistent): readers don't block the occasional small
+        # writer, so archive/pin writes can't stall list/detail reads.
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.Error:
+            pass
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS conversation_meta (
@@ -53,6 +77,19 @@ def _ensure_runtime_schema(db_path: Path) -> None:
             );
             """
         )
+        # Indexes that speed up the conversation-list sort and detail load.
+        # Created at runtime so existing databases benefit without a rebuild.
+        # Each is best-effort: a missing base table (partial DB) must not abort
+        # the runtime-schema setup above.
+        for idx_sql in (
+            "CREATE INDEX IF NOT EXISTS idx_conv_update ON conversations (update_time DESC, create_time DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_meta_flags  ON conversation_meta (deleted, archived)",
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts (conv_id)",
+        ):
+            try:
+                conn.execute(idx_sql)
+            except sqlite3.Error:
+                pass
         conn.execute(
             "UPDATE conversation_meta SET custom_title = NULL WHERE TRIM(COALESCE(custom_title, '')) = ''"
         )
@@ -119,6 +156,20 @@ class Handler(BaseHTTPRequestHandler):
     db_path = Path("history.db")
 
     def log_message(self, fmt, *args): pass
+
+    def handle_one_request(self):
+        t0 = time.perf_counter()
+        super().handle_one_request()
+        if _TIMING:
+            dt = (time.perf_counter() - t0) * 1000
+            try:
+                sys.stderr.write(
+                    f"[timing] {getattr(self, 'command', '?')} "
+                    f"{getattr(self, 'path', '?')} {dt:.1f}ms\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
 
     def _request_target(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -1178,7 +1229,12 @@ def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source")):
     _ensure_runtime_schema(db_path)
     _build_source_index(source_dir)
     Handler.db_path = db_path
-    httpd = HTTPServer(("127.0.0.1", port), Handler)
+    # ThreadingHTTPServer: handle each request on its own thread so one slow or
+    # idle connection (e.g. a browser preconnect socket, or an aborted fetch)
+    # can never block every other request. This is the fix for the UI hanging
+    # on "Loading…". daemon_threads lets the process exit cleanly on Ctrl-C.
+    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    httpd.daemon_threads = True
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

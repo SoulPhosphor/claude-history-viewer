@@ -330,7 +330,7 @@ const md = (() => {
             combined,
           ) ||
           // Only treat as diagram if arrows have whitespace around them (diagram style)
-          // e.g. "A → B" matches but "愿景→目标" (prose) does not
+          // e.g. "A → B" matches but an arrow inside prose does not
           (combined.match(/(?:^|[ \t])[←→↑↓↔↕⇐⇒⇑⇓⇔⇕⟵⟶⟷](?=[ \t]|$)/gm) || [])
             .length >= 2;
         if (isPreformatted) {
@@ -503,11 +503,11 @@ async function buildSearchNavBar(convId, q) {
   navBar.id = "search-nav-bar";
   navBar.innerHTML = `
     <span id="search-nav-term">"${escHtml(q)}"</span>
-    <span id="search-nav-count">${matches.length} 条消息匹配</span>
-    <button id="search-nav-prev" title="上一处">↑</button>
+    <span id="search-nav-count">${matches.length} messages matched</span>
+    <button id="search-nav-prev" title="Previous">↑</button>
     <span id="search-nav-pos">1/${matches.length}</span>
-    <button id="search-nav-next" title="下一处">↓</button>
-    <button id="search-nav-close" title="关闭搜索导航">✕</button>`;
+    <button id="search-nav-next" title="Next">↓</button>
+    <button id="search-nav-close" title="Close search navigation">✕</button>`;
   thread.insertBefore(navBar, messagesEl);
 
   navBar.querySelector("#search-nav-prev").addEventListener("click", () => {
@@ -595,9 +595,9 @@ function scrollToSearchMatch(idx) {
     // Update count label to show occurrences in this message
     const countEl = document.getElementById("search-nav-count");
     if (countEl && marks.length > 0) {
-      countEl.textContent = `${_searchMatches.length} 条消息 · 本条 ${marks.length} 处`;
+      countEl.textContent = `${_searchMatches.length} messages · ${marks.length} here`;
     } else if (countEl) {
-      countEl.textContent = `${_searchMatches.length} 条消息匹配`;
+      countEl.textContent = `${_searchMatches.length} messages matched`;
     }
     // Scroll first <mark> into view after the container scroll
     if (marks.length) {
@@ -801,7 +801,7 @@ function createChipsEl(attachments) {
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "file-chip file-chip-download";
-      chip.title = "点击查看文件内容";
+      chip.title = "Click to view file contents";
       chip.innerHTML = `<span class="chip-icon">${fileIcon(att.type || att.name)}</span><span class="chip-name">${escHtml(att.name)}</span>`;
       chip.addEventListener("click", async (e) => {
         e.stopPropagation();
@@ -832,8 +832,8 @@ function createChipsEl(attachments) {
       chip.type = "button";
       chip.className = "file-chip file-chip-no-content";
       const tooltip = isImage
-        ? "图片未包含在 Claude 导出中（原始文件不可恢复）"
-        : "文件内容未包含在 Claude 导出中（原始文件不可恢复）";
+        ? "Image not included in the Claude export (original file cannot be recovered)"
+        : "File content not included in the Claude export (original file cannot be recovered)";
       chip.title = tooltip;
       chip.innerHTML = `<span class="chip-icon">${fileIcon(att.type || att.name)}</span><span class="chip-name">${escHtml(att.name)}</span><span class="chip-unavail">⚠</span>`;
       chipsEl.appendChild(chip);
@@ -980,7 +980,7 @@ function highlightSnippet(text, q) {
 function renderSearchResults(results, q) {
   convList.innerHTML = "";
   if (!results.length) {
-    convList.innerHTML = '<div class="no-results">无匹配结果</div>';
+    convList.innerHTML = '<div class="no-results">No matches</div>';
     return;
   }
   // Group by conv_id
@@ -1037,7 +1037,7 @@ function buildConvActions(c) {
   renameBtn.textContent = "✎";
   renameBtn.addEventListener("click", async (e) => {
     e.stopPropagation();
-    const next = window.prompt("重命名会话", c.title || "");
+    const next = window.prompt("Rename conversation", c.title || "");
     if (next == null) return;
     await apiUpdateConversationMeta(c.id, { title: next.trim() });
     loadConversations(false);
@@ -1058,8 +1058,18 @@ function buildConvActions(c) {
     } else {
       await apiUpdateConversationMeta(c.id, { archived: !archivedView });
     }
-    loadConversations(false);
-    refreshPinnedList();
+    // Does this action remove the row from the CURRENT view? recent+archive,
+    // archived+unarchive and deleted+undelete all do; "all" view keeps it.
+    const leavesView =
+      (state.view === "recent" && !restoreMode) || archivedView || deletedView;
+    const wasPinned = state.pinnedIds.has(c.id);
+    const itemEl = findConvItemEl(c.id);
+    if (leavesView && itemEl && !state.q) {
+      removeConvItemFromList(itemEl); // fast path: drop just this row
+    } else {
+      loadConversations(false); // fallback preserves prior behavior
+    }
+    if (wasPinned) refreshPinnedList();
   });
 
   wrap.append(pinBtn, renameBtn, archiveBtn);
@@ -1122,6 +1132,42 @@ function appendListItems(convs, targetEl = convList) {
 // ── Load / refresh conversation list ─────────────────────────────────────────
 
 let _convListAbort = null;
+
+// Find a conversation row in the main list by id (no querySelector escaping games).
+function findConvItemEl(id) {
+  return (
+    Array.from(convList.querySelectorAll(".conv-item")).find(
+      (el) => el.dataset.id === id,
+    ) || null
+  );
+}
+
+// Remove a single row from the list in place and keep the count/"Load more" in
+// sync — used after archive/delete/restore so we don't tear down and refetch the
+// entire list just to drop one row (that full rebuild is what felt like a freeze).
+function removeConvItemFromList(el) {
+  const section = el.parentElement;
+  el.remove();
+  if (
+    section &&
+    section.classList.contains("month-section") &&
+    !section.children.length
+  ) {
+    const header = section.previousElementSibling;
+    section.remove();
+    if (header && header.classList.contains("month-header")) header.remove();
+  }
+  if (typeof state.total === "number" && state.total > 0) state.total -= 1;
+  if (state.offset > 0) state.offset -= 1;
+  if (!convList.querySelector(".conv-item")) {
+    convList.innerHTML = '<div class="no-results">No conversations found.</div>';
+  }
+  if (!state.q) {
+    const n = (state.total || 0).toLocaleString();
+    resultCount.textContent = `${n} conversation${state.total !== 1 ? "s" : ""}`;
+  }
+  loadMoreWrap.hidden = state.offset >= state.total;
+}
 
 async function refreshPinnedList() {
   const data = await apiPinnedList();
@@ -1332,7 +1378,7 @@ function renderTabs() {
     tab.className = "top-tab" + (t.id === state.activeTabId ? " active" : "");
     tab.setAttribute("role", "button");
     tab.setAttribute("tabindex", "0");
-    tab.innerHTML = `<span class="tab-label">${escHtml(t.title || "Untitled")}</span><button type="button" class="tab-pin" title="固定标签">${t.pinned ? "📌" : "📍"}</button><button type="button" class="tab-close" title="关闭">×</button>`;
+    tab.innerHTML = `<span class="tab-label">${escHtml(t.title || "Untitled")}</span><button type="button" class="tab-pin" title="Pin tab">${t.pinned ? "📌" : "📍"}</button><button type="button" class="tab-close" title="Close">×</button>`;
     tab.querySelector(".tab-pin").addEventListener("click", async (e) => {
       e.stopPropagation();
       t.pinned = t.pinned ? 0 : 1;
@@ -1439,7 +1485,7 @@ async function renderArtifactTabContent(artifactId, title) {
   ).then((r) => r.json());
   messagesEl.innerHTML = "";
   if (!data || !data.content) {
-    messagesEl.innerHTML = '<div class="no-results">内容为空</div>';
+    messagesEl.innerHTML = '<div class="no-results">No content</div>';
     return;
   }
   if (data.conv_id) {
@@ -1553,7 +1599,7 @@ async function loadConversations(append = false) {
 
     if (state.q) {
       const n = (data.total || 0).toLocaleString();
-      resultCount.textContent = `${n} 条匹配`;
+      resultCount.textContent = `${n} matches`;
     } else {
       const n = state.total.toLocaleString();
       resultCount.textContent = `${n} conversation${state.total !== 1 ? "s" : ""}`;
@@ -1562,7 +1608,7 @@ async function loadConversations(append = false) {
     loadMoreWrap.hidden = state.offset >= state.total;
   } catch (e) {
     if (e.name === "AbortError") return; // cancelled — ignore silently
-    convList.innerHTML = '<div class="no-results">加载失败，请重试。</div>';
+    convList.innerHTML = '<div class="no-results">Failed to load. Please try again.</div>';
   }
 }
 
@@ -1601,7 +1647,7 @@ async function openArtifactPanel(artifactId, title) {
   artifactPanelBody.innerHTML = "";
 
   if (!data || !data.content) {
-    artifactPanelBody.innerHTML = '<div class="no-results">内容为空</div>';
+    artifactPanelBody.innerHTML = '<div class="no-results">No content</div>';
     return;
   }
 
@@ -1723,18 +1769,6 @@ async function openConversation(id, clickedEl, targetSeq = null) {
 
   const { conversation: conv, messages, artifacts: artifactsMeta = {} } = data;
 
-  await ensureConversationTab(id, conv.title);
-  const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
-  if (activeTab) {
-    activeTab.title = conv.title;
-    await apiUpdateTab(activeTab.id, {
-      title: conv.title,
-      conversation_id: id,
-      tab_type: "conversation",
-    });
-    renderTabs();
-  }
-
   threadTitle.textContent = conv.title;
   const ts = formatDate(conv.update_time || conv.create_time);
   threadMeta.textContent = `${ts} · ${conv.message_count} messages`;
@@ -1846,7 +1880,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
               const ac = sib.asst_content || "";
               nextBody.innerHTML = ac
                 ? md(sanitize(ac))
-                : '<p class="branch-no-response">（Claude 在此分支未作回复）</p>';
+                : '<p class="branch-no-response">(Claude did not respond in this branch)</p>';
               wireCodeCopy(nextBody);
             }
             // Update assistant artifact chips when user branch changes
@@ -1953,6 +1987,22 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   // ── Search nav bar: show in-thread match navigation when search is active ──
   if (state.q) {
     buildSearchNavBar(id, state.q);
+  }
+
+  // Tab bookkeeping runs AFTER the conversation is on screen so it never delays
+  // rendering. Only persist the tab title when it actually changed (e.g. after a
+  // rename) — the previous code re-wrote the same title on every open. The write
+  // is fire-and-forget; ensureConversationTab already refreshes the tab strip.
+  await ensureConversationTab(id, conv.title);
+  const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
+  if (activeTab && activeTab.title !== conv.title) {
+    activeTab.title = conv.title;
+    renderTabs();
+    apiUpdateTab(activeTab.id, {
+      title: conv.title,
+      conversation_id: id,
+      tab_type: "conversation",
+    });
   }
 }
 
@@ -2426,13 +2476,22 @@ async function openAttReport(forceRefresh, fromButton = false) {
   if (!forceRefresh && attReportContent.dataset.loaded) return;
 
   attReportContent.innerHTML = '<div class="loading">Loading…</div>';
-  const data = await fetch("/api/attachment-report").then((r) => r.json());
+  let data;
+  try {
+    const resp = await fetch("/api/attachment-report");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (e) {
+    attReportContent.innerHTML = `<div class="no-results">Could not load the attachment report: ${escHtml(e.message)}. Please try Refresh.</div>`;
+    attReportMeta.textContent = "Failed to load report.";
+    return; // never leave the panel stuck on "Loading…"
+  }
   attReportContent.innerHTML = "";
 
   const items = data.missing || [];
   attReportMeta.textContent = items.length
-    ? `共 ${items.length} 个附件无法显示（无导出内容 + source/files/ 中未找到）`
-    : "✅ 所有附件均已正常解析，无缺失。";
+    ? `${items.length} attachment(s) cannot be displayed (no exported content and not found in source/files/)`
+    : "✅ All attachments resolved — none missing.";
 
   if (!items.length) {
     attReportContent.dataset.loaded = "1";
@@ -2464,7 +2523,7 @@ async function openAttReport(forceRefresh, fromButton = false) {
         <span class="att-report-icon">${fileIcon(it.file_type || it.file_name)}</span>
         <span class="att-report-name">${escHtml(it.file_name)} <span class="att-report-type">${escHtml(typeLabel)}</span></span>
         ${it.context ? `<span class="att-report-ctx">${escHtml(it.context)}…</span>` : ""}
-        <button class="att-upload-btn" title="上传该文件至 source/files/">📎 上传</button>`;
+        <button class="att-upload-btn" title="Upload this file to source/files/">📎 Upload</button>`;
 
       row.querySelector(".att-report-name").addEventListener("click", () => {
         openConversation(convId, resolveConversationSidebarEl(convId), it.seq);
@@ -2483,7 +2542,7 @@ async function openAttReport(forceRefresh, fromButton = false) {
           fd.append("name", it.file_name);
           const btn = row.querySelector(".att-upload-btn");
           btn.disabled = true;
-          btn.textContent = "上传中…";
+          btn.textContent = "Uploading…";
           try {
             const res = await fetch("/api/upload-file", {
               method: "POST",
@@ -2491,18 +2550,18 @@ async function openAttReport(forceRefresh, fromButton = false) {
             }).then((r) => r.json());
             if (res.ok) {
               row.classList.add("att-row-resolved");
-              btn.textContent = "✅ 已上传";
+              btn.textContent = "✅ Uploaded";
               // Invalidate cache so next open re-fetches fresh data
               delete attReportContent.dataset.loaded;
             } else {
               btn.disabled = false;
-              btn.textContent = "📎 上传";
-              alert("上传失败：" + (res.error || "未知错误"));
+              btn.textContent = "📎 Upload";
+              alert("Upload failed: " + (res.error || "unknown error"));
             }
           } catch (e) {
             btn.disabled = false;
-            btn.textContent = "📎 上传";
-            alert("上传出错：" + e.message);
+            btn.textContent = "📎 Upload";
+            alert("Upload error: " + e.message);
           }
         });
         inp.click();
@@ -2527,10 +2586,69 @@ async function openAttReport(forceRefresh, fromButton = false) {
   attReportContent.dataset.loaded = "1";
 }
 
-$("att-report-btn").addEventListener("click", () => openAttReport(false, true));
 $("att-report-refresh-btn").addEventListener("click", () =>
   openAttReport(true),
 );
+
+// ── Sidebar popup menu ("More" button) ─────────────────────────────────────────
+// The "More" button opens a small menu anchored to it instead of jumping
+// straight to a screen. Add future entries as .sidebar-menu-item buttons in
+// index.html with a unique data-action, then handle that action below.
+
+const sidebarMenuBtn = $("sidebar-menu-btn");
+const sidebarMenu = $("sidebar-menu");
+
+function positionSidebarMenu() {
+  const r = sidebarMenuBtn.getBoundingClientRect();
+  // Show the menu first so its size can be measured, then place it above the
+  // button, right-aligned to it (the button sits at the bottom of the sidebar).
+  sidebarMenu.hidden = false;
+  const mw = sidebarMenu.offsetWidth;
+  const mh = sidebarMenu.offsetHeight;
+  let left = r.right - mw;
+  if (left < 8) left = 8;
+  let top = r.top - mh - 6;
+  if (top < 8) top = r.bottom + 6; // fall back to below if no room above
+  sidebarMenu.style.left = `${left}px`;
+  sidebarMenu.style.top = `${top}px`;
+}
+
+function openSidebarMenu() {
+  positionSidebarMenu();
+  sidebarMenuBtn.setAttribute("aria-expanded", "true");
+  document.addEventListener("mousedown", onSidebarMenuOutside, true);
+  document.addEventListener("keydown", onSidebarMenuKey, true);
+}
+
+function closeSidebarMenu() {
+  sidebarMenu.hidden = true;
+  sidebarMenuBtn.setAttribute("aria-expanded", "false");
+  document.removeEventListener("mousedown", onSidebarMenuOutside, true);
+  document.removeEventListener("keydown", onSidebarMenuKey, true);
+}
+
+function onSidebarMenuOutside(e) {
+  if (!sidebarMenu.contains(e.target) && e.target !== sidebarMenuBtn) {
+    closeSidebarMenu();
+  }
+}
+
+function onSidebarMenuKey(e) {
+  if (e.key === "Escape") closeSidebarMenu();
+}
+
+sidebarMenuBtn.addEventListener("click", () => {
+  if (sidebarMenu.hidden) openSidebarMenu();
+  else closeSidebarMenu();
+});
+
+sidebarMenu.querySelectorAll(".sidebar-menu-item").forEach((item) => {
+  item.addEventListener("click", () => {
+    const action = item.dataset.action;
+    closeSidebarMenu();
+    if (action === "attachment-report") openAttReport(false);
+  });
+});
 
 // ── Memories ──────────────────────────────────────────────────────────────────
 
