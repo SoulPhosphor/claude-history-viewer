@@ -2104,11 +2104,13 @@ async function openConversation(id, clickedEl, targetSeq = null) {
     // Everything else keeps the plain role label.
     let roleEl;
     if (isCg && msg.role === "assistant") {
-      // Custom GPT persona (constant for the whole conversation), or null.
+      // Only show a persona name once the user has named this Custom GPT.
+      // Until then the assistant keeps its normal header (model + date) — the
+      // gizmo is never labeled "Custom GPT" on the message itself.
       roleEl = buildGptHeader(
         msg.meta.model,
         msg.create_time,
-        state.activeGizmo?.label || null,
+        state.activeGizmo?.name || null,
       );
     } else {
       roleEl = document.createElement("div");
