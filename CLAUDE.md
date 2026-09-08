@@ -22,6 +22,10 @@
   in `index.html`, `renderTabs()` in `app.js`). This is what the user means by
   "the top of the screen."
 - **Compare** = attach a conversation to the top bar as a chip (title + ×, no pin
-  icon) so it can be browsed quickly. Persisted in `localStorage`.
+  icon) so it can be browsed quickly. Membership lives **only** in `localStorage`
+  (`state.compare`, key `compareConversations`) and is fully decoupled from the
+  server-backed tab store — never write it there or restore it from there. The
+  server tab store still exists for internal navigation/restore and for artifact
+  tabs (which do still render in the top bar).
 - **Pinning** (the sidebar star ☆/★, the "Pinned" filter, folder pins) is a
   separate feature and stays as-is.

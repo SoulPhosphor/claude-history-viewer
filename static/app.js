@@ -14,7 +14,10 @@ const state = {
   },
   specialReturnTabId: null,
   pinnedIds: new Set(),
-  compareIds: new Set(), // conversation ids attached to the top "Compare" bar
+  // Conversations attached to the top "Compare" bar. This lives ONLY in
+  // localStorage — it is never written to or restored from the server tab
+  // store. Each entry is { id, title }.
+  compare: [],
   folders: [],
   folderOf: new Map(), // conversation_id -> folder_id (for chats inside folders)
   tabs: [],
@@ -1051,6 +1054,7 @@ function buildConvActions(c) {
     });
     if (!next || next === c.title) return;
     await apiUpdateConversationMeta(c.id, { title: next });
+    updateCompareTitle(c.id, next);
     loadConversations(false);
     refreshPinnedList();
     loadFolders();
@@ -1436,11 +1440,6 @@ function resolveReturnTabId(excludeTabId = null) {
 async function closeTabAndFocusFallback(tabId) {
   const tab = getTabById(tabId);
   if (!tab) return;
-  // Detaching a chip from the top bar also drops it from the Compare set.
-  if (tab.tab_type === "conversation" && state.compareIds.has(tab.conversation_id)) {
-    state.compareIds.delete(tab.conversation_id);
-    saveCompareIds();
-  }
   const wasActive = state.activeTabId === tabId;
   const fallbackId = isSpecialTab(tab)
     ? resolveReturnTabId(tabId)
@@ -1472,17 +1471,44 @@ async function activateTab(tabId) {
   renderTabs();
 }
 
+// The top bar is the "Compare" strip. It renders the localStorage-backed
+// Compare chips (title + × to detach, no pin icon). Artifact tabs — a separate,
+// server-backed feature — are still rendered here so opening an artifact keeps
+// working; ordinary conversation tabs are no longer shown at the top.
 function renderTabs() {
   tabsList.innerHTML = "";
-  const tabsToRender = state.tabs.filter(isTopTab);
-  for (const t of tabsToRender) {
+
+  // Compare chips (localStorage only).
+  for (const item of state.compare) {
+    const chip = document.createElement("div");
+    const isActive =
+      !thread.hidden && !state.activeSpecialView && state.activeId === item.id;
+    chip.className = "top-tab" + (isActive ? " active" : "");
+    chip.setAttribute("role", "button");
+    chip.setAttribute("tabindex", "0");
+    chip.innerHTML = `<span class="tab-label">${escHtml(item.title || "Untitled")}</span><button type="button" class="tab-close" title="Remove from Compare">×</button>`;
+    chip.querySelector(".tab-close").addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeFromCompare(item.id);
+    });
+    const open = () =>
+      openConversation(item.id, resolveConversationSidebarEl(item.id));
+    chip.addEventListener("click", open);
+    chip.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      open();
+    });
+    tabsList.appendChild(chip);
+  }
+
+  // Artifact tabs (server-backed; unchanged feature, just no pin icon).
+  for (const t of state.tabs.filter((t) => t.tab_type === "artifact")) {
     const tab = document.createElement("div");
     tab.className = "top-tab" + (t.id === state.activeTabId ? " active" : "");
     tab.setAttribute("role", "button");
     tab.setAttribute("tabindex", "0");
-    // The top bar is the "Compare" strip: chats attached here show only their
-    // title and an × to detach. The old per-tab pin toggle is intentionally gone.
-    tab.innerHTML = `<span class="tab-label">${escHtml(t.title || "Untitled")}</span><button type="button" class="tab-close" title="Remove from Compare">×</button>`;
+    tab.innerHTML = `<span class="tab-label">${escHtml(t.title || "Untitled")}</span><button type="button" class="tab-close" title="Close">×</button>`;
     tab.querySelector(".tab-close").addEventListener("click", async (e) => {
       e.stopPropagation();
       await closeTabAndFocusFallback(t.id);
@@ -1515,83 +1541,64 @@ async function loadTabs() {
 
 // ── Compare bar (the top strip) ───────────────────────────────────────────────
 // "Compare" attaches a conversation to the top bar as a chip so it can be
-// browsed quickly. The set of attached conversations is persisted in the
-// browser via localStorage so it survives reloads.
-const COMPARE_STORAGE_KEY = "compareConversationIds";
+// browsed quickly, like keeping several webpages open. Membership is a purely
+// client-side convenience: it is stored ONLY in localStorage and is completely
+// decoupled from the server-backed tab store — it is never written there,
+// restored from there, or otherwise coupled to it.
+const COMPARE_STORAGE_KEY = "compareConversations";
 
-function loadCompareIds() {
+function loadCompare() {
   try {
     const raw = localStorage.getItem(COMPARE_STORAGE_KEY);
     const arr = raw ? JSON.parse(raw) : [];
-    state.compareIds = new Set(Array.isArray(arr) ? arr.map(String) : []);
+    state.compare = Array.isArray(arr)
+      ? arr
+          .filter((x) => x && x.id != null)
+          .map((x) => ({ id: String(x.id), title: x.title || "Conversation" }))
+      : [];
   } catch {
-    state.compareIds = new Set();
+    state.compare = [];
   }
 }
 
-function saveCompareIds() {
+function saveCompare() {
   try {
-    localStorage.setItem(
-      COMPARE_STORAGE_KEY,
-      JSON.stringify([...state.compareIds]),
-    );
+    localStorage.setItem(COMPARE_STORAGE_KEY, JSON.stringify(state.compare));
   } catch {
-    /* storage unavailable — compare bar just won't persist this session */
+    /* storage unavailable — the compare bar just won't persist this session */
   }
 }
 
 // Attach a conversation to the top Compare bar without navigating away, so
 // several chats can be queued up and then clicked through.
-async function compareConversation(convId, title) {
-  state.compareIds.add(String(convId));
-  saveCompareIds();
-  let tab = state.tabs.find(
-    (t) => t.tab_type === "conversation" && t.conversation_id === convId,
-  );
-  if (!tab) {
-    const created = await apiCreateTab({
-      tab_type: "conversation",
-      conversation_id: convId,
-      title: title || "Conversation",
-    });
-    tab = {
-      id: created.id,
-      tab_type: "conversation",
-      conversation_id: convId,
-      title: title || "Conversation",
-    };
-    state.tabs.push(tab);
+function compareConversation(convId, title) {
+  const id = String(convId);
+  if (!state.compare.some((x) => x.id === id)) {
+    state.compare.push({ id, title: title || "Conversation" });
+    saveCompare();
+    renderTabs();
   }
-  renderTabs();
 }
 
-// Re-attach any localStorage-remembered compare chats that aren't already
-// present as top tabs (e.g. after the server tab list was cleared).
-async function restoreCompareTabs() {
-  for (const convId of state.compareIds) {
-    const has = state.tabs.some(
-      (t) => t.tab_type === "conversation" && t.conversation_id === convId,
-    );
-    if (has) continue;
-    try {
-      const created = await apiCreateTab({
-        tab_type: "conversation",
-        conversation_id: convId,
-        title: "Conversation",
-      });
-      state.tabs.push({
-        id: created.id,
-        tab_type: "conversation",
-        conversation_id: convId,
-        title: created.title || "Conversation",
-      });
-    } catch {
-      /* conversation may no longer exist — drop it from the compare set */
-      state.compareIds.delete(convId);
-      saveCompareIds();
-    }
+function removeFromCompare(convId) {
+  const id = String(convId);
+  const before = state.compare.length;
+  state.compare = state.compare.filter((x) => x.id !== id);
+  if (state.compare.length !== before) {
+    saveCompare();
+    renderTabs();
   }
-  renderTabs();
+}
+
+// Keep a compare chip's cached title in sync (e.g. after a rename).
+function updateCompareTitle(convId, title) {
+  const id = String(convId);
+  const entry = state.compare.find((x) => x.id === id);
+  if (entry && title && entry.title !== title) {
+    entry.title = title;
+    saveCompare();
+    renderTabs();
+  }
 }
 
 async function ensureConversationTab(convId, title) {
@@ -1952,6 +1959,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   const { conversation: conv, messages, artifacts: artifactsMeta = {} } = data;
 
   threadTitle.textContent = conv.title;
+  updateCompareTitle(id, conv.title); // heal a stale compare-chip title
   const ts = formatDate(conv.update_time || conv.create_time);
   threadMeta.textContent = `${ts} · ${conv.message_count} messages`;
 
@@ -3493,6 +3501,7 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
       if (!name || name === cur) return;
       await apiUpdateConversationMeta(cid, { title: name });
       threadTitle.textContent = name;
+      updateCompareTitle(cid, name);
       await loadConversations(false);
       await refreshPinnedList();
       await loadFolders();
@@ -3537,9 +3546,9 @@ async function initApp() {
   renderSearchHistory();
   await refreshPinnedList();
   await loadFolders();
-  loadCompareIds();
+  loadCompare();
   await loadTabs();
-  await restoreCompareTabs();
+  renderTabs();
   await loadConversations(false);
   if (state.activeTabId) {
     await activateActiveTab();
