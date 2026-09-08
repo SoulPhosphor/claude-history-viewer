@@ -65,6 +65,7 @@
             <option value="pinned">Pinned</option>
             <option value="archived">Archived</option>
             <option value="all">All</option>
+            <option value="unverified" hidden>Unverified Models</option>
           </select>
           <div id="result-count"></div>
         </div>
@@ -219,6 +220,15 @@
         >
           <span class="sidebar-menu-item-icon" aria-hidden="true">📋</span>
           <span class="sidebar-menu-item-label">Import Audit</span>
+        </button>
+        <button
+          class="sidebar-menu-item"
+          role="menuitem"
+          data-action="claude-models"
+          id="claude-models-menu-item"
+        >
+          <span class="sidebar-menu-item-icon" aria-hidden="true">🗓️</span>
+          <span class="sidebar-menu-item-label">Add Claude Models</span>
         </button>
       </div>
       <div id="sidebar-resize" aria-hidden="true"></div>
@@ -379,6 +389,45 @@
           <div id="import-audit-content"></div>
         </div>
 
+        <div id="claude-models-panel" hidden>
+          <div class="thread-header">
+            <h2>Add Claude Models</h2>
+            <div id="claude-models-meta">
+              Which models claude.ai offered, and when. These dates decide which
+              models a conversation can be tagged with.
+            </div>
+          </div>
+          <div id="claude-models-content">
+            <form id="model-add-form" autocomplete="off">
+              <div class="model-add-field">
+                <label for="model-add-name">Model Name</label>
+                <input id="model-add-name" type="text" required spellcheck="false" />
+              </div>
+              <div class="model-add-field">
+                <label for="model-add-start">Beginning Date</label>
+                <input id="model-add-start" type="date" required />
+              </div>
+              <div class="model-add-field">
+                <label for="model-add-end">End Date</label>
+                <input id="model-add-end" type="date" />
+              </div>
+              <button type="submit" id="model-add-btn">Add</button>
+            </form>
+            <div id="model-add-error" class="model-form-error" hidden></div>
+            <table id="model-table">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Start Date</th>
+                  <th>End Date</th>
+                  <th aria-label="Remove"></th>
+                </tr>
+              </thead>
+              <tbody id="model-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+
         <div id="att-report-panel" hidden>
           <div class="thread-header">
             <h2>Attachment Report</h2>
@@ -413,6 +462,38 @@
         </div>
       </div>
     </div>
+    <!-- Caution sign: the selected model is outside its reported availability -->
+    <div id="verify-model-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-text">
+          The selected model is currently outside of the reported model
+          availability time frame. Remove warning for possible wrong model
+          permanently?
+        </div>
+        <div class="modal-buttons">
+          <button id="verify-model-no" class="modal-btn">No</button>
+          <button id="verify-model-yes" class="modal-btn modal-btn-primary">
+            Yes
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Report icon: the selected models do not cover the whole conversation -->
+    <div id="coverage-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-text">
+          Model unavailable during entire conversation dates.
+        </div>
+        <div class="modal-buttons">
+          <button id="coverage-dismiss" class="modal-btn">Dismiss</button>
+          <button id="coverage-okay" class="modal-btn modal-btn-primary">
+            Okay
+          </button>
+        </div>
+      </div>
+    </div>
+
     <script src="/static/app.js"></script>
     <script
       src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"

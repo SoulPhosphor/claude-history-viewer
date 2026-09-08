@@ -25,6 +25,12 @@ const state = {
     searchHistory: [],
   },
   scrollByConversation: {},
+  // Claude model availability. Everything under here stays inert on a ChatGPT
+  // export, where the whole feature is hidden.
+  datasetFormat: "claude",
+  models: null, // model state for the open conversation
+  modelRows: [], // the Add Claude Models table
+  unverifiedCount: 0,
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -65,6 +71,11 @@ const attReportPanel = $("att-report-panel");
 const attReportContent = $("att-report-content");
 const attReportMeta = $("att-report-meta");
 const importAuditPanel = $("import-audit-panel");
+const claudeModelsPanel = $("claude-models-panel");
+const claudeModelsMenuItem = $("claude-models-menu-item");
+const modelTableBody = $("model-table-body");
+const modelAddForm = $("model-add-form");
+const modelAddError = $("model-add-error");
 const importAuditContent = $("import-audit-content");
 const artifactPanel = $("artifact-panel");
 const artifactPanelTitle = $("artifact-panel-title");
@@ -1124,7 +1135,7 @@ function appendListItems(convs, targetEl = convList) {
     const snippet = (c.preview || c.snippet || "").trim();
     const top = document.createElement("div");
     top.className = "conv-top-row";
-    top.innerHTML = `<div class="conv-title">${escHtml(c.title)}</div>`;
+    top.innerHTML = `<div class="conv-title">${warningIconsHtml(c)}${escHtml(c.title)}</div>`;
     top.appendChild(buildConvActions(c));
 
     el.innerHTML = `
@@ -1276,6 +1287,7 @@ const VIEW_LABELS = {
   pinned: "Pinned",
   archived: "Archived",
   all: "All",
+  unverified: "Unverified Models",
 };
 
 // The one list header reflects whichever view the dropdown has selected, so it
@@ -1298,6 +1310,7 @@ async function loadUiPreferences() {
     "pinned",
     "archived",
     "all",
+    "unverified",
   ].includes(savedView)
     ? savedView
     : "recent";
@@ -1590,6 +1603,8 @@ async function activateActiveTab() {
     if (state.activeSpecialView === "projects") return openProjects(false);
     if (state.activeSpecialView === "attachment_report")
       return openAttReport(false, false);
+    if (state.activeSpecialView === "claude_models")
+      return openClaudeModels();
     if (state.activeSpecialView === "import_audit")
       return openImportAudit(false);
     hideAllPanels();
@@ -1630,6 +1645,8 @@ async function loadConversations(append = false) {
   try {
     const data = await apiConversations(state.q, state.offset, signal);
     state.total = data.total;
+    state.unverifiedCount = data.unverified_count || 0;
+    syncUnverifiedOption();
     state.offset += (data.conversations || []).length;
 
     if (!append) convList.innerHTML = "";
@@ -1666,6 +1683,7 @@ function hideAllPanels() {
   projectsPanel.hidden = true;
   attReportPanel.hidden = true;
   importAuditPanel.hidden = true;
+  claudeModelsPanel.hidden = true;
   closeArtifactPanel();
   closeFilePanel();
   clearSearchNav();
@@ -1816,7 +1834,12 @@ async function openConversation(id, clickedEl, targetSeq = null) {
 
   threadTitle.textContent = conv.title;
   const ts = formatDate(conv.update_time || conv.create_time);
-  threadMeta.textContent = `${ts} · ${conv.message_count} messages`;
+  threadMeta.textContent = "";
+  const metaText = document.createElement("span");
+  metaText.textContent = `${ts} · ${conv.message_count} messages`;
+  threadMeta.appendChild(metaText);
+  state.models = data.models || null;
+  renderModelStrip();
 
   messagesEl.innerHTML = "";
   if (!messages.length) {
@@ -2779,6 +2802,430 @@ async function renderImportAuditList(status, label) {
   importAuditContent.appendChild(listEl);
 }
 
+
+// ── Claude model availability ────────────────────────────────────────────────
+// Each conversation can be tagged with the model(s) it was written with. Which
+// models are offered comes from the availability dates on the Add Claude Models
+// screen, and two icons flag a tagging that no longer matches those dates:
+//
+//   caution sign  a tagged model was never available during the conversation
+//   report        the tagged models don't cover the conversation end to end
+//
+// Both are dismissible per conversation, and both come back if the condition
+// clears and then goes wrong again (the server re-arms the dismissal).
+
+const ICON_CAUTION =
+  '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+  '<path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>';
+const ICON_REPORT =
+  '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
+  '<path d="M15.73 3H8.27L3 8.27v7.46L8.27 21h7.46L21 15.73V8.27L15.73 3zM12 ' +
+  '17.3c-.72 0-1.3-.58-1.3-1.3s.58-1.3 1.3-1.3 1.3.58 1.3 1.3-.58 1.3-1.3 ' +
+  '1.3zm1-4.3h-2V7h2v6z"/></svg>';
+
+const isClaudeSide = () => state.datasetFormat === "claude";
+
+async function apiModelState(path, options) {
+  const resp = await fetch(path, options);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  return data;
+}
+
+// Load the export format once at boot; it decides whether any of this renders.
+async function loadDatasetFormat() {
+  try {
+    const data = await apiModelState("/api/claude-models");
+    state.datasetFormat = data.format === "chatgpt" ? "chatgpt" : "claude";
+    state.modelRows = data.models || [];
+  } catch {
+    state.datasetFormat = "claude";
+  }
+  if (claudeModelsMenuItem) claudeModelsMenuItem.hidden = !isClaudeSide();
+}
+
+// The "Unverified Models" filter exists only while something is flagged.
+function syncUnverifiedOption() {
+  const opt = viewFilterEl?.querySelector('option[value="unverified"]');
+  if (!opt) return;
+  const show = isClaudeSide() && state.unverifiedCount > 0;
+  opt.hidden = !show;
+  if (!show && state.view === "unverified") {
+    // Nothing left to verify — fall back rather than showing an empty list.
+    // Deferred so it never reloads on top of the render that called us.
+    state.view = "recent";
+    viewFilterEl.value = "recent";
+    updateListSectionTitle();
+    setTimeout(() => loadConversations(false), 0);
+  }
+}
+
+// The warning icons shown before a conversation's name in the sidebar.
+function warningIconsHtml(conv) {
+  if (!isClaudeSide()) return "";
+  let out = "";
+  if (conv.warn_range)
+    out += `<span class="warn-icon warn-caution" title="Model outside its reported availability">${ICON_CAUTION}</span>`;
+  if (conv.warn_coverage)
+    out += `<span class="warn-icon warn-report" title="Model unavailable during entire conversation dates">${ICON_REPORT}</span>`;
+  return out;
+}
+
+// ── The model strip in the conversation header ───────────────────────────────
+// Empty conversation: a single "Select Model" dropdown. Once a model is chosen
+// it becomes plain text with an ✕ to drop it, and an unobtrusive [ + ] dropdown
+// offers the rest — which disappears when every model available during the
+// conversation is already selected.
+
+function renderModelStrip() {
+  const existing = threadMeta.querySelector(".model-strip");
+  if (existing) existing.remove();
+  const data = state.models;
+  if (!isClaudeSide() || !data || !state.activeId) return;
+  const convId = state.activeId;
+
+  const strip = document.createElement("span");
+  strip.className = "model-strip";
+  const sep = () => {
+    const s = document.createElement("span");
+    s.className = "model-sep";
+    s.textContent = "·";
+    return s;
+  };
+
+  for (const m of data.selected) {
+    strip.appendChild(sep());
+    const chip = document.createElement("span");
+    chip.className = "model-chip";
+    const name = document.createElement("span");
+    name.className = "model-chip-name";
+    name.textContent = m.name;
+    const x = document.createElement("button");
+    x.className = "model-chip-x";
+    x.type = "button";
+    x.title = `Remove ${m.name}`;
+    x.setAttribute("aria-label", `Remove ${m.name}`);
+    x.textContent = "✕";
+    x.addEventListener("click", () => removeConvModel(convId, m.model_id));
+    chip.append(name, x);
+    strip.appendChild(chip);
+  }
+
+  if (data.available.length) {
+    strip.appendChild(sep());
+    const sel = document.createElement("select");
+    const picked = data.selected.length > 0;
+    sel.className = picked ? "model-select model-select-add" : "model-select";
+    sel.title = picked ? "Add another model" : "Select the model used";
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = picked ? "+" : "Select Model";
+    sel.appendChild(placeholder);
+    for (const m of data.available) {
+      const opt = document.createElement("option");
+      opt.value = m.model_id;
+      opt.textContent = m.name;
+      sel.appendChild(opt);
+    }
+    sel.value = "";
+    sel.addEventListener("change", () => {
+      if (sel.value) addConvModel(convId, sel.value);
+    });
+    strip.appendChild(sel);
+  }
+
+  if (data.warn_range) {
+    const btn = document.createElement("button");
+    btn.className = "warn-icon warn-caution warn-btn";
+    btn.type = "button";
+    btn.title = "Model outside its reported availability";
+    btn.setAttribute("aria-label", "Model outside its reported availability");
+    btn.innerHTML = ICON_CAUTION;
+    btn.addEventListener("click", () => openVerifyModelDialog(convId));
+    strip.appendChild(btn);
+  }
+  if (data.warn_coverage) {
+    const btn = document.createElement("button");
+    btn.className = "warn-icon warn-report warn-btn";
+    btn.type = "button";
+    btn.title = "Model unavailable during entire conversation dates";
+    btn.setAttribute(
+      "aria-label",
+      "Model unavailable during entire conversation dates",
+    );
+    btn.innerHTML = ICON_REPORT;
+    btn.addEventListener("click", () => openCoverageDialog(convId));
+    strip.appendChild(btn);
+  }
+
+  threadMeta.appendChild(strip);
+}
+
+// A change to one conversation's models can add or clear its warning icons, so
+// the sidebar row and the Unverified count are refreshed alongside the strip.
+async function applyModelState(convId, data) {
+  if (state.activeId !== convId) return;
+  state.models = data;
+  renderModelStrip();
+  refreshConvWarningIcons(convId, data);
+  await refreshUnverifiedCount();
+}
+
+function refreshConvWarningIcons(convId, data) {
+  const row = findConvItemEl(convId);
+  const titleEl = row?.querySelector(".conv-title");
+  if (!titleEl) return;
+  titleEl.querySelectorAll(".warn-icon").forEach((el) => el.remove());
+  titleEl.insertAdjacentHTML(
+    "afterbegin",
+    warningIconsHtml({
+      warn_range: data.warn_range,
+      warn_coverage: data.warn_coverage,
+    }),
+  );
+}
+
+async function refreshUnverifiedCount() {
+  if (!isClaudeSide()) return;
+  try {
+    const d = await fetch("/api/conversations?view=unverified&limit=1").then(
+      (r) => r.json(),
+    );
+    state.unverifiedCount = d.unverified_count || 0;
+  } catch {
+    /* leave the last known count in place */
+  }
+  syncUnverifiedOption();
+}
+
+async function addConvModel(convId, modelId) {
+  try {
+    const data = await apiModelState("/api/conversation-models", {
+      method: "POST",
+      body: JSON.stringify({ conv_id: convId, model_id: modelId }),
+    });
+    await applyModelState(convId, data);
+  } catch {
+    /* leave the strip as-is if the write failed */
+  }
+}
+
+async function removeConvModel(convId, modelId) {
+  try {
+    const data = await apiModelState(
+      `/api/conversation-models/${encodeURIComponent(convId)}/${encodeURIComponent(modelId)}`,
+      { method: "DELETE" },
+    );
+    await applyModelState(convId, data);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function dismissWarning(convId, kind) {
+  try {
+    const data = await apiModelState("/api/conversation-models/dismiss", {
+      method: "POST",
+      body: JSON.stringify({ conv_id: convId, kind }),
+    });
+    await applyModelState(convId, data);
+  } catch {
+    /* ignore */
+  }
+}
+
+// ── The two warning dialogs ──────────────────────────────────────────────────
+
+const verifyModelModal = $("verify-model-modal");
+const coverageModal = $("coverage-modal");
+let _warnDialogConvId = null;
+
+function openVerifyModelDialog(convId) {
+  _warnDialogConvId = convId;
+  verifyModelModal.hidden = false;
+}
+
+function openCoverageDialog(convId) {
+  _warnDialogConvId = convId;
+  coverageModal.hidden = false;
+}
+
+// "No" / "Okay" just close; the warnings stay.
+$("verify-model-no")?.addEventListener("click", () => {
+  verifyModelModal.hidden = true;
+});
+$("coverage-okay")?.addEventListener("click", () => {
+  coverageModal.hidden = true;
+});
+$("verify-model-yes")?.addEventListener("click", () => {
+  verifyModelModal.hidden = true;
+  if (_warnDialogConvId) dismissWarning(_warnDialogConvId, "range");
+});
+$("coverage-dismiss")?.addEventListener("click", () => {
+  coverageModal.hidden = true;
+  if (_warnDialogConvId) dismissWarning(_warnDialogConvId, "coverage");
+});
+for (const modal of [verifyModelModal, coverageModal]) {
+  modal?.addEventListener("mousedown", (e) => {
+    if (e.target === modal) modal.hidden = true;
+  });
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!verifyModelModal.hidden) verifyModelModal.hidden = true;
+  if (!coverageModal.hidden) coverageModal.hidden = true;
+});
+
+// ── Add Claude Models screen ─────────────────────────────────────────────────
+
+async function openClaudeModels() {
+  rememberReturnTab();
+  state.activeSpecialView = "claude_models";
+  state.activeTabId = null;
+  document
+    .querySelectorAll(".conv-item.active")
+    .forEach((el) => el.classList.remove("active"));
+  state.activeId = null;
+  await ensureSpecialTab("claude_models", "Add Claude Models");
+  hideAllPanels();
+  claudeModelsPanel.hidden = false;
+  await refreshModelTable();
+}
+
+async function refreshModelTable() {
+  try {
+    const data = await apiModelState("/api/claude-models");
+    state.modelRows = data.models || [];
+  } catch {
+    modelTableBody.innerHTML =
+      '<tr><td colspan="4" class="no-results">Could not load the model list.</td></tr>';
+    return;
+  }
+  renderModelTable();
+}
+
+// Every cell is editable in place. The name belongs to the model rather than to
+// one row, so a model with two availability windows shows its name on both and
+// editing either renames the model.
+function renderModelTable() {
+  modelTableBody.innerHTML = "";
+  if (!state.modelRows.length) {
+    modelTableBody.innerHTML =
+      '<tr><td colspan="4" class="no-results">No models yet. Add one above.</td></tr>';
+    return;
+  }
+  let previousModel = null;
+  for (const row of state.modelRows) {
+    const tr = document.createElement("tr");
+    // A model's extra availability windows are tied visually to the first one.
+    if (row.model_id === previousModel) tr.classList.add("model-row-continued");
+    previousModel = row.model_id;
+
+    tr.appendChild(modelCell(row, "name", "text", row.name));
+    tr.appendChild(modelCell(row, "start_date", "date", row.start_date));
+    tr.appendChild(modelCell(row, "end_date", "date", row.end_date || ""));
+
+    const actions = document.createElement("td");
+    actions.className = "model-cell-actions";
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "model-row-delete";
+    del.title = `Delete ${row.name} (${row.start_date})`;
+    del.setAttribute("aria-label", `Delete ${row.name}`);
+    del.textContent = "✕";
+    del.addEventListener("click", () => deleteModelRow(row));
+    actions.appendChild(del);
+    tr.appendChild(actions);
+    modelTableBody.appendChild(tr);
+  }
+}
+
+function modelCell(row, field, type, value) {
+  const td = document.createElement("td");
+  const input = document.createElement("input");
+  input.type = type;
+  input.value = value;
+  input.className = "model-cell-input";
+  if (type === "text") input.spellcheck = false;
+  const commit = () => {
+    const next = input.value.trim();
+    if (next === String(value || "")) return;
+    saveModelRow(row, field, next, input, value);
+  };
+  input.addEventListener("blur", commit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") input.blur();
+    else if (e.key === "Escape") {
+      input.value = value || "";
+      input.blur();
+    }
+  });
+  td.appendChild(input);
+  return td;
+}
+
+async function saveModelRow(row, field, next, input, previous) {
+  showModelError("");
+  try {
+    const data = await apiModelState(
+      `/api/claude-models/${encodeURIComponent(row.period_id)}`,
+      { method: "PATCH", body: JSON.stringify({ [field]: next }) },
+    );
+    state.modelRows = data.models || [];
+    renderModelTable();
+  } catch (e) {
+    input.value = previous || ""; // rejected: put the old value back
+    showModelError(e.message);
+  }
+  // Changed dates can move conversations in or out of range.
+  await refreshUnverifiedCount();
+}
+
+async function deleteModelRow(row) {
+  showModelError("");
+  try {
+    const data = await apiModelState(
+      `/api/claude-models/${encodeURIComponent(row.period_id)}`,
+      { method: "DELETE" },
+    );
+    state.modelRows = data.models || [];
+    renderModelTable();
+  } catch (e) {
+    showModelError(e.message);
+  }
+  await refreshUnverifiedCount();
+}
+
+function showModelError(msg) {
+  if (!modelAddError) return;
+  modelAddError.textContent = msg || "";
+  modelAddError.hidden = !msg;
+}
+
+modelAddForm?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  showModelError("");
+  const body = {
+    name: $("model-add-name").value.trim(),
+    start_date: $("model-add-start").value,
+    end_date: $("model-add-end").value,
+  };
+  try {
+    const data = await apiModelState("/api/claude-models", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    state.modelRows = data.models || [];
+    renderModelTable();
+    modelAddForm.reset();
+    $("model-add-name").focus();
+  } catch (err) {
+    showModelError(err.message);
+    return;
+  }
+  await refreshUnverifiedCount();
+});
+
 // ── Sidebar popup menu ("More" button) ─────────────────────────────────────────
 // The "More" button opens a small menu anchored to it instead of jumping
 // straight to a screen. Add future entries as .sidebar-menu-item buttons in
@@ -2837,6 +3284,7 @@ sidebarMenu.querySelectorAll(".sidebar-menu-item").forEach((item) => {
     closeSidebarMenu();
     if (action === "attachment-report") openAttReport(false);
     else if (action === "import-audit") openImportAudit(false);
+    else if (action === "claude-models") openClaudeModels();
   });
 });
 
@@ -3394,6 +3842,7 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
 });
 
 async function initApp() {
+  await loadDatasetFormat();
   await loadUiPreferences();
   renderSearchHistory();
   await refreshPinnedList();

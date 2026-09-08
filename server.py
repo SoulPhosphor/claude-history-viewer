@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal HTTP server for Claude History Viewer."""
 from __future__ import annotations
-import html, json, mimetypes, os, re, sqlite3, sys, time, urllib.parse, uuid
+import datetime, html, json, mimetypes, os, re, sqlite3, sys, time, urllib.parse, uuid
 import importlib
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
@@ -166,11 +166,306 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 pinned          INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_folder_items_folder ON folder_items (folder_id);
+
+            -- Claude model availability. A model is one row in claude_models;
+            -- each window it was offered in claude.ai is one row in
+            -- claude_model_periods, so a model that came back after a gap
+            -- (Claude Fable 5) is one model with two period rows.
+            CREATE TABLE IF NOT EXISTS claude_models (
+                id         TEXT PRIMARY KEY,
+                name       TEXT NOT NULL,
+                created_at REAL
+            );
+            CREATE TABLE IF NOT EXISTS claude_model_periods (
+                id         TEXT PRIMARY KEY,
+                model_id   TEXT NOT NULL,
+                start_date TEXT NOT NULL,
+                end_date   TEXT,
+                created_at REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_model_periods ON claude_model_periods (model_id);
+
+            -- Which models the user says a conversation used. Many-to-many.
+            CREATE TABLE IF NOT EXISTS conversation_models (
+                conversation_id TEXT NOT NULL,
+                model_id        TEXT NOT NULL,
+                added_at        REAL,
+                PRIMARY KEY (conversation_id, model_id)
+            );
+
+            -- Per-conversation "I checked this, stop warning me" state. Cleared
+            -- automatically when the warning's condition stops being true, so
+            -- the icon comes back if the dates drift out of range again.
+            CREATE TABLE IF NOT EXISTS conversation_model_flags (
+                conversation_id    TEXT PRIMARY KEY,
+                range_dismissed    INTEGER DEFAULT 0,
+                coverage_dismissed INTEGER DEFAULT 0
+            );
+
+            -- Bookkeeping for the one-time seed import (see _seed_claude_models).
+            CREATE TABLE IF NOT EXISTS udb_meta (
+                meta_key   TEXT PRIMARY KEY,
+                meta_value TEXT
+            );
             """
         )
         conn.commit()
+        _seed_claude_models(conn)
     finally:
         conn.close()
+
+
+# ── Claude model availability ────────────────────────────────────────────────
+
+MODEL_SEED_FILE = Path(__file__).parent / "claude_models.json"
+
+
+def _seed_claude_models(conn) -> None:
+    """Import claude_models.json once, then never again.
+
+    The JSON ships with the app only as a starting list. Once imported, the
+    user-data DB is the single source of truth: it travels with the user's
+    other data, and their edits are never overwritten by the shipped file.
+    The seed is also skipped if the user has emptied the table on purpose.
+    """
+    try:
+        done = conn.execute(
+            "SELECT meta_value FROM udb_meta WHERE meta_key = 'claude_models_seeded'"
+        ).fetchone()
+    except sqlite3.Error:
+        return
+    if done:
+        return
+    rows = []
+    try:
+        with open(MODEL_SEED_FILE, encoding="utf-8") as f:
+            rows = json.load(f).get("models") or []
+    except Exception:
+        rows = []  # a missing or unreadable seed just means an empty list
+    now = time.time()
+    by_name: dict[str, str] = {}
+    for entry in rows:
+        name = str(entry.get("name") or "").strip()
+        start = str(entry.get("start_date") or "").strip()
+        if not name or not start:
+            continue
+        end = entry.get("end_date")
+        end = str(end).strip() if end else None
+        key = name.casefold()
+        model_id = by_name.get(key)
+        if model_id is None:
+            model_id = uuid.uuid4().hex
+            by_name[key] = model_id
+            conn.execute(
+                "INSERT INTO claude_models(id, name, created_at) VALUES (?, ?, ?)",
+                (model_id, name, now),
+            )
+        conn.execute(
+            "INSERT INTO claude_model_periods(id, model_id, start_date, end_date, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (uuid.uuid4().hex, model_id, start, end, now),
+        )
+    conn.execute(
+        "INSERT OR REPLACE INTO udb_meta(meta_key, meta_value) VALUES ('claude_models_seeded', ?)",
+        (str(now),),
+    )
+    conn.commit()
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _norm_date(value) -> str | None:
+    """Accept a YYYY-MM-DD string, reject anything else. Dates are compared as
+    strings throughout, which is exactly right for zero-padded ISO dates."""
+    s = str(value or "").strip()
+    return s if _DATE_RE.match(s) else None
+
+
+def _ts_to_date(ts) -> str | None:
+    """Epoch seconds -> local YYYY-MM-DD, matching the date the UI displays."""
+    try:
+        return datetime.date.fromtimestamp(float(ts)).isoformat()
+    except Exception:
+        return None
+
+
+def _conv_date_range(create_time, update_time):
+    """The span a conversation covers, as inclusive (first_day, last_day).
+
+    Returns (None, None) when the export carries no usable timestamps; callers
+    treat that as "cannot judge availability" and raise no warnings.
+    """
+    a = _ts_to_date(create_time)
+    b = _ts_to_date(update_time)
+    days = [d for d in (a, b) if d]
+    if not days:
+        return None, None
+    return min(days), max(days)
+
+
+def _period_overlaps(start, end, first_day, last_day) -> bool:
+    """Does [start, end) overlap the inclusive day span [first_day, last_day]?
+
+    end is exclusive (claude.json's stated interval semantics) and None means
+    "still available".
+    """
+    if start > last_day:
+        return False
+    return end is None or end > first_day
+
+
+def _periods_cover(periods, first_day, last_day) -> bool:
+    """Do these [start, end) windows together cover every day of the span?"""
+    OPEN = "9999-12-31"
+    # The span is inclusive of last_day, so coverage must reach past it.
+    target = _day_after(last_day)
+    reached = first_day
+    for start, end in sorted(periods, key=lambda p: p[0]):
+        if start > reached:
+            break  # gap before this window: the span is not fully covered
+        stop = end or OPEN
+        if stop > reached:
+            reached = stop
+        if reached >= target:
+            return True
+    return reached >= target
+
+
+def _day_after(day: str) -> str:
+    try:
+        d = datetime.date.fromisoformat(day) + datetime.timedelta(days=1)
+        return d.isoformat()
+    except Exception:
+        return day
+
+
+def _load_model_periods(conn) -> dict[str, list[tuple[str, str | None]]]:
+    """model_id -> its [start, end) windows."""
+    out: dict[str, list[tuple[str, str | None]]] = {}
+    try:
+        rows = conn.execute(
+            "SELECT model_id, start_date, end_date FROM udb.claude_model_periods"
+        ).fetchall()
+    except sqlite3.Error:
+        return out
+    for r in rows:
+        out.setdefault(r["model_id"], []).append((r["start_date"], r["end_date"]))
+    return out
+
+
+def _conversation_warnings(selected_periods, first_day, last_day):
+    """The two warning conditions for one conversation.
+
+    out_of_range: at least one selected model has no window overlapping the
+                  conversation at all.
+    incomplete:   the selected models together do not cover the conversation
+                  from its first day to its last.
+
+    Both are False when nothing is selected — an unset conversation is simply
+    unknown, not wrong.
+    """
+    if not selected_periods or not first_day:
+        return False, False
+    out_of_range = any(
+        not any(_period_overlaps(s, e, first_day, last_day) for s, e in periods)
+        for periods in selected_periods
+    )
+    flat = [p for periods in selected_periods for p in periods]
+    incomplete = not _periods_cover(flat, first_day, last_day)
+    return out_of_range, incomplete
+
+
+def _compute_conv_flags(conn, conv_rows):
+    """Effective warning icons for a batch of conversations.
+
+    conv_rows: iterable of (conversation_id, create_time, update_time).
+    Returns {conversation_id: {"warn_range": bool, "warn_coverage": bool}}.
+
+    Dismissals are re-armed here: a dismissal only suppresses a warning whose
+    condition is currently true, so a dismissed warning that later becomes
+    accurate again is forgotten, and the icon returns if it goes wrong again.
+    """
+    rows = [r for r in conv_rows if r[0]]
+    if not rows:
+        return {}
+    try:
+        sel_rows = conn.execute(
+            "SELECT conversation_id, model_id FROM udb.conversation_models"
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    selections: dict[str, list[str]] = {}
+    for r in sel_rows:
+        selections.setdefault(r["conversation_id"], []).append(r["model_id"])
+    if not selections:
+        return {}
+    periods_by_model = _load_model_periods(conn)
+    dismissed = {}
+    try:
+        for r in conn.execute(
+            "SELECT conversation_id, range_dismissed, coverage_dismissed "
+            "FROM udb.conversation_model_flags"
+        ).fetchall():
+            dismissed[r["conversation_id"]] = (
+                bool(r["range_dismissed"]), bool(r["coverage_dismissed"])
+            )
+    except sqlite3.Error:
+        pass
+
+    out, stale = {}, []
+    for conv_id, create_time, update_time in rows:
+        model_ids = selections.get(conv_id)
+        if not model_ids:
+            continue
+        first_day, last_day = _conv_date_range(create_time, update_time)
+        oor, inc = _conversation_warnings(
+            [periods_by_model.get(mid, []) for mid in model_ids], first_day, last_day
+        )
+        d_range, d_cov = dismissed.get(conv_id, (False, False))
+        # Re-arm: a dismissal for a condition that no longer holds is dropped.
+        if (d_range and not oor) or (d_cov and not inc):
+            stale.append((conv_id, 1 if (d_range and oor) else 0,
+                          1 if (d_cov and inc) else 0))
+            d_range, d_cov = d_range and oor, d_cov and inc
+        out[conv_id] = {
+            "warn_range": bool(oor and not d_range),
+            "warn_coverage": bool(inc and not d_cov),
+        }
+    for conv_id, keep_range, keep_cov in stale:
+        try:
+            if keep_range or keep_cov:
+                conn.execute(
+                    "UPDATE udb.conversation_model_flags "
+                    "SET range_dismissed = ?, coverage_dismissed = ? WHERE conversation_id = ?",
+                    (keep_range, keep_cov, conv_id),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM udb.conversation_model_flags WHERE conversation_id = ?",
+                    (conv_id,),
+                )
+        except sqlite3.Error:
+            pass
+    if stale:
+        try:
+            conn.commit()
+        except sqlite3.Error:
+            pass
+    return out
+
+
+def _flagged_conv_ids(conn) -> list[str]:
+    """Every conversation currently showing at least one warning icon."""
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT c.id, c.create_time, c.update_time "
+            "FROM conversations c JOIN udb.conversation_models m ON m.conversation_id = c.id"
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    flags = _compute_conv_flags(conn, [(r["id"], r["create_time"], r["update_time"]) for r in rows])
+    return [cid for cid, f in flags.items() if f["warn_range"] or f["warn_coverage"]]
 
 def _norm_filename(s: str) -> str:
     """Normalize for matching: lowercase + spaces→underscores."""
@@ -216,6 +511,8 @@ def _build_source_index(source_dir):
 class Handler(BaseHTTPRequestHandler):
     db_path = Path("history.db")
 
+    source_dir = Path("source")
+
     def log_message(self, fmt, *args): pass
 
     def handle_one_request(self):
@@ -260,6 +557,12 @@ class Handler(BaseHTTPRequestHandler):
             self._api_folder_create()
         elif path == "/api/folder-items":
             self._api_folder_item_add()
+        elif path == "/api/claude-models":
+            self._api_claude_model_add()
+        elif path == "/api/conversation-models":
+            self._api_conversation_model_add()
+        elif path == "/api/conversation-models/dismiss":
+            self._api_conversation_model_dismiss()
         else:
             self.send_error(404)
 
@@ -275,6 +578,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_folder_update(urllib.parse.unquote(path[len("/api/folders/"):]))
         elif path.startswith("/api/conversation/"):
             self._api_conversation_update(urllib.parse.unquote(path[len("/api/conversation/"):]))
+        elif path.startswith("/api/claude-models/"):
+            self._api_claude_model_update(urllib.parse.unquote(path[len("/api/claude-models/"):]))
         else:
             self.send_error(404)
 
@@ -286,6 +591,14 @@ class Handler(BaseHTTPRequestHandler):
             self._api_tab_remove(urllib.parse.unquote(path[len("/api/tabs/"):]))
         elif path.startswith("/api/folder-items/"):
             self._api_folder_item_remove(urllib.parse.unquote(path[len("/api/folder-items/"):]))
+        elif path.startswith("/api/claude-models/"):
+            self._api_claude_model_remove(urllib.parse.unquote(path[len("/api/claude-models/"):]))
+        elif path.startswith("/api/conversation-models/"):
+            parts = [urllib.parse.unquote(p) for p
+                     in path[len("/api/conversation-models/"):].split("/") if p]
+            if len(parts) != 2:
+                self.send_error(404); return
+            self._api_conversation_model_remove(parts[0], parts[1])
         else:
             self.send_error(404)
 
@@ -386,6 +699,10 @@ class Handler(BaseHTTPRequestHandler):
             self._api_project(urllib.parse.unquote(path[len("/api/project/"):]))
         elif path.startswith("/api/artifact/"):
             self._api_artifact(urllib.parse.unquote(path[len("/api/artifact/"):]))
+        elif path == "/api/claude-models":
+            self._api_claude_models()
+        elif path == "/api/conversation-models":
+            self._api_conversation_models(qs)
         elif path == "/api/preferences":
             self._api_preferences()
         elif path == "/api/pinned":
@@ -580,6 +897,27 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    def _send_conv_list(self, conn, rows, total, offset, limit):
+        """Ship a conversation page, tagged with each row's warning icons.
+
+        unverified_count drives the "Unverified Models" entry in the sidebar
+        filter, which only exists while something is actually flagged.
+        """
+        convs = [dict(r) for r in rows]
+        if self._dataset_format(conn) == "claude":
+            flags = _compute_conv_flags(
+                conn, [(c["id"], c.get("create_time"), c.get("update_time")) for c in convs]
+            )
+            for c in convs:
+                f = flags.get(c["id"])
+                c["warn_range"] = bool(f and f["warn_range"])
+                c["warn_coverage"] = bool(f and f["warn_coverage"])
+            unverified = len(_flagged_conv_ids(conn))
+        else:
+            unverified = 0
+        self.send_json({"conversations": convs, "total": total, "offset": offset,
+                        "limit": limit, "unverified_count": unverified})
+
     def _api_conversations(self, qs):
         limit  = int((qs.get("limit") or ["50"])[0])
         offset = int((qs.get("offset") or ["0"])[0])
@@ -588,6 +926,31 @@ class Handler(BaseHTTPRequestHandler):
         pinned_first = ((qs.get("pinned_first") or ["0"])[0]).strip() in ("1", "true", "yes")
         conn = open_db(self.db_path)
         try:
+            if view == "unverified":
+                flagged = _flagged_conv_ids(conn)
+                if not flagged:
+                    self.send_json({"conversations": [], "total": 0, "offset": offset,
+                                    "limit": limit, "unverified_count": 0})
+                    return
+                marks = ",".join("?" * len(flagged))
+                rows = conn.execute(
+                    "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
+                    "c.create_time, c.update_time, c.message_count, c.preview "
+                    "FROM conversations c "
+                    "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                    f"WHERE c.id IN ({marks}) AND COALESCE(cm.deleted, 0) = 0 "
+                    "ORDER BY c.update_time DESC, c.create_time DESC LIMIT ? OFFSET ?",
+                    (*flagged, limit, offset),
+                ).fetchall()
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM conversations c "
+                    "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                    f"WHERE c.id IN ({marks}) AND COALESCE(cm.deleted, 0) = 0",
+                    tuple(flagged),
+                ).fetchone()[0]
+                self._send_conv_list(conn, rows, total, offset, limit)
+                return
+
             if view == "pinned":
                 rows = conn.execute(
                     "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, c.create_time, c.update_time, c.message_count, c.preview "
@@ -611,8 +974,7 @@ class Handler(BaseHTTPRequestHandler):
                     "WHERE COALESCE(cm.deleted, 0) = 0 "
                     "AND p.conversation_id NOT IN (SELECT conversation_id FROM udb.folder_items)"
                 ).fetchone()[0]
-                self.send_json({"conversations": [dict(r) for r in rows],
-                                "total": total, "offset": offset, "limit": limit})
+                self._send_conv_list(conn, rows, total, offset, limit)
                 return
 
             where_clauses = []
@@ -736,8 +1098,7 @@ class Handler(BaseHTTPRequestHandler):
                     "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                     "WHERE " + where_sql
                 ).fetchone()[0]
-            self.send_json({"conversations": [dict(r) for r in rows],
-                            "total": total, "offset": offset, "limit": limit})
+            self._send_conv_list(conn, rows, total, offset, limit)
         finally:
             conn.close()
 
@@ -772,9 +1133,15 @@ class Handler(BaseHTTPRequestHandler):
                 artifacts_meta = {r["id"]: dict(r) for r in art_rows}
             except Exception:
                 artifacts_meta = {}
+            # The model strip's state rides along with the detail so opening a
+            # conversation stays a single request. None on a ChatGPT export,
+            # where the whole feature is absent.
+            models = (self._conv_model_state(conn, conv_id)
+                      if self._dataset_format(conn) == "claude" else None)
             self.send_json({"conversation": dict(conv),
                             "messages": [parse_msg(m) for m in msgs],
-                            "artifacts": artifacts_meta})
+                            "artifacts": artifacts_meta,
+                            "models": models})
         finally:
             conn.close()
 
@@ -1310,6 +1677,295 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    # ── Claude model availability ────────────────────────────────────────────
+
+    def _dataset_format(self, conn) -> str:
+        """'claude' or 'chatgpt' for the loaded export.
+
+        build_db records this at index time. Databases built before the model
+        feature existed have no record, so sniff the head of the export once
+        and store the answer rather than re-reading a large file every request.
+        """
+        try:
+            row = conn.execute(
+                "SELECT pref_value FROM ui_preferences WHERE pref_key = 'dataset_format'"
+            ).fetchone()
+        except sqlite3.Error:
+            return "claude"
+        if row:
+            try:
+                value = json.loads(row["pref_value"])
+            except Exception:
+                value = row["pref_value"]
+            if value in ("claude", "chatgpt"):
+                return value
+        fmt = "claude"
+        try:
+            with open(Path(self.source_dir) / "conversations.json", encoding="utf-8",
+                      errors="replace") as f:
+                head = f.read(8192)
+            fmt = "claude" if '"chat_messages"' in head else "chatgpt"
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO ui_preferences(pref_key, pref_value) VALUES "
+                "('dataset_format', ?)", (json.dumps(fmt),),
+            )
+            conn.commit()
+        except sqlite3.Error:
+            pass
+        return fmt
+
+    def _model_rows(self, conn):
+        """Every model period, newest model first, a model's own periods newest
+        first inside its group — so a model that returned after a gap keeps its
+        rows together."""
+        try:
+            rows = conn.execute(
+                "SELECT p.id AS period_id, p.model_id, m.name, p.start_date, p.end_date "
+                "FROM udb.claude_model_periods p "
+                "JOIN udb.claude_models m ON m.id = p.model_id"
+            ).fetchall()
+        except sqlite3.Error:
+            return []
+        groups: dict[str, list[dict]] = {}
+        for r in rows:
+            groups.setdefault(r["model_id"], []).append(dict(r))
+        ordered = sorted(
+            groups.values(),
+            key=lambda g: min(p["start_date"] for p in g),
+            reverse=True,
+        )
+        out = []
+        for group in ordered:
+            out.extend(sorted(group, key=lambda p: p["start_date"], reverse=True))
+        return out
+
+    def _api_claude_models(self):
+        conn = open_db(self.db_path)
+        try:
+            self.send_json({"models": self._model_rows(conn),
+                            "format": self._dataset_format(conn)})
+        finally:
+            conn.close()
+
+    def _api_claude_model_add(self):
+        payload = self._read_json_body()
+        name  = str(payload.get("name") or "").strip()
+        start = _norm_date(payload.get("start_date"))
+        end   = _norm_date(payload.get("end_date"))
+        if not name:
+            self.send_json({"error": "Model Name is required"}, 400); return
+        if not start:
+            self.send_json({"error": "Beginning date is required (YYYY-MM-DD)"}, 400); return
+        if end and end <= start:
+            self.send_json({"error": "End date must be after the beginning date"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            # Re-using an existing name adds a second availability window to
+            # that same model rather than creating a duplicate model.
+            row = conn.execute(
+                "SELECT id FROM udb.claude_models WHERE name = ? COLLATE NOCASE", (name,)
+            ).fetchone()
+            now = time.time()
+            model_id = row["id"] if row else uuid.uuid4().hex
+            if not row:
+                conn.execute(
+                    "INSERT INTO udb.claude_models(id, name, created_at) VALUES (?, ?, ?)",
+                    (model_id, name, now),
+                )
+            conn.execute(
+                "INSERT INTO udb.claude_model_periods(id, model_id, start_date, end_date, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (uuid.uuid4().hex, model_id, start, end, now),
+            )
+            conn.commit()
+            self.send_json({"ok": True, "models": self._model_rows(conn)})
+        finally:
+            conn.close()
+
+    def _api_claude_model_update(self, period_id):
+        payload = self._read_json_body()
+        conn = open_db(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT model_id, start_date, end_date FROM udb.claude_model_periods WHERE id = ?",
+                (period_id,),
+            ).fetchone()
+            if not row:
+                self.send_json({"error": "Unknown model row"}, 404); return
+            start, end = row["start_date"], row["end_date"]
+            if "start_date" in payload:
+                start = _norm_date(payload.get("start_date"))
+                if not start:
+                    self.send_json({"error": "Beginning date is required (YYYY-MM-DD)"}, 400); return
+            if "end_date" in payload:
+                raw = str(payload.get("end_date") or "").strip()
+                end = None if not raw else _norm_date(raw)
+                if raw and not end:
+                    self.send_json({"error": "End date must be YYYY-MM-DD"}, 400); return
+            if end and end <= start:
+                self.send_json({"error": "End date must be after the beginning date"}, 400); return
+            if "name" in payload:
+                name = str(payload.get("name") or "").strip()
+                if not name:
+                    self.send_json({"error": "Model Name is required"}, 400); return
+                # The name belongs to the model, so editing it in any row
+                # renames the model and every availability window it has.
+                conn.execute("UPDATE udb.claude_models SET name = ? WHERE id = ?",
+                             (name, row["model_id"]))
+            conn.execute(
+                "UPDATE udb.claude_model_periods SET start_date = ?, end_date = ? WHERE id = ?",
+                (start, end, period_id),
+            )
+            conn.commit()
+            self.send_json({"ok": True, "models": self._model_rows(conn)})
+        finally:
+            conn.close()
+
+    def _api_claude_model_remove(self, period_id):
+        conn = open_db(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT model_id FROM udb.claude_model_periods WHERE id = ?", (period_id,)
+            ).fetchone()
+            if not row:
+                self.send_json({"error": "Unknown model row"}, 404); return
+            conn.execute("DELETE FROM udb.claude_model_periods WHERE id = ?", (period_id,))
+            # Dropping a model's last window drops the model, and with it any
+            # conversation that pointed at it.
+            left = conn.execute(
+                "SELECT COUNT(*) FROM udb.claude_model_periods WHERE model_id = ?",
+                (row["model_id"],),
+            ).fetchone()[0]
+            if not left:
+                conn.execute("DELETE FROM udb.claude_models WHERE id = ?", (row["model_id"],))
+                conn.execute("DELETE FROM udb.conversation_models WHERE model_id = ?",
+                             (row["model_id"],))
+            conn.commit()
+            self.send_json({"ok": True, "models": self._model_rows(conn)})
+        finally:
+            conn.close()
+
+    def _conv_model_state(self, conn, conv_id):
+        """Selected models, the models still offerable for this conversation,
+        and the two warning states — everything the header strip needs."""
+        conv = conn.execute(
+            "SELECT create_time, update_time FROM conversations WHERE id = ?", (conv_id,)
+        ).fetchone()
+        if not conv:
+            return None
+        first_day, last_day = _conv_date_range(conv["create_time"], conv["update_time"])
+        rows = self._model_rows(conn)
+        by_model: dict[str, dict] = {}
+        for r in rows:
+            entry = by_model.setdefault(
+                r["model_id"], {"model_id": r["model_id"], "name": r["name"], "periods": []}
+            )
+            entry["periods"].append((r["start_date"], r["end_date"]))
+        chosen = [
+            r["model_id"] for r in conn.execute(
+                "SELECT model_id FROM udb.conversation_models WHERE conversation_id = ? "
+                "ORDER BY added_at", (conv_id,)
+            ).fetchall()
+        ]
+        chosen = [mid for mid in chosen if mid in by_model]
+        selected = [{"model_id": mid, "name": by_model[mid]["name"]} for mid in chosen]
+        # Offer only models whose availability overlaps the conversation, and
+        # never one that is already selected.
+        available = []
+        if first_day:
+            for entry in by_model.values():
+                if entry["model_id"] in chosen:
+                    continue
+                if any(_period_overlaps(s, e, first_day, last_day) for s, e in entry["periods"]):
+                    available.append({"model_id": entry["model_id"], "name": entry["name"]})
+        flags = _compute_conv_flags(
+            conn, [(conv_id, conv["create_time"], conv["update_time"])]
+        ).get(conv_id, {"warn_range": False, "warn_coverage": False})
+        return {
+            "selected": selected,
+            "available": available,
+            "warn_range": flags["warn_range"],
+            "warn_coverage": flags["warn_coverage"],
+        }
+
+    def _api_conversation_models(self, qs):
+        conv_id = ((qs.get("conv_id") or [""])[0]).strip()
+        conn = open_db(self.db_path)
+        try:
+            state = self._conv_model_state(conn, conv_id)
+            if state is None:
+                self.send_json({"error": "Unknown conversation"}, 404); return
+            self.send_json(state)
+        finally:
+            conn.close()
+
+    def _api_conversation_model_add(self):
+        payload = self._read_json_body()
+        conv_id  = str(payload.get("conv_id") or "").strip()
+        model_id = str(payload.get("model_id") or "").strip()
+        if not conv_id or not model_id:
+            self.send_json({"error": "conv_id and model_id are required"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            if not conn.execute("SELECT 1 FROM udb.claude_models WHERE id = ?",
+                                (model_id,)).fetchone():
+                self.send_json({"error": "Unknown model"}, 404); return
+            conn.execute(
+                "INSERT OR IGNORE INTO udb.conversation_models(conversation_id, model_id, added_at) "
+                "VALUES (?, ?, ?)", (conv_id, model_id, time.time()),
+            )
+            conn.commit()
+            state = self._conv_model_state(conn, conv_id)
+            if state is None:
+                self.send_json({"error": "Unknown conversation"}, 404); return
+            self.send_json(state)
+        finally:
+            conn.close()
+
+    def _api_conversation_model_remove(self, conv_id, model_id):
+        conn = open_db(self.db_path)
+        try:
+            conn.execute(
+                "DELETE FROM udb.conversation_models WHERE conversation_id = ? AND model_id = ?",
+                (conv_id, model_id),
+            )
+            conn.commit()
+            state = self._conv_model_state(conn, conv_id)
+            if state is None:
+                self.send_json({"error": "Unknown conversation"}, 404); return
+            self.send_json(state)
+        finally:
+            conn.close()
+
+    def _api_conversation_model_dismiss(self):
+        payload = self._read_json_body()
+        conv_id = str(payload.get("conv_id") or "").strip()
+        kind    = str(payload.get("kind") or "").strip()
+        if not conv_id or kind not in ("range", "coverage"):
+            self.send_json({"error": "conv_id and kind ('range'|'coverage') are required"}, 400)
+            return
+        column = "range_dismissed" if kind == "range" else "coverage_dismissed"
+        conn = open_db(self.db_path)
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO udb.conversation_model_flags(conversation_id) VALUES (?)",
+                (conv_id,),
+            )
+            conn.execute(
+                f"UPDATE udb.conversation_model_flags SET {column} = 1 WHERE conversation_id = ?",
+                (conv_id,),
+            )
+            conn.commit()
+            state = self._conv_model_state(conn, conv_id)
+            if state is None:
+                self.send_json({"error": "Unknown conversation"}, 404); return
+            self.send_json(state)
+        finally:
+            conn.close()
+
     def _api_preferences(self):
         conn = open_db(self.db_path)
         try:
@@ -1523,6 +2179,7 @@ def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source")):
     _ensure_userdata_schema(db_path)
     _build_source_index(source_dir)
     Handler.db_path = db_path
+    Handler.source_dir = source_dir
     # ThreadingHTTPServer: handle each request on its own thread so one slow or
     # idle connection (e.g. a browser preconnect socket, or an aborted fetch)
     # can never block every other request. This is the fix for the UI hanging

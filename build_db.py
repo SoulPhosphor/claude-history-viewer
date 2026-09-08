@@ -876,6 +876,12 @@ def build(source: Path, db_path: Path) -> None:
 
     db = sqlite3.connect(db_path)
     db.executescript(SCHEMA)
+    # Recorded so the server can tell a Claude export from a ChatGPT one
+    # without re-parsing the source file. Claude-only UI keys off this.
+    db.execute(
+        "INSERT OR REPLACE INTO ui_preferences(pref_key, pref_value) VALUES ('dataset_format', ?)",
+        (json.dumps(fmt),),
+    )
 
     # ── Pass 1: import every top-level conversation (never drop) ───────────────
     records: list[dict] = []
