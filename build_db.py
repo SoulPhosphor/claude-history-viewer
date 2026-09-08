@@ -558,6 +558,12 @@ def _claude_meta(conv: dict, cid: str, msgs: list, status: str) -> dict:
         "message_count": len(msgs),
         "preview":       preview,
         "import_status": status,
+        "source":        "claude",
+        # Preserve the original Claude UUID exactly (None only for synthetic IDs).
+        "source_conversation_id": (str(conv.get("uuid")).strip() or None) if conv.get("uuid") else None,
+        # Claude has no Custom-GPT concept.
+        "gizmo_id":   None,
+        "gizmo_type": None,
     }
 
 
@@ -614,84 +620,331 @@ def import_claude_conversation(conv: dict, index: int) -> dict:
     }
 
 
-# ── Thread extraction ─────────────────────────────────────────────────────────
+# ── ChatGPT mapping-graph parser ──────────────────────────────────────────────
+#
+# ChatGPT exports store every message as a node in `mapping`, a tree linked by
+# `parent`/`children`, with `current_node` pointing at the leaf of the active
+# path. The tree preserves *all* branches:
+#
+#   • assistant rerolls  → a USER node with several assistant-child chains
+#   • edited user turns  → an assistant-final (or root) node with several USER
+#                          children
+#
+# A single assistant answer can itself be a *chain* of nodes
+# (thoughts → tool/commentary → reasoning_recap → final text). We treat that
+# whole chain as one response variant: the visible final text becomes the body,
+# the thoughts/recap become the collapsible "Thinking" content, and the model /
+# timestamp come from the visible answer node.
+#
+# We keep the active branch as the initially-displayed one and expose the
+# alternatives through `siblings`, so the viewer can navigate rerolls and edits
+# without the database throwing any branch away.
+
+# Content types that carry user-presentable reasoning ("Thinking").
+CHATGPT_THINKING_TYPES = frozenset({"thoughts", "reasoning_recap"})
+
+# Roles that continue an assistant response chain (never shown on their own, but
+# walked so a chain like thoughts → tool → final stays connected).
+CHATGPT_CHAIN_ROLES = frozenset({"assistant", "tool", "system"})
 
 
-def extract_thread(mapping: dict, current_node: str) -> list:
+def _cg_role(mapping: dict, node_id: str) -> str:
+    node = mapping.get(node_id) or {}
+    msg = node.get("message") or {}
+    return ((msg.get("author") or {}).get("role") or "")
+
+
+def _cg_hidden(msg: dict) -> bool:
+    md = msg.get("metadata") or {}
+    return bool(md.get("is_visually_hidden_from_conversation"))
+
+
+def _cg_thinking_text(content: dict) -> str:
+    """Extract displayable reasoning text from a thoughts/reasoning_recap block."""
+    ct = (content or {}).get("content_type")
+    if ct == "thoughts":
+        chunks = []
+        for t in content.get("thoughts") or []:
+            if not isinstance(t, dict):
+                continue
+            summary = (t.get("summary") or "").strip()
+            body = (t.get("content") or "").strip()
+            if summary and body:
+                chunks.append(f"**{summary}**\n\n{body}")
+            elif summary or body:
+                chunks.append(summary or body)
+        return "\n\n".join(chunks).strip()
+    if ct == "reasoning_recap":
+        return (content.get("content") or "").strip()
+    return ""
+
+
+def _cg_attachments(msg: dict) -> list:
     """
-    Walk from current_node back to root via parent pointers.
-    Returns messages in chronological order (root → leaf).
-    Handles the branching case: current_node always points to the
-    last message of the active branch.
+    Preserve image/file references attached to a ChatGPT message.
+
+    We keep the exported asset ID and the original filename so a media directory
+    can be attached later. Missing physical files never abort the import; the
+    reference is stored regardless of whether it currently resolves.
     """
-    path, seen = [], set()
-    node_id = current_node
-    while node_id and node_id in mapping and node_id not in seen:
-        seen.add(node_id)
-        node = mapping[node_id]
-        if node.get("message"):
-            path.append(node["message"])
-        node_id = node.get("parent")
-    path.reverse()
-    return path
-
-
-# ── Per-conversation parser ───────────────────────────────────────────────────
-
-
-def parse_conversation(conv: dict):
-    """
-    Returns (meta_dict, message_list) or (None, []) when the
-    conversation has no usable messages.
-    """
-    cid = conv.get("id") or conv.get("conversation_id")
-    if not cid:
-        return None, []
-
-    mapping     = conv.get("mapping") or {}
-    current_node = conv.get("current_node")
-    if not current_node:
-        return None, []
-
-    thread = extract_thread(mapping, current_node)
-
-    msgs = []
-    for seq, msg in enumerate(thread):
-        role = (msg.get("author") or {}).get("role", "")
-        if role in SKIP_ROLES:
+    md = msg.get("metadata") or {}
+    out = []
+    for a in md.get("attachments") or []:
+        if not isinstance(a, dict):
             continue
+        name = (a.get("name") or "").strip()
+        asset_id = (a.get("id") or "").strip()
+        mime = (a.get("mime_type") or a.get("mimeType") or "").strip()
+        if "." in name:
+            ext = name.rsplit(".", 1)[-1].lower()
+        elif "/" in mime:
+            ext = mime.split("/")[-1].lower()
+        else:
+            ext = ""
+        out.append({
+            "name": name or asset_id or "file",
+            "type": ext or "file",
+            "content": "",
+            "uuid": asset_id,   # exported asset id → future /source/<id> lookup
+        })
+    return out
+
+
+def _cg_pick_active(active_ids: set, child_ids: list) -> str | None:
+    """Return the child on the active path, else the last child (newest)."""
+    for c in child_ids:
+        if c in active_ids:
+            return c
+    return child_ids[-1] if child_ids else None
+
+
+def _cg_collect_variant(mapping: dict, active_ids: set, root_id: str) -> dict:
+    """
+    Walk one assistant response chain starting at `root_id`.
+
+    Returns a variant dict:
+        {content, thinking, model, create_time, attachments, tail}
+    where `tail` is the last node of the chain (whose children are the next
+    user turn). Non-active chains follow their own newest child.
+    """
+    body_parts: list[str] = []
+    think_parts: list[str] = []
+    attachments: list = []
+    model = None
+    create_time = None
+    visited: list[str] = []
+
+    nid = root_id
+    guard = 0
+    while nid and nid in mapping and guard < 500:
+        guard += 1
+        visited.append(nid)
+        msg = mapping[nid].get("message") or {}
+        role = (msg.get("author") or {}).get("role") or ""
         content = msg.get("content") or {}
-        if content.get("content_type") in SKIP_CONTENT_TYPES:
-            continue
-        text = message_text(content)
-        if not text:
-            continue
-        msgs.append({
+        ct = content.get("content_type")
+
+        if role == "assistant":
+            if ct in CHATGPT_THINKING_TYPES:
+                tt = _cg_thinking_text(content)
+                if tt:
+                    think_parts.append(tt)
+            elif ct in ("text", "multimodal_text") and not _cg_hidden(msg):
+                bt = message_text(content)
+                if bt:
+                    body_parts.append(bt)
+                m = (msg.get("metadata") or {}).get("model_slug")
+                if m:
+                    model = m          # last visible answer wins
+                if msg.get("create_time"):
+                    create_time = msg.get("create_time")
+                attachments.extend(_cg_attachments(msg))
+            # code / tool-plumbing content types are intentionally dropped here.
+
+        # Advance along the chain: only assistant/tool/system children continue
+        # this response. Any user children mark the next turn and stop the chain.
+        kids = mapping[nid].get("children") or []
+        chain_kids = [k for k in kids if _cg_role(mapping, k) in CHATGPT_CHAIN_ROLES]
+        if not chain_kids:
+            break
+        nxt = _cg_pick_active(active_ids, chain_kids)
+        if nxt is None or nxt in visited:
+            break
+        nid = nxt
+
+    # Backfill model / timestamp from any node in the chain if the visible answer
+    # did not carry them (e.g. an interrupted or unusual response).
+    if model is None or create_time is None:
+        for pid in visited:
+            pm = mapping[pid].get("message") or {}
+            if model is None:
+                mm = (pm.get("metadata") or {}).get("model_slug")
+                if mm:
+                    model = mm
+            if create_time is None and pm.get("create_time"):
+                create_time = pm.get("create_time")
+
+    return {
+        "content": "\n\n".join(body_parts).strip(),
+        "thinking": "\n\n".join(think_parts).strip(),
+        "model": model,
+        "create_time": create_time,
+        "attachments": attachments,
+        "tail": visited[-1] if visited else root_id,
+    }
+
+
+def _cg_user_parts(mapping: dict, node_id: str) -> tuple[str, list]:
+    msg = mapping[node_id].get("message") or {}
+    content = msg.get("content") or {}
+    return message_text(content), _cg_attachments(msg)
+
+
+def parse_chatgpt_conversation(conv: dict, cid: str) -> list:
+    """
+    Parse one ChatGPT conversation's mapping graph into ordered display rows,
+    preserving assistant rerolls and edited-user-message branches.
+    """
+    mapping = conv.get("mapping") or {}
+    current_node = conv.get("current_node")
+    if not mapping or not current_node or current_node not in mapping:
+        return []
+
+    # Active-path node IDs (current_node → root).
+    active_ids: set = set()
+    nid = current_node
+    guard = 0
+    while nid and nid in mapping and nid not in active_ids and guard < 20000:
+        guard += 1
+        active_ids.add(nid)
+        nid = mapping[nid].get("parent")
+
+    # Topmost node (root) of the active path.
+    root_id = current_node
+    guard = 0
+    while guard < 20000:
+        guard += 1
+        p = mapping[root_id].get("parent")
+        if p and p in mapping:
+            root_id = p
+        else:
+            break
+
+    rows: list = []
+    seq = 0
+
+    def add_row(role, content, create_time, *, attachments=None, siblings=None,
+                branch_index=1, meta=None):
+        nonlocal seq
+        rows.append({
             "conversation_id": cid,
             "role":            role,
-            "content":         text,
-            "attachments":     None,
-            "siblings":        None,
-            "branch_index":    1,
-            "create_time":     msg.get("create_time") or 0,
+            "content":         content,
+            "attachments":     json.dumps(attachments, ensure_ascii=False) if attachments else None,
+            "artifact_ids":    None,
+            "siblings":        json.dumps(siblings, ensure_ascii=False) if siblings else None,
+            "branch_index":    branch_index,
+            "create_time":     create_time or 0,
             "seq":             seq,
+            "meta":            json.dumps(meta, ensure_ascii=False) if meta else None,
         })
+        seq += 1
 
-    if not msgs:
-        return None, []
+    cursor = root_id
+    seen_cursors: set = set()
+    guard = 0
+    while cursor is not None and guard < 10000:
+        guard += 1
+        if cursor in seen_cursors:
+            break
+        seen_cursors.add(cursor)
 
-    preview = next(
-        (m["content"][:300] for m in msgs if m["role"] == "user"), ""
-    )
-    meta = {
-        "id":            cid,
-        "title":         (conv.get("title") or "Untitled").strip(),
-        "create_time":   conv.get("create_time") or 0,
-        "update_time":   conv.get("update_time") or 0,
-        "message_count": len(msgs),
-        "preview":       preview,
-    }
-    return meta, msgs
+        node = mapping.get(cursor)
+        if not node:
+            break
+        kids = node.get("children") or []
+        user_kids = [k for k in kids if _cg_role(mapping, k) == "user"]
+
+        if not user_kids:
+            # No further user turn on this path — the conversation ends here.
+            break
+
+        active_user = _cg_pick_active(active_ids, user_kids)
+        u_idx = user_kids.index(active_user) if active_user in user_kids else 0
+
+        # ── User turn (with edited-message branches) ─────────────────────────
+        u_text, u_atts = _cg_user_parts(mapping, active_user)
+        u_meta = {"source": "chatgpt"}
+        u_siblings = None
+        if len(user_kids) > 1:
+            u_siblings = []
+            for uid in user_kids:
+                st, sa = _cg_user_parts(mapping, uid)
+                # Paired assistant answer for this user edit (its active reroll).
+                a_kids = [k for k in (mapping[uid].get("children") or [])
+                          if _cg_role(mapping, k) in CHATGPT_CHAIN_ROLES]
+                asst_content = ""
+                asst_meta = None
+                if a_kids:
+                    av = _cg_collect_variant(
+                        mapping, active_ids, _cg_pick_active(active_ids, a_kids))
+                    asst_content = av["content"]
+                    asst_meta = {"source": "chatgpt", "model": av["model"],
+                                 "create_time": av["create_time"],
+                                 "thinking": av["thinking"]}
+                u_siblings.append({
+                    "content": st,
+                    "attachments": sa,
+                    "asst_content": asst_content,
+                    "asst_meta": asst_meta,
+                })
+        if u_text or u_atts or u_siblings:
+            add_row("user", u_text,
+                    (mapping[active_user].get("message") or {}).get("create_time"),
+                    attachments=u_atts or None, siblings=u_siblings,
+                    branch_index=u_idx + 1, meta=u_meta)
+
+        # ── Assistant turn (with rerolls) ────────────────────────────────────
+        asst_kids = [k for k in (mapping[active_user].get("children") or [])
+                     if _cg_role(mapping, k) in CHATGPT_CHAIN_ROLES]
+        if not asst_kids:
+            # User turn with no answer (e.g. last message). Advance to any user
+            # continuation directly beneath it, else stop.
+            cursor = active_user
+            continue
+
+        variants = [_cg_collect_variant(mapping, active_ids, k) for k in asst_kids]
+        a_idx = 0
+        for i, k in enumerate(asst_kids):
+            if k in active_ids:
+                a_idx = i
+                break
+        active_variant = variants[a_idx]
+
+        a_meta = {
+            "source": "chatgpt",
+            "model": active_variant["model"],
+            "thinking": active_variant["thinking"],
+        }
+        a_siblings = None
+        if len(variants) > 1:
+            a_siblings = [{
+                "content": v["content"],
+                "model": v["model"],
+                "create_time": v["create_time"],
+                "thinking": v["thinking"],
+                "attachments": v["attachments"],
+            } for v in variants]
+
+        if active_variant["content"] or active_variant["attachments"] or active_variant["thinking"]:
+            add_row("assistant", active_variant["content"],
+                    active_variant["create_time"],
+                    attachments=active_variant["attachments"] or None,
+                    siblings=a_siblings, branch_index=a_idx + 1, meta=a_meta)
+
+        cursor = active_variant["tail"]
+
+    return rows
 
 
 def import_chatgpt_conversation(conv: dict, index: int) -> dict:
@@ -703,7 +956,7 @@ def import_chatgpt_conversation(conv: dict, index: int) -> dict:
     """
     raw_id = conv.get("id") or conv.get("conversation_id")
     if raw_id and str(raw_id).strip():
-        cid = str(raw_id).strip()
+        cid = str(raw_id).strip()          # preserve the real ChatGPT ID exactly
         synthetic = False
     else:
         cid = _synthetic_id(conv)
@@ -712,10 +965,8 @@ def import_chatgpt_conversation(conv: dict, index: int) -> dict:
     error = None
     msgs = []
     try:
-        _meta, parsed = parse_conversation(conv)
+        parsed = parse_chatgpt_conversation(conv, cid)
         if parsed:
-            for m in parsed:
-                m["conversation_id"] = cid
             msgs, status = parsed, "normal"
         else:
             status = "metadata_only"
@@ -735,6 +986,14 @@ def import_chatgpt_conversation(conv: dict, index: int) -> dict:
         "message_count": len(msgs),
         "preview":       preview,
         "import_status": status,
+        "source":        "chatgpt",
+        # Preserve the original ChatGPT conversation ID exactly (None only when a
+        # malformed record forced a synthetic fallback ID).
+        "source_conversation_id": (str(raw_id).strip() or None) if raw_id else None,
+        # Custom GPT identity, preserved exactly. gizmo_type distinguishes user
+        # GPTs ('gpt') from OpenAI's built-in personalities ('snorlax').
+        "gizmo_id":   (str(conv.get("gizmo_id")).strip() or None) if conv.get("gizmo_id") else None,
+        "gizmo_type": (str(conv.get("gizmo_type")).strip() or None) if conv.get("gizmo_type") else None,
     }
     return {
         "meta":      meta,
@@ -769,7 +1028,19 @@ CREATE TABLE conversations (
     message_count INTEGER,
     preview       TEXT,
     import_status TEXT DEFAULT 'normal',
-    source_index  INTEGER
+    source_index  INTEGER,
+    -- 'claude' or 'chatgpt'. The two histories stay clearly separated in the UI;
+    -- (source, source_conversation_id) is the real conversation identity.
+    source        TEXT DEFAULT 'claude',
+    -- The original conversation ID exactly as it appeared in the source export,
+    -- preserved unchanged even when `id` had to be a synthetic fallback.
+    source_conversation_id TEXT,
+    -- ChatGPT Custom GPT ("gizmo") identity, preserved exactly from the export.
+    -- One persona per conversation. Human-readable names are NOT stored here —
+    -- they live in userdata.db keyed by gizmo_id so they survive rebuilds and a
+    -- single rename applies to every conversation with the same gizmo.
+    gizmo_id      TEXT,
+    gizmo_type    TEXT
 );
 
 CREATE TABLE conversation_meta (
@@ -814,7 +1085,12 @@ CREATE TABLE messages (
     siblings        TEXT,
     branch_index    INTEGER DEFAULT 1,
     create_time     REAL,
-    seq             INTEGER
+    seq             INTEGER,
+    -- Per-message extra display metadata as JSON. For ChatGPT assistant
+    -- responses this carries {source:'chatgpt', model, thinking}; for reroll
+    -- variants the same fields are repeated inside `siblings`. NULL for plain
+    -- Claude messages.
+    meta            TEXT
 );
 
 CREATE INDEX idx_msg_conv ON messages (conversation_id, seq);
@@ -865,46 +1141,103 @@ CREATE TABLE artifacts (
 # ── Build ─────────────────────────────────────────────────────────────────────
 
 
-def build(source: Path, db_path: Path) -> None:
-    print(f"Loading {source} …", flush=True)
-    with open(source, encoding="utf-8") as f:
-        data = json.load(f)
+def discover_sources(primary: Path) -> list[Path]:
+    """
+    Return every conversation-export file to import, so one database can hold
+    both a Claude and a ChatGPT history.
 
-    fmt   = detect_format(data)
-    total = len(data)
-    print(f"{total} conversations found ({fmt} format). Indexing…", flush=True)
+    Always includes `primary` (usually source/conversations.json) when it
+    exists, plus conventional secondary locations for the *other* provider:
+
+        source/chatgpt/conversations.json   source/chatgpt.json
+        source/claude/conversations.json    source/claude.json
+
+    The format of each file is detected from its contents, so it does not matter
+    which provider a given file holds.
+    """
+    found: list[Path] = []
+    seen: set = set()
+
+    def add(p: Path) -> None:
+        try:
+            rp = p.resolve()
+        except OSError:
+            return
+        if p.exists() and p.is_file() and rp not in seen:
+            seen.add(rp)
+            found.append(p)
+
+    add(primary)
+    base = primary.parent if primary.parent.name else Path("source")
+    for extra in (
+        base / "chatgpt" / "conversations.json",
+        base / "chatgpt.json",
+        base / "chatgpt_conversations.json",
+        base / "claude" / "conversations.json",
+        base / "claude.json",
+        base / "claude_conversations.json",
+    ):
+        add(extra)
+    return found
+
+
+def build(source, db_path: Path) -> None:
+    # `source` may be a single Path (back-compat) or an explicit list of Paths.
+    if isinstance(source, (list, tuple)):
+        sources = [Path(s) for s in source]
+    else:
+        sources = discover_sources(Path(source))
+    if not sources:
+        sources = [Path(source)]
 
     db = sqlite3.connect(db_path)
     db.executescript(SCHEMA)
 
-    # ── Pass 1: import every top-level conversation (never drop) ───────────────
+    # ── Pass 1: import every top-level conversation from every source ──────────
+    # A single global index keeps source_index unique across files so the audit
+    # can trace any DB row back to its exact source entry.
     records: list[dict] = []
-    for i, conv in enumerate(data):
-        if i % 100 == 0:
-            sys.stderr.write(f"\r  {i:>5}/{total}")
-            sys.stderr.flush()
+    total = 0
+    gi = 0  # global running index across all source files
+    for src in sources:
+        print(f"Loading {src} …", flush=True)
+        with open(src, encoding="utf-8") as f:
+            data = json.load(f)
+        fmt = detect_format(data)
+        n = len(data)
+        total += n
+        print(f"  {n} conversations found ({fmt} format). Indexing…", flush=True)
 
-        if not isinstance(conv, dict):
-            # Even a malformed top-level entry is accounted for, not dropped.
-            records.append({
-                "meta": {
-                    "id": _synthetic_id({"__raw__": repr(conv), "__index__": i}),
-                    "title": "Untitled", "create_time": 0, "update_time": 0,
-                    "message_count": 0, "preview": "", "import_status": "parse_error",
-                },
-                "msgs": [], "artifacts": [], "status": "parse_error",
-                "synthetic": True,
-                "error": f"top-level entry is {type(conv).__name__}, not an object",
-                "index": i,
-            })
-            continue
+        for j, conv in enumerate(data):
+            if j % 100 == 0:
+                sys.stderr.write(f"\r  {j:>5}/{n}")
+                sys.stderr.flush()
+            i = gi
+            gi += 1
 
-        if fmt == "claude":
-            records.append(import_claude_conversation(conv, i))
-        else:
-            records.append(import_chatgpt_conversation(conv, i))
+            if not isinstance(conv, dict):
+                # Even a malformed top-level entry is accounted for, not dropped.
+                records.append({
+                    "meta": {
+                        "id": _synthetic_id({"__raw__": repr(conv), "__index__": i}),
+                        "title": "Untitled", "create_time": 0, "update_time": 0,
+                        "message_count": 0, "preview": "", "import_status": "parse_error",
+                        "source": fmt, "source_conversation_id": None,
+                        "gizmo_id": None, "gizmo_type": None,
+                    },
+                    "msgs": [], "artifacts": [], "status": "parse_error",
+                    "synthetic": True,
+                    "error": f"top-level entry is {type(conv).__name__}, not an object",
+                    "index": i,
+                })
+                continue
 
-    sys.stderr.write(f"\r  {total}/{total}\n")
+            if fmt == "claude":
+                records.append(import_claude_conversation(conv, i))
+            else:
+                records.append(import_chatgpt_conversation(conv, i))
+
+        sys.stderr.write(f"\r  {n}/{n}\n")
 
     # ── Pass 2: collapse only genuine exact-duplicate IDs, keeping the record
     #            with the most recovered messages (tie → earliest source index).
@@ -933,14 +1266,14 @@ def build(source: Path, db_path: Path) -> None:
 
     db.executemany(
         "INSERT OR REPLACE INTO conversations "
-        "(id, title, create_time, update_time, message_count, preview, import_status, source_index) "
-        "VALUES (:id, :title, :create_time, :update_time, :message_count, :preview, :import_status, :source_index)",
+        "(id, title, create_time, update_time, message_count, preview, import_status, source_index, source, source_conversation_id, gizmo_id, gizmo_type) "
+        "VALUES (:id, :title, :create_time, :update_time, :message_count, :preview, :import_status, :source_index, :source, :source_conversation_id, :gizmo_id, :gizmo_type)",
         conv_rows,
     )
     db.executemany(
-        "INSERT INTO messages (conversation_id, role, content, attachments, artifact_ids, siblings, branch_index, create_time, seq) "
-        "VALUES (:conversation_id, :role, :content, :attachments, :artifact_ids, :siblings, :branch_index, :create_time, :seq)",
-        [{**m, "artifact_ids": m.get("artifact_ids")} for m in msg_rows],
+        "INSERT INTO messages (conversation_id, role, content, attachments, artifact_ids, siblings, branch_index, create_time, seq, meta) "
+        "VALUES (:conversation_id, :role, :content, :attachments, :artifact_ids, :siblings, :branch_index, :create_time, :seq, :meta)",
+        [{**m, "artifact_ids": m.get("artifact_ids"), "meta": m.get("meta")} for m in msg_rows],
     )
     db.executemany("INSERT INTO search_index VALUES (?, ?, ?)", fts_rows)
 
@@ -959,7 +1292,9 @@ def build(source: Path, db_path: Path) -> None:
     print(f"Artifacts indexed: {len(unique_artifacts)}")
 
     # ── Memories ──────────────────────────────────────────────────────────────
-    memories_path = source.parent / "memories.json"
+    # Memories/projects live beside the primary export (the first source file).
+    base_dir = sources[0].parent
+    memories_path = base_dir / "memories.json"
     if memories_path.exists():
         with open(memories_path, encoding="utf-8") as f:
             memories_data = json.load(f)

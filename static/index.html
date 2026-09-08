@@ -26,6 +26,30 @@
               ☰
             </button>
           </div>
+          <div
+            id="source-switcher"
+            class="source-switcher"
+            role="tablist"
+            aria-label="Conversation source"
+            hidden
+          >
+            <button
+              class="source-tab active"
+              data-source="claude"
+              role="tab"
+              aria-selected="true"
+            >
+              Claude
+            </button>
+            <button
+              class="source-tab"
+              data-source="chatgpt"
+              role="tab"
+              aria-selected="false"
+            >
+              ChatGPT
+            </button>
+          </div>
           <div class="search-wrap">
             <svg
               class="search-icon"
@@ -215,6 +239,14 @@
         <button
           class="sidebar-menu-item"
           role="menuitem"
+          data-action="gizmos"
+        >
+          <span class="sidebar-menu-item-icon" aria-hidden="true">🤖</span>
+          <span class="sidebar-menu-item-label">Custom GPTs</span>
+        </button>
+        <button
+          class="sidebar-menu-item"
+          role="menuitem"
           data-action="import-audit"
         >
           <span class="sidebar-menu-item-icon" aria-hidden="true">📋</span>
@@ -377,6 +409,17 @@
             </div>
           </div>
           <div id="import-audit-content"></div>
+        </div>
+
+        <div id="gizmos-panel" hidden>
+          <div class="thread-header">
+            <h2>Custom GPTs</h2>
+            <div id="gizmos-meta">
+              Name your ChatGPT Custom GPTs — a name applies to every
+              conversation with that GPT and is kept when you re-import.
+            </div>
+          </div>
+          <div id="gizmos-content"></div>
         </div>
 
         <div id="att-report-panel" hidden>

@@ -110,17 +110,29 @@ def _ensure_runtime_schema(db_path: Path) -> None:
         for col_sql in (
             "ALTER TABLE conversations ADD COLUMN import_status TEXT DEFAULT 'normal'",
             "ALTER TABLE conversations ADD COLUMN source_index INTEGER",
+            # Source separation columns. Old databases predate them; default to
+            # 'claude' so existing single-source installs keep working unchanged.
+            "ALTER TABLE conversations ADD COLUMN source TEXT DEFAULT 'claude'",
+            "ALTER TABLE conversations ADD COLUMN source_conversation_id TEXT",
+            # ChatGPT Custom GPT ("gizmo") identity.
+            "ALTER TABLE conversations ADD COLUMN gizmo_id TEXT",
+            "ALTER TABLE conversations ADD COLUMN gizmo_type TEXT",
+            # Per-message ChatGPT display metadata (model, thinking).
+            "ALTER TABLE messages ADD COLUMN meta TEXT",
         ):
             try:
                 conn.execute(col_sql)
             except sqlite3.Error:
                 pass
-        try:
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_conv_status ON conversations (import_status)"
-            )
-        except sqlite3.Error:
-            pass
+        for idx_sql2 in (
+            "CREATE INDEX IF NOT EXISTS idx_conv_status ON conversations (import_status)",
+            "CREATE INDEX IF NOT EXISTS idx_conv_source ON conversations (source)",
+            "CREATE INDEX IF NOT EXISTS idx_conv_gizmo ON conversations (gizmo_id)",
+        ):
+            try:
+                conn.execute(idx_sql2)
+            except sqlite3.Error:
+                pass
         conn.execute(
             "UPDATE conversation_meta SET custom_title = NULL WHERE TRIM(COALESCE(custom_title, '')) = ''"
         )
@@ -166,6 +178,15 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 pinned          INTEGER DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_folder_items_folder ON folder_items (folder_id);
+            -- User-assigned display names for ChatGPT Custom GPTs, keyed by the
+            -- stable gizmo_id. Kept here (not in history.db) so a name survives
+            -- rebuilds/re-imports and applies to every conversation with that
+            -- gizmo. Never written by the importer.
+            CREATE TABLE IF NOT EXISTS gizmo_names (
+                gizmo_id     TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                updated_at   REAL
+            );
             """
         )
         conn.commit()
@@ -250,6 +271,9 @@ class Handler(BaseHTTPRequestHandler):
         _, path = self._request_target()
         if path == "/api/upload-file":
             self._api_upload_file()
+        elif path.startswith("/api/gizmos/") and path.endswith("/folder"):
+            gid = urllib.parse.unquote(path[len("/api/gizmos/"):-len("/folder")])
+            self._api_gizmo_move_to_folder(gid)
         elif path == "/api/pinned":
             self._api_pinned_add()
         elif path == "/api/pinned/reorder":
@@ -267,6 +291,8 @@ class Handler(BaseHTTPRequestHandler):
         _, path = self._request_target()
         if path == "/api/preferences":
             self._api_preferences_update()
+        elif path.startswith("/api/gizmos/"):
+            self._api_gizmo_rename(urllib.parse.unquote(path[len("/api/gizmos/"):]))
         elif path.startswith("/api/tabs/"):
             self._api_tab_update(urllib.parse.unquote(path[len("/api/tabs/"):]))
         elif path.startswith("/api/folder-items/"):
@@ -364,6 +390,10 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_file(static_dir / "app.js")
         elif path in ("/style.css", "/static/style.css"):
             self._serve_file(static_dir / "style.css")
+        elif path == "/api/sources":
+            self._api_sources()
+        elif path == "/api/gizmos":
+            self._api_gizmos_list()
         elif path == "/api/conversations":
             self._api_conversations(qs)
         elif path.startswith("/api/conversation/"):
@@ -377,7 +407,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/import-audit":
             self._api_import_audit(qs)
         elif path == "/api/folders":
-            self._api_folders_list()
+            self._api_folders_list(qs)
         elif path == "/api/memories":
             self._api_memories()
         elif path == "/api/projects":
@@ -580,12 +610,169 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    def _api_sources(self):
+        """Report how many conversations exist per source and a sensible default.
+
+        Drives the Claude / ChatGPT selector: the UI only offers a source that
+        actually has data, and defaults to Claude when both are present.
+        """
+        conn = open_db(self.db_path)
+        try:
+            counts = {"claude": 0, "chatgpt": 0}
+            try:
+                for r in conn.execute(
+                    "SELECT COALESCE(source, 'claude') AS s, COUNT(*) AS n "
+                    "FROM conversations c "
+                    "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                    "WHERE COALESCE(cm.deleted, 0) = 0 "
+                    "GROUP BY COALESCE(source, 'claude')"
+                ).fetchall():
+                    counts[r["s"]] = r["n"]
+            except sqlite3.Error:
+                # Old DB without a source column: everything counts as Claude.
+                counts["claude"] = conn.execute(
+                    "SELECT COUNT(*) FROM conversations"
+                ).fetchone()[0]
+            # Default to Claude unless it is empty and ChatGPT has data.
+            default = "claude"
+            if counts["claude"] == 0 and counts["chatgpt"] > 0:
+                default = "chatgpt"
+            self.send_json({"counts": counts, "default": default})
+        finally:
+            conn.close()
+
+    # ── Custom GPTs (gizmos) ─────────────────────────────────────────────────
+
+    def _api_gizmos_list(self):
+        """List every ChatGPT Custom GPT present, with its user-assigned name,
+        type, conversation count, and a few sample titles for recognition."""
+        conn = open_db(self.db_path)
+        try:
+            try:
+                rows = conn.execute(
+                    "SELECT c.gizmo_id AS gizmo_id, "
+                    "MAX(c.gizmo_type) AS gizmo_type, "
+                    "COUNT(*) AS conversation_count, "
+                    "gn.display_name AS display_name "
+                    "FROM conversations c "
+                    "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                    "LEFT JOIN udb.gizmo_names gn ON gn.gizmo_id = c.gizmo_id "
+                    "WHERE c.gizmo_id IS NOT NULL AND TRIM(c.gizmo_id) <> '' "
+                    "AND COALESCE(cm.deleted, 0) = 0 "
+                    "GROUP BY c.gizmo_id, gn.display_name "
+                    "ORDER BY conversation_count DESC, c.gizmo_id"
+                ).fetchall()
+            except sqlite3.Error:
+                self.send_json({"gizmos": []}); return
+            gizmos = []
+            for r in rows:
+                gid = r["gizmo_id"]
+                samples = conn.execute(
+                    "SELECT COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title "
+                    "FROM conversations c "
+                    "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                    "WHERE c.gizmo_id = ? AND COALESCE(cm.deleted, 0) = 0 "
+                    "ORDER BY c.update_time DESC LIMIT 3",
+                    (gid,),
+                ).fetchall()
+                gizmos.append({
+                    "gizmo_id": gid,
+                    "gizmo_type": r["gizmo_type"],
+                    "conversation_count": r["conversation_count"],
+                    "display_name": r["display_name"] or "",
+                    "sample_titles": [s["title"] for s in samples],
+                })
+            self.send_json({"gizmos": gizmos})
+        finally:
+            conn.close()
+
+    def _api_gizmo_rename(self, gizmo_id):
+        """Set (or clear) the user-assigned display name for a gizmo. The name
+        applies to every conversation with this gizmo_id and survives rebuilds."""
+        gizmo_id = (gizmo_id or "").strip()
+        if not gizmo_id:
+            self.send_json({"error": "missing gizmo id"}, 400); return
+        payload = self._read_json_body()
+        name = (payload.get("name") or "").strip()
+        conn = open_db(self.db_path)
+        try:
+            if name:
+                conn.execute(
+                    "INSERT INTO udb.gizmo_names (gizmo_id, display_name, updated_at) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(gizmo_id) DO UPDATE SET "
+                    "  display_name = excluded.display_name, updated_at = excluded.updated_at",
+                    (gizmo_id, name, time.time()),
+                )
+            else:
+                # Empty name clears the assignment (revert to "Custom GPT").
+                conn.execute("DELETE FROM udb.gizmo_names WHERE gizmo_id = ?", (gizmo_id,))
+            conn.commit()
+            self.send_json({"ok": True, "gizmo_id": gizmo_id, "display_name": name})
+        finally:
+            conn.close()
+
+    def _api_gizmo_move_to_folder(self, gizmo_id):
+        """Move every conversation belonging to a gizmo into a folder (existing
+        `folder_id`, or a new folder named `folder_name`). Mirrors the single
+        folder-item move: clears loose pins and the archived flag."""
+        gizmo_id = (gizmo_id or "").strip()
+        if not gizmo_id:
+            self.send_json({"error": "missing gizmo id"}, 400); return
+        payload = self._read_json_body()
+        fid = (payload.get("folder_id") or "").strip()
+        folder_name = (payload.get("folder_name") or "").strip()
+        now = time.time()
+        conn = open_db(self.db_path)
+        try:
+            if not fid:
+                if not folder_name:
+                    self.send_json({"error": "missing folder_id or folder_name"}, 400); return
+                fid = uuid.uuid4().hex
+                conn.execute(
+                    "INSERT INTO udb.folders (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                    (fid, folder_name, now, now),
+                )
+            elif not conn.execute("SELECT 1 FROM udb.folders WHERE id = ?", (fid,)).fetchone():
+                self.send_json({"error": "folder not found"}, 404); return
+
+            cids = [r["id"] for r in conn.execute(
+                "SELECT c.id AS id FROM conversations c "
+                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                "WHERE c.gizmo_id = ? AND COALESCE(cm.deleted, 0) = 0",
+                (gizmo_id,),
+            ).fetchall()]
+            for cid in cids:
+                conn.execute("DELETE FROM pinned_conversations WHERE conversation_id = ?", (cid,))
+                conn.execute(
+                    "INSERT OR IGNORE INTO conversation_meta(conversation_id, custom_title, archived, deleted) "
+                    "VALUES (?, NULL, 0, 0)", (cid,),
+                )
+                conn.execute("UPDATE conversation_meta SET archived = 0 WHERE conversation_id = ?", (cid,))
+                conn.execute(
+                    "INSERT INTO udb.folder_items (conversation_id, folder_id, added_at, pinned) "
+                    "VALUES (?, ?, ?, 0) "
+                    "ON CONFLICT(conversation_id) DO UPDATE SET "
+                    "  folder_id = excluded.folder_id, added_at = excluded.added_at, pinned = 0",
+                    (cid, fid, now),
+                )
+            conn.execute("UPDATE udb.folders SET updated_at = ? WHERE id = ?", (now, fid))
+            conn.commit()
+            self.send_json({"ok": True, "folder_id": fid, "moved": len(cids)})
+        finally:
+            conn.close()
+
     def _api_conversations(self, qs):
         limit  = int((qs.get("limit") or ["50"])[0])
         offset = int((qs.get("offset") or ["0"])[0])
         q      = ((qs.get("q") or [""])[0]).strip()
         view   = ((qs.get("view") or ["recent"])[0]).strip().lower()
         pinned_first = ((qs.get("pinned_first") or ["0"])[0]).strip() in ("1", "true", "yes")
+        # Source separation: only ever show one history at a time. The value is
+        # whitelisted, so it is safe to inline into the SQL (keeps the existing
+        # positional-parameter ordering untouched).
+        source = ((qs.get("source") or [""])[0]).strip().lower()
+        source_clause = f" AND c.source = '{source}'" if source in ("claude", "chatgpt") else ""
         conn = open_db(self.db_path)
         try:
             if view == "pinned":
@@ -598,24 +785,29 @@ class Handler(BaseHTTPRequestHandler):
                     # Foldered chats live only in their folder, never the loose
                     # Pinned view.
                     "AND c.id NOT IN (SELECT conversation_id FROM udb.folder_items) "
+                    + source_clause +
                     # Ordered newest-first like the other views so the list's
                     # month headers stay chronological. (The pinned view is now
                     # a filter, not the old drag-to-reorder top section.)
-                    "ORDER BY c.update_time DESC, c.create_time DESC "
+                    " ORDER BY c.update_time DESC, c.create_time DESC "
                     "LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
                 total = conn.execute(
                     "SELECT COUNT(*) FROM pinned_conversations p "
+                    "JOIN conversations c ON c.id = p.conversation_id "
                     "LEFT JOIN conversation_meta cm ON cm.conversation_id = p.conversation_id "
                     "WHERE COALESCE(cm.deleted, 0) = 0 "
                     "AND p.conversation_id NOT IN (SELECT conversation_id FROM udb.folder_items)"
+                    + source_clause
                 ).fetchone()[0]
                 self.send_json({"conversations": [dict(r) for r in rows],
                                 "total": total, "offset": offset, "limit": limit})
                 return
 
             where_clauses = []
+            if source_clause:
+                where_clauses.append(f"c.source = '{source}'")
             if view == "deleted":
                 where_clauses.append("COALESCE(cm.deleted, 0) = 1")
             else:
@@ -744,26 +936,48 @@ class Handler(BaseHTTPRequestHandler):
     def _api_detail(self, conv_id):
         conn = open_db(self.db_path)
         try:
-            conv = conn.execute(
-                "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, c.create_time, c.update_time, c.message_count, c.preview "
-                "FROM conversations c LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
-                "WHERE c.id = ? AND COALESCE(cm.deleted, 0) = 0", (conv_id,)
-            ).fetchone()
+            try:
+                conv = conn.execute(
+                    "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, c.create_time, c.update_time, c.message_count, c.preview, "
+                    "COALESCE(c.source, 'claude') AS source, c.gizmo_id, c.gizmo_type, "
+                    "gn.display_name AS gizmo_name "
+                    "FROM conversations c LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                    "LEFT JOIN udb.gizmo_names gn ON gn.gizmo_id = c.gizmo_id "
+                    "WHERE c.id = ? AND COALESCE(cm.deleted, 0) = 0", (conv_id,)
+                ).fetchone()
+            except sqlite3.Error:
+                # Old DB without gizmo columns.
+                conv = conn.execute(
+                    "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, c.create_time, c.update_time, c.message_count, c.preview, "
+                    "COALESCE(c.source, 'claude') AS source "
+                    "FROM conversations c LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                    "WHERE c.id = ? AND COALESCE(cm.deleted, 0) = 0", (conv_id,)
+                ).fetchone()
             if not conv:
                 self.send_error(404); return
-            msgs = conn.execute(
-                "SELECT seq, role, content, attachments, artifact_ids, siblings, branch_index, create_time "
-                "FROM messages WHERE conversation_id = ? ORDER BY seq", (conv_id,),
-            ).fetchall()
+            try:
+                msgs = conn.execute(
+                    "SELECT seq, role, content, attachments, artifact_ids, siblings, branch_index, create_time, meta "
+                    "FROM messages WHERE conversation_id = ? ORDER BY seq", (conv_id,),
+                ).fetchall()
+            except sqlite3.Error:
+                # Very old DB without the meta column — fall back gracefully.
+                msgs = conn.execute(
+                    "SELECT seq, role, content, attachments, artifact_ids, siblings, branch_index, create_time "
+                    "FROM messages WHERE conversation_id = ? ORDER BY seq", (conv_id,),
+                ).fetchall()
             def parse_msg(m):
                 d = dict(m)
-                for field in ("attachments", "siblings", "artifact_ids"):
+                for field in ("attachments", "siblings", "artifact_ids", "meta"):
+                    if field not in d:
+                        d[field] = None if field in ("siblings", "meta") else []
+                        continue
                     raw = d.get(field)
                     if raw:
                         try: d[field] = json.loads(raw)
-                        except: d[field] = [] if field != "siblings" else None
+                        except: d[field] = None if field in ("siblings", "meta") else []
                     else:
-                        d[field] = [] if field != "siblings" else None
+                        d[field] = None if field in ("siblings", "meta") else []
                 return d
             try:
                 art_rows = conn.execute(
@@ -781,9 +995,19 @@ class Handler(BaseHTTPRequestHandler):
     def _api_search(self, qs):
         q     = ((qs.get("q") or [""])[0]).strip()
         limit = int((qs.get("limit") or ["40"])[0])
+        source = ((qs.get("source") or [""])[0]).strip().lower()
+        if source not in ("claude", "chatgpt"):
+            source = ""
         if not q:
             self.send_json({"results": [], "q": q}); return
         conn = open_db(self.db_path)
+        # Conversations belonging to the selected source, so search never mixes
+        # the two histories. Empty set means "no restriction" (source not given).
+        allowed = None
+        if source:
+            allowed = {r[0] for r in conn.execute(
+                "SELECT id FROM conversations WHERE COALESCE(source, 'claude') = ?", (source,)
+            ).fetchall()}
         try:
             # Step 1: find matching conversations via FTS or title LIKE
             conv_ids = []
@@ -791,17 +1015,21 @@ class Handler(BaseHTTPRequestHandler):
             if len(q) >= 3:
                 try:
                     for r in conn.execute(
-                        "SELECT DISTINCT conversation_id FROM search_index WHERE search_index MATCH ? LIMIT 30",
+                        "SELECT DISTINCT conversation_id FROM search_index WHERE search_index MATCH ? LIMIT 60",
                         (q,)
                     ).fetchall():
+                        if allowed is not None and r[0] not in allowed:
+                            continue
                         if r[0] not in conv_ids_set:
                             conv_ids.append(r[0]); conv_ids_set.add(r[0])
                 except Exception:
                     pass
             # Always add title LIKE matches
             for r in conn.execute(
-                "SELECT id FROM conversations WHERE title LIKE ? LIMIT 15",
-                (f"%{q}%",)
+                "SELECT id FROM conversations WHERE title LIKE ? "
+                + ("AND COALESCE(source, 'claude') = ? " if source else "")
+                + "LIMIT 30",
+                ((f"%{q}%", source) if source else (f"%{q}%",))
             ).fetchall():
                 if r[0] not in conv_ids_set:
                     conv_ids.append(r[0]); conv_ids_set.add(r[0])
@@ -1120,8 +1348,15 @@ class Handler(BaseHTTPRequestHandler):
 
     # ── Folders ────────────────────────────────────────────────────────────────
 
-    def _api_folders_list(self):
-        """Return every folder and the conversations it holds (for the sidebar)."""
+    def _api_folders_list(self, qs=None):
+        """Return every folder and the conversations it holds (for the sidebar).
+
+        When a `source` is given, only conversations from that source are listed
+        inside each folder, so the sidebar never mixes Claude and ChatGPT chats.
+        """
+        qs = qs or {}
+        source = ((qs.get("source") or [""])[0]).strip().lower()
+        source_clause = f" AND c.source = '{source}'" if source in ("claude", "chatgpt") else ""
         conn = open_db(self.db_path)
         try:
             folders = conn.execute(
@@ -1139,8 +1374,9 @@ class Handler(BaseHTTPRequestHandler):
                 "JOIN conversations c ON c.id = fi.conversation_id "
                 "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                 "WHERE COALESCE(cm.deleted, 0) = 0 "
+                + source_clause +
                 # Pinned chats float to the top within the folder, then newest.
-                "ORDER BY fi.pinned DESC, c.update_time DESC, c.create_time DESC"
+                " ORDER BY fi.pinned DESC, c.update_time DESC, c.create_time DESC"
             ).fetchall()
             by_folder: dict = {}
             for r in rows:

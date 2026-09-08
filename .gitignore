@@ -16,6 +16,13 @@ source/files/*
 source/projects/*
 source/memories.json
 source/users.json
+# ChatGPT / Claude secondary export locations (auto-discovered by build_db.py).
+source/chatgpt/
+source/chatgpt.json
+source/chatgpt_conversations.json
+source/claude/
+source/claude.json
+source/claude_conversations.json
 !source/README.md
 !source/files/.gitkeep
 !source/projects/.gitkeep

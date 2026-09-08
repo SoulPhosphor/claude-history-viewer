@@ -6,6 +6,13 @@ const state = {
   offset: 0,
   total: 0,
   activeId: null,
+  // Which history is shown: 'claude' or 'chatgpt'. Set from /api/sources on load
+  // (and remembered in preferences). The two histories never mix in the list.
+  source: "claude",
+  sourceCounts: { claude: 0, chatgpt: 0 },
+  // The Custom GPT of the currently-open conversation (or null). `label` is the
+  // display name, or "Custom GPT" when the gizmo has not been named yet.
+  activeGizmo: null,
   view: "recent",
   activeSpecialView: null,
   mediaHub: {
@@ -32,6 +39,7 @@ const $ = (id) => document.getElementById(id);
 
 const searchEl = $("search");
 const searchHistoryListEl = $("search-history-list");
+const sourceSwitcher = $("source-switcher");
 const viewFilterEl = $("view-filter");
 const resultCount = $("result-count");
 const convList = $("conv-list");
@@ -66,6 +74,8 @@ const attReportContent = $("att-report-content");
 const attReportMeta = $("att-report-meta");
 const importAuditPanel = $("import-audit-panel");
 const importAuditContent = $("import-audit-content");
+const gizmosPanel = $("gizmos-panel");
+const gizmosContent = $("gizmos-content");
 const artifactPanel = $("artifact-panel");
 const artifactPanelTitle = $("artifact-panel-title");
 const artifactPanelBody = $("artifact-panel-body");
@@ -442,6 +452,178 @@ function formatDate(ts) {
     year: "numeric",
     month: "short",
     day: "numeric",
+  });
+}
+
+// ── ChatGPT assistant metadata helpers ───────────────────────────────────────
+
+// Full local date + time for a ChatGPT assistant response header, e.g.
+// "May 27, 2025 3:22 AM". Returns "Unknown" when no timestamp was exported.
+function formatFullDateTime(ts) {
+  if (!ts) return "Unknown";
+  const d = new Date(ts * 1000);
+  if (isNaN(d.getTime())) return "Unknown";
+  const date = d.toLocaleDateString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return `${date} ${time}`;
+}
+
+// Friendly display name for a ChatGPT model slug. Falls back to the raw slug so
+// unknown/future models still show something meaningful; null → "Unknown".
+const MODEL_DISPLAY_NAMES = {
+  "gpt-4o": "GPT-4o",
+  "gpt-4o-mini": "GPT-4o mini",
+  "gpt-4-1": "GPT-4.1",
+  "gpt-4-1-mini": "GPT-4.1 mini",
+  "gpt-4-5": "GPT-4.5",
+  "gpt-5": "GPT-5",
+  "gpt-5-thinking": "GPT-5 Thinking",
+  "gpt-5-t-mini": "GPT-5 Thinking mini",
+  "gpt-5-auto-thinking": "GPT-5 Thinking",
+  "o1": "o1",
+  "o3": "o3",
+  "o3-mini": "o3-mini",
+  "o3-mini-high": "o3-mini-high",
+  "o4-mini": "o4-mini",
+  "o4-mini-high": "o4-mini-high",
+  "research": "Deep Research",
+  "text-davinci-002-render-sha": "GPT-3.5",
+};
+
+function modelDisplayName(slug) {
+  if (!slug) return "Unknown";
+  return MODEL_DISPLAY_NAMES[slug] || slug;
+}
+
+// Build the assistant header for a ChatGPT message. When the conversation
+// belongs to a Custom GPT, `persona` (its name, or "Custom GPT" when unnamed) is
+// shown first and prominently — replacing the generic "Assistant" identity —
+// with the model and date kept as secondary context:
+//   "Nyx · GPT-4o · May 27, 2025 3:22 AM"
+function buildGptHeader(model, ts, persona) {
+  const header = document.createElement("div");
+  header.className = "message-role gpt-header";
+  if (persona) {
+    const personaEl = document.createElement("span");
+    personaEl.className = "gpt-persona";
+    personaEl.textContent = persona;
+    header.appendChild(personaEl);
+  }
+  const modelEl = document.createElement("span");
+  modelEl.className = "gpt-model";
+  modelEl.textContent = modelDisplayName(model);
+  const dateEl = document.createElement("span");
+  dateEl.className = "gpt-date";
+  dateEl.textContent = formatFullDateTime(ts);
+  header.append(modelEl, dateEl);
+  return header;
+}
+
+function updateGptHeader(header, model, ts) {
+  if (!header) return;
+  const modelEl = header.querySelector(".gpt-model");
+  const dateEl = header.querySelector(".gpt-date");
+  if (modelEl) modelEl.textContent = modelDisplayName(model);
+  if (dateEl) dateEl.textContent = formatFullDateTime(ts);
+}
+
+// Build a collapsible "Thinking" accordion holding exported reasoning content.
+// Returns null when there is no displayable reasoning (no empty accordions).
+function buildThinkingAccordion(thinkingText) {
+  const text = (thinkingText || "").trim();
+  if (!text) return null;
+  const wrap = document.createElement("div");
+  wrap.className = "thinking-accordion";
+
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "thinking-toggle";
+  toggle.innerHTML =
+    '<span class="thinking-caret">▸</span><span class="thinking-label">Thinking</span>';
+
+  const content = document.createElement("div");
+  content.className = "thinking-content message-body";
+  content.hidden = true;
+  content.innerHTML = md(sanitize(text));
+  wireCodeCopy(content);
+
+  toggle.addEventListener("click", () => {
+    const open = wrap.classList.toggle("open");
+    content.hidden = !open;
+  });
+
+  wrap.append(toggle, content);
+  return wrap;
+}
+
+// A clickable chip in the thread header identifying the conversation's Custom
+// GPT. Clicking it renames the gizmo — which applies to every conversation with
+// the same gizmo_id, not just this one.
+function buildPersonaChip(gizmo) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "persona-chip" + (gizmo.name ? "" : " unnamed");
+  const named = Boolean(gizmo.name);
+  chip.innerHTML =
+    `<span class="persona-chip-icon" aria-hidden="true">🤖</span>` +
+    `<span class="persona-chip-name">${escHtml(gizmo.label)}</span>` +
+    `<span class="persona-chip-action">${named ? "Rename" : "Name this GPT"}</span>`;
+  chip.title = named
+    ? `Custom GPT: ${gizmo.label} — rename across all its conversations`
+    : `Unnamed Custom GPT (${gizmo.id}) — click to name it`;
+  chip.addEventListener("click", (e) => {
+    e.stopPropagation();
+    renameGizmoFlow(gizmo.id, gizmo.name);
+  });
+  return chip;
+}
+
+// Prompt for a new display name for a gizmo, save it, and refresh the views that
+// show persona names. Used by the thread-header chip and the Custom GPTs panel.
+async function renameGizmoFlow(gizmoId, currentName) {
+  const name = await openNameModal({
+    title: "Name this Custom GPT",
+    value: currentName || "",
+    okLabel: "Save",
+  });
+  if (name === null) return; // cancelled
+  await apiRenameGizmo(gizmoId, name);
+  // Reflect the change everywhere it is visible.
+  if (state.activeGizmo && state.activeGizmo.id === gizmoId && state.activeId) {
+    await openConversation(state.activeId, null);
+  }
+  if (state.activeSpecialView === "gizmos") await renderGizmosPanel();
+}
+
+// Swap a message's Thinking accordion for one holding `text` (or remove it when
+// there is nothing to show). Inserts before `bodyEl` so it stays above the
+// answer. Returns the new accordion element (or null).
+function replaceThinkingAccordion(container, bodyEl, existingEl, text) {
+  const next = buildThinkingAccordion(text);
+  if (existingEl) {
+    if (next) existingEl.replaceWith(next);
+    else existingEl.remove();
+  } else if (next && bodyEl) {
+    container.insertBefore(next, bodyEl);
+  }
+  return next;
+}
+
+// Re-run KaTeX over an element after its markdown was replaced.
+function renderMathIn(el) {
+  if (typeof renderMathInElement !== "function") return;
+  renderMathInElement(el, {
+    delimiters: [
+      { left: "$$", right: "$$", display: true },
+      { left: "\\[", right: "\\]", display: true },
+      { left: "$", right: "$", display: false },
+      { left: "\\(", right: "\\)", display: false },
+    ],
+    throwOnError: false,
   });
 }
 
@@ -874,6 +1056,7 @@ async function apiConversations(q, offset, signal) {
     pinned_first: state.view === "recent" ? "1" : "0",
   });
   if (q) p.set("q", q);
+  if (state.source) p.set("source", state.source);
   const r = await fetch(`/api/conversations?${p}`, { signal });
   return r.json();
 }
@@ -966,12 +1149,36 @@ async function apiDeleteTab(id) {
 
 async function apiSearch(q) {
   const p = new URLSearchParams({ q, limit: 40 });
+  if (state.source) p.set("source", state.source);
   const r = await fetch(`/api/search?${p}`);
   return r.json();
 }
 
 async function apiConversation(id) {
   const r = await fetch(`/api/conversation/${encodeURIComponent(id)}`);
+  return r.json();
+}
+
+async function apiGizmos() {
+  const r = await fetch("/api/gizmos");
+  return r.json();
+}
+
+async function apiRenameGizmo(gizmoId, name) {
+  const r = await fetch(`/api/gizmos/${encodeURIComponent(gizmoId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return r.json();
+}
+
+async function apiGizmoMoveToFolder(gizmoId, { folderId, folderName }) {
+  const r = await fetch(`/api/gizmos/${encodeURIComponent(gizmoId)}/folder`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ folder_id: folderId, folder_name: folderName }),
+  });
   return r.json();
 }
 
@@ -1304,6 +1511,9 @@ async function loadUiPreferences() {
   state.preferences.searchHistory = Array.isArray(p.searchHistory)
     ? p.searchHistory.slice(0, 20)
     : [];
+  if (p.source === "claude" || p.source === "chatgpt") {
+    state.preferences.source = p.source;
+  }
   state.scrollByConversation =
     p.scrollByConversation && typeof p.scrollByConversation === "object"
       ? p.scrollByConversation
@@ -1592,6 +1802,7 @@ async function activateActiveTab() {
       return openAttReport(false, false);
     if (state.activeSpecialView === "import_audit")
       return openImportAudit(false);
+    if (state.activeSpecialView === "gizmos") return openGizmos(false);
     hideAllPanels();
     emptyState.hidden = false;
     return;
@@ -1666,6 +1877,7 @@ function hideAllPanels() {
   projectsPanel.hidden = true;
   attReportPanel.hidden = true;
   importAuditPanel.hidden = true;
+  if (gizmosPanel) gizmosPanel.hidden = true;
   closeArtifactPanel();
   closeFilePanel();
   clearSearchNav();
@@ -1818,6 +2030,20 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   const ts = formatDate(conv.update_time || conv.create_time);
   threadMeta.textContent = `${ts} · ${conv.message_count} messages`;
 
+  // Custom GPT identity for this conversation (drives assistant headers + the
+  // renamable persona chip). label is the assigned name, or "Custom GPT".
+  if (conv.gizmo_id) {
+    state.activeGizmo = {
+      id: conv.gizmo_id,
+      name: conv.gizmo_name || "",
+      type: conv.gizmo_type || "",
+      label: conv.gizmo_name || "Custom GPT",
+    };
+    threadMeta.appendChild(buildPersonaChip(state.activeGizmo));
+  } else {
+    state.activeGizmo = null;
+  }
+
   messagesEl.innerHTML = "";
   if (!messages.length) {
     // Metadata-only import: the record was kept for the audit, but the export
@@ -1833,11 +2059,15 @@ async function openConversation(id, clickedEl, targetSeq = null) {
     div.className = `message ${msg.role}`;
     if (msg.seq != null) div.dataset.seq = msg.seq;
 
+    // ChatGPT messages carry per-message metadata (model, thinking) in msg.meta.
+    const isCg = msg.meta && msg.meta.source === "chatgpt";
     const label =
       msg.role === "user"
         ? "You"
         : msg.role === "assistant"
-          ? "Claude"
+          ? isCg
+            ? "ChatGPT"
+            : "Claude"
           : msg.role;
 
     // ── User file chips appear BEFORE message body ───────────────────────────
@@ -1869,10 +2099,31 @@ async function openConversation(id, clickedEl, targetSeq = null) {
       });
     }
 
-    const roleEl = document.createElement("div");
-    roleEl.className = "message-role";
-    roleEl.textContent = label;
+    // ── Assistant metadata header ────────────────────────────────────────────
+    // ChatGPT assistant responses get a rich header: "GPT-4o · <date time>".
+    // Everything else keeps the plain role label.
+    let roleEl;
+    if (isCg && msg.role === "assistant") {
+      // Custom GPT persona (constant for the whole conversation), or null.
+      roleEl = buildGptHeader(
+        msg.meta.model,
+        msg.create_time,
+        state.activeGizmo?.label || null,
+      );
+    } else {
+      roleEl = document.createElement("div");
+      roleEl.className = "message-role";
+      roleEl.textContent = label;
+    }
     div.insertBefore(roleEl, div.firstChild);
+
+    // ── Thinking accordion (ChatGPT reasoning responses) ─────────────────────
+    let thinkingEl = null;
+    if (isCg && msg.role === "assistant") {
+      thinkingEl = buildThinkingAccordion(msg.meta.thinking);
+      if (thinkingEl) div.appendChild(thinkingEl);
+    }
+
     div.appendChild(bodyEl);
 
     // ── Assistant-generated file chips appear AFTER body (like Claude's UI) ──
@@ -1921,21 +2172,52 @@ async function openConversation(id, clickedEl, targetSeq = null) {
         counterEl.textContent = `${curIdx + 1} / ${total}`;
         const sib = msg.siblings[curIdx];
 
-        // Update this user message bubble
+        // Update this message bubble (user text, or the ChatGPT assistant
+        // variant's final answer)
         bodyEl.innerHTML = md(sanitize(sib.content || ""));
         wireCodeCopy(bodyEl);
+        if (isCg) renderMathIn(bodyEl);
+
+        // ChatGPT assistant reroll: refresh this variant's model/date header and
+        // its Thinking accordion so each variant shows its own metadata.
+        if (isCg && msg.role === "assistant") {
+          updateGptHeader(roleEl, sib.model, sib.create_time);
+          thinkingEl = replaceThinkingAccordion(div, bodyEl, thinkingEl, sib.thinking);
+        }
 
         // Update the adjacent assistant response (for user-branch switching)
         if ("asst_content" in sib) {
           const nextMsgEl = div.nextElementSibling;
           if (nextMsgEl?.classList.contains("assistant")) {
-            const nextBody = nextMsgEl.querySelector(".message-body");
+            // Scoped to direct child so a Thinking accordion (also .message-body)
+            // is never mistaken for the answer body.
+            const nextBody = nextMsgEl.querySelector(":scope > .message-body");
             if (nextBody) {
               const ac = sib.asst_content || "";
+              const noReply = isCg
+                ? "(ChatGPT did not respond in this branch)"
+                : "(Claude did not respond in this branch)";
               nextBody.innerHTML = ac
                 ? md(sanitize(ac))
-                : '<p class="branch-no-response">(Claude did not respond in this branch)</p>';
+                : `<p class="branch-no-response">${noReply}</p>`;
               wireCodeCopy(nextBody);
+              if (isCg) renderMathIn(nextBody);
+            }
+            // ChatGPT edited-user branch: refresh the paired assistant's header
+            // and Thinking accordion from the sibling's assistant metadata.
+            if (sib.asst_meta && sib.asst_meta.source === "chatgpt") {
+              updateGptHeader(
+                nextMsgEl.querySelector(".gpt-header"),
+                sib.asst_meta.model,
+                sib.asst_meta.create_time,
+              );
+              const existThink = nextMsgEl.querySelector(".thinking-accordion");
+              replaceThinkingAccordion(
+                nextMsgEl,
+                nextBody,
+                existThink,
+                sib.asst_meta.thinking,
+              );
             }
             // Update assistant artifact chips when user branch changes
             const newArtIds = sib.asst_artifact_ids || [];
@@ -2779,6 +3061,102 @@ async function renderImportAuditList(status, label) {
   importAuditContent.appendChild(listEl);
 }
 
+// ── Custom GPTs (gizmos) panel ─────────────────────────────────────────────────
+
+async function openGizmos() {
+  rememberReturnTab();
+  state.activeSpecialView = "gizmos";
+  state.activeTabId = null;
+  document
+    .querySelectorAll(".conv-item.active")
+    .forEach((el) => el.classList.remove("active"));
+  state.activeId = null;
+  await ensureSpecialTab("gizmos", "Custom GPTs");
+  hideAllPanels();
+  if (gizmosPanel) gizmosPanel.hidden = false;
+  await renderGizmosPanel();
+}
+
+async function renderGizmosPanel() {
+  if (!gizmosContent) return;
+  gizmosContent.innerHTML = '<div class="loading">Loading…</div>';
+  let data;
+  try {
+    data = await apiGizmos();
+  } catch (e) {
+    gizmosContent.innerHTML = `<div class="no-results">Could not load Custom GPTs: ${escHtml(e.message)}.</div>`;
+    return;
+  }
+  const gizmos = data.gizmos || [];
+  gizmosContent.innerHTML = "";
+  if (!gizmos.length) {
+    gizmosContent.innerHTML =
+      '<div class="no-results">No ChatGPT Custom GPTs found in your history.</div>';
+    return;
+  }
+
+  for (const g of gizmos) {
+    const named = Boolean(g.display_name);
+    const card = document.createElement("div");
+    card.className = "gizmo-card" + (named ? "" : " unnamed");
+
+    const head = document.createElement("div");
+    head.className = "gizmo-card-head";
+    const nameEl = document.createElement("div");
+    nameEl.className = "gizmo-name";
+    nameEl.textContent = named ? g.display_name : "Custom GPT (unnamed)";
+    const typeBadge = document.createElement("span");
+    typeBadge.className = "gizmo-type";
+    typeBadge.textContent = g.gizmo_type || "gpt";
+    head.append(nameEl, typeBadge);
+
+    const meta = document.createElement("div");
+    meta.className = "gizmo-meta";
+    const count = g.conversation_count;
+    meta.textContent =
+      `${count} conversation${count !== 1 ? "s" : ""} · ${g.gizmo_id}`;
+
+    const samples = document.createElement("div");
+    samples.className = "gizmo-samples";
+    samples.textContent = (g.sample_titles || []).join(" · ");
+
+    const actions = document.createElement("div");
+    actions.className = "gizmo-actions";
+    const renameBtn = document.createElement("button");
+    renameBtn.className = "gizmo-btn";
+    renameBtn.textContent = named ? "Rename" : "Name this GPT";
+    renameBtn.addEventListener("click", () =>
+      renameGizmoFlow(g.gizmo_id, g.display_name),
+    );
+    const moveBtn = document.createElement("button");
+    moveBtn.className = "gizmo-btn";
+    moveBtn.textContent = `Move all ${count} to folder`;
+    moveBtn.addEventListener("click", () => moveGizmoToFolderFlow(g));
+    actions.append(renameBtn, moveBtn);
+
+    card.append(head, meta, samples, actions);
+    gizmosContent.appendChild(card);
+  }
+}
+
+// Move every conversation of a gizmo into a folder. Offers existing folders and
+// a "new folder" option; a new folder defaults to the gizmo's name.
+async function moveGizmoToFolderFlow(g) {
+  const defaultName = g.display_name || "Custom GPT";
+  const folderName = await openNameModal({
+    title: `Move ${g.conversation_count} chats to folder`,
+    value: defaultName,
+    okLabel: "Move",
+  });
+  if (folderName === null) return;
+  const res = await apiGizmoMoveToFolder(g.gizmo_id, { folderName });
+  if (res && res.ok) {
+    await loadFolders();
+    await loadConversations(false);
+    await renderGizmosPanel();
+  }
+}
+
 // ── Sidebar popup menu ("More" button) ─────────────────────────────────────────
 // The "More" button opens a small menu anchored to it instead of jumping
 // straight to a screen. Add future entries as .sidebar-menu-item buttons in
@@ -2837,6 +3215,7 @@ sidebarMenu.querySelectorAll(".sidebar-menu-item").forEach((item) => {
     closeSidebarMenu();
     if (action === "attachment-report") openAttReport(false);
     else if (action === "import-audit") openImportAudit(false);
+    else if (action === "gizmos") openGizmos(false);
   });
 });
 
@@ -3028,7 +3407,8 @@ nameModal?.addEventListener("mousedown", (e) => {
 
 // ── Folders ─────────────────────────────────────────────────────────────────
 async function apiFolders() {
-  return fetch("/api/folders").then((r) => r.json());
+  const p = state.source ? `?source=${encodeURIComponent(state.source)}` : "";
+  return fetch(`/api/folders${p}`).then((r) => r.json());
 }
 async function apiCreateFolder(name) {
   return fetch("/api/folders", {
@@ -3393,8 +3773,67 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
   });
 });
 
+// ── Source switcher (Claude / ChatGPT) ───────────────────────────────────────
+
+function updateSourceSwitcherUI() {
+  if (!sourceSwitcher) return;
+  sourceSwitcher.querySelectorAll(".source-tab").forEach((btn) => {
+    const active = btn.dataset.source === state.source;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+  });
+}
+
+async function initSourceSwitcher() {
+  let data;
+  try {
+    data = await fetch("/api/sources").then((r) => r.json());
+  } catch {
+    data = { counts: { claude: 0, chatgpt: 0 }, default: "claude" };
+  }
+  state.sourceCounts = data.counts || { claude: 0, chatgpt: 0 };
+  const both = state.sourceCounts.claude > 0 && state.sourceCounts.chatgpt > 0;
+
+  // Prefer a remembered choice, but only when that source actually has data;
+  // otherwise fall back to the server's default.
+  const saved = state.preferences.source;
+  if (saved && state.sourceCounts[saved] > 0) {
+    state.source = saved;
+  } else {
+    state.source = data.default || "claude";
+  }
+
+  // The switcher only appears when there are genuinely two histories to switch
+  // between. With a single source it stays hidden and the app behaves as before.
+  if (sourceSwitcher) sourceSwitcher.hidden = !both;
+  updateSourceSwitcherUI();
+
+  sourceSwitcher?.querySelectorAll(".source-tab").forEach((btn) => {
+    btn.addEventListener("click", () => switchSource(btn.dataset.source));
+  });
+}
+
+async function switchSource(newSource) {
+  if (!newSource || newSource === state.source) return;
+  if (!["claude", "chatgpt"].includes(newSource)) return;
+  state.source = newSource;
+  state.preferences.source = newSource;
+  updateSourceSwitcherUI();
+  saveUiPreferences({ source: newSource });
+
+  // Reset the browsing state so we never show the other source's content.
+  state.activeId = null;
+  state.offset = 0;
+  hideAllPanels();
+  emptyState.hidden = false;
+
+  await Promise.all([refreshPinnedList(), loadFolders()]);
+  await loadConversations(false);
+}
+
 async function initApp() {
   await loadUiPreferences();
+  await initSourceSwitcher();
   renderSearchHistory();
   await refreshPinnedList();
   await loadFolders();

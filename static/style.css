@@ -1842,6 +1842,223 @@ kbd {
   margin: 0;
 }
 
+/* ── Source switcher (Claude / ChatGPT) ──────────────────────────────────── */
+.source-switcher {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 10px;
+  padding: 3px;
+  background: var(--hover);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.source-tab {
+  flex: 1;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    color 0.12s;
+}
+.source-tab:hover:not(.active) {
+  color: var(--text);
+}
+.source-tab.active {
+  background: var(--bg);
+  color: var(--accent);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+/* ── ChatGPT assistant metadata header ───────────────────────────────────── */
+.message.assistant .gpt-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.gpt-model {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+.gpt-date {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── ChatGPT "Thinking" accordion ────────────────────────────────────────── */
+.thinking-accordion {
+  margin: 6px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--hover);
+}
+.thinking-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+.thinking-toggle:hover {
+  color: var(--text);
+}
+.thinking-caret {
+  display: inline-block;
+  transition: transform 0.15s;
+  font-size: 11px;
+}
+.thinking-accordion.open .thinking-caret {
+  transform: rotate(90deg);
+}
+.thinking-content {
+  padding: 4px 14px 12px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+}
+.thinking-content p:last-child {
+  margin-bottom: 0;
+}
+
+/* ── Custom GPT persona ───────────────────────────────────────────────────── */
+.gpt-persona {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  letter-spacing: 0.01em;
+}
+/* When a persona is shown, the model slug becomes secondary context. */
+.gpt-header .gpt-persona + .gpt-model {
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* Renamable persona chip in the thread header */
+.persona-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+.persona-chip:hover {
+  border-color: var(--accent);
+}
+.persona-chip.unnamed {
+  border-style: dashed;
+  color: var(--muted);
+}
+.persona-chip-name {
+  font-weight: 600;
+}
+.persona-chip-action {
+  color: var(--accent);
+  font-size: 11px;
+}
+
+/* ── Custom GPTs management panel ─────────────────────────────────────────── */
+#gizmos-content {
+  padding: 16px 24px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.gizmo-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: var(--bg);
+}
+.gizmo-card.unnamed {
+  border-style: dashed;
+}
+.gizmo-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.gizmo-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+.gizmo-card.unnamed .gizmo-name {
+  color: var(--muted);
+}
+.gizmo-type {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.gizmo-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+  word-break: break-all;
+}
+.gizmo-samples {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gizmo-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.gizmo-btn {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+.gizmo-btn:hover {
+  background: var(--hover);
+  border-color: var(--accent);
+}
+
 /* ── Artifact chips (assistant messages) ─────────────────────────────────── */
 .artifact-chips {
   display: flex;
