@@ -1,0 +1,506 @@
+{
+  "dataset": "claude_ai_ui_model_availability",
+  "as_of": "2026-09-08",
+  "timezone": null,
+  "interval_semantics": "[start_date, end_date), where a non-null end_date is the calendar date on which the period ceased or is inferred to have ceased; no time-of-day is implied",
+  "models": [
+    {
+      "canonical_name": "Claude 2",
+      "ui_label": "Claude 2",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2023-07-11",
+          "end_date": "2023-11-21",
+          "period_status": "inferred_end",
+          "approximate": false,
+          "confidence_level": "inferred"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-2",
+        "https://www.anthropic.com/news/claude-2-1"
+      ],
+      "notes": "Start is explicit. End is inferred from Claude 2.1 becoming the model powering claude.ai; no separate consumer removal notice found."
+    },
+    {
+      "canonical_name": "Claude 2.1",
+      "ui_label": "Claude 2.1",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2023-11-21",
+          "end_date": null,
+          "period_status": "end_unverified",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-2-1",
+        "https://www.anthropic.com/news/claude-3-family"
+      ],
+      "notes": "Explicitly powered claude.ai Free and Pro. Exact consumer UI removal date is missing."
+    },
+    {
+      "canonical_name": "Claude 3 Sonnet",
+      "ui_label": "Claude 3 Sonnet",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2024-03-04",
+          "end_date": null,
+          "period_status": "end_unverified",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-3-family"
+      ],
+      "notes": "Explicit claude.ai launch. Do not substitute its API retirement date for a UI removal date."
+    },
+    {
+      "canonical_name": "Claude 3 Opus",
+      "ui_label": "Claude 3 Opus",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2024-03-04",
+          "end_date": null,
+          "period_status": "end_unverified",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-3-family"
+      ],
+      "notes": "Available to Claude Pro at launch. API retirement on 2026-01-05 is not treated as a consumer UI end."
+    },
+    {
+      "canonical_name": "Claude 3 Haiku",
+      "ui_label": "Claude 3 Haiku",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2024-03-13",
+          "end_date": null,
+          "period_status": "end_unverified",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-3-haiku"
+      ],
+      "notes": "Explicitly available to Claude Pro subscribers on claude.ai."
+    },
+    {
+      "canonical_name": "Golden Gate Claude",
+      "ui_label": "Golden Gate Claude",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2024-05-23",
+          "end_date": "2024-05-24",
+          "period_status": "approximate_24_hour_demo",
+          "approximate": true,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/golden-gate-claude"
+      ],
+      "notes": "Research-demo variant of Claude 3 Sonnet. Anthropic states it was available on claude.ai for 24 hours; exact timestamps/timezone are missing."
+    },
+    {
+      "canonical_name": "Claude 3.5 Sonnet (June 2024 revision)",
+      "ui_label": "Claude 3.5 Sonnet",
+      "aliases": [
+        "Claude 3.5 Sonnet v1"
+      ],
+      "availability_periods": [
+        {
+          "start_date": "2024-06-21",
+          "end_date": "2024-10-22",
+          "period_status": "inferred_replacement",
+          "approximate": false,
+          "confidence_level": "inferred"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-3-5-sonnet",
+        "https://www.anthropic.com/news/3-5-models-and-computer-use"
+      ],
+      "notes": "Official current news page displays 2024-06-21. October end is inferred from the upgraded 3.5 Sonnet becoming available to all users."
+    },
+    {
+      "canonical_name": "Claude 3.5 Sonnet (October 2024 revision)",
+      "ui_label": "Claude 3.5 Sonnet",
+      "aliases": [
+        "Claude 3.5 Sonnet v2",
+        "Claude Sonnet 3.6"
+      ],
+      "availability_periods": [
+        {
+          "start_date": "2024-10-22",
+          "end_date": null,
+          "period_status": "end_unverified",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/3-5-models-and-computer-use"
+      ],
+      "notes": "Upgraded Claude 3.5 Sonnet made available to all users. Later Anthropic terminology sometimes calls this generation Sonnet 3.6."
+    },
+    {
+      "canonical_name": "Claude 3.7 Sonnet",
+      "ui_label": "Claude 3.7 Sonnet",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2025-02-24",
+          "end_date": null,
+          "period_status": "end_unverified",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-3-7-sonnet"
+      ],
+      "notes": "Available on Free, Pro, Team, and Enterprise at launch. Exact consumer selector retirement was not established to the requested evidentiary standard."
+    },
+    {
+      "canonical_name": "Claude Sonnet 4",
+      "ui_label": "Claude Sonnet 4",
+      "aliases": [
+        "Claude 4 Sonnet"
+      ],
+      "availability_periods": [
+        {
+          "start_date": "2025-05-22",
+          "end_date": null,
+          "period_status": "end_unverified",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-4"
+      ],
+      "notes": "Consumer launch is distinct from API snapshot and retirement dates."
+    },
+    {
+      "canonical_name": "Claude Opus 4",
+      "ui_label": "Claude Opus 4",
+      "aliases": [
+        "Claude 4 Opus"
+      ],
+      "availability_periods": [
+        {
+          "start_date": "2025-05-22",
+          "end_date": "2026-01-16",
+          "period_status": "removed_from_model_selector",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-4",
+        "https://support.claude.com/en/articles/12138966-release-notes"
+      ],
+      "notes": "Claude Help Center explicitly records removal from the Claude model selector on 2026-01-16."
+    },
+    {
+      "canonical_name": "Claude Opus 4.1",
+      "ui_label": "Claude Opus 4.1",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2025-08-05",
+          "end_date": "2026-01-16",
+          "period_status": "removed_from_model_selector",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-opus-4-1",
+        "https://support.claude.com/en/articles/12138966-release-notes"
+      ],
+      "notes": "Available to paid Claude users at launch and explicitly removed from the Claude selector on 2026-01-16."
+    },
+    {
+      "canonical_name": "Claude Sonnet 4.5",
+      "ui_label": "Claude Sonnet 4.5",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2025-09-29",
+          "end_date": null,
+          "period_status": "end_unverified",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-sonnet-4-5"
+      ],
+      "notes": "Official UI start; exact current or historical selector end is not established by the reviewed consumer documentation."
+    },
+    {
+      "canonical_name": "Claude Haiku 4.5",
+      "ui_label": "Claude Haiku 4.5",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2025-10-15",
+          "end_date": null,
+          "period_status": "end_unverified",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-haiku-4-5"
+      ],
+      "notes": "Official UI start. Absence from the current effort-enabled list is not sufficient evidence of selector removal."
+    },
+    {
+      "canonical_name": "Claude Opus 4.5",
+      "ui_label": "Claude Opus 4.5",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2025-11-24",
+          "end_date": null,
+          "period_status": "end_unverified",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-opus-4-5"
+      ],
+      "notes": "Official Claude launch; no authoritative consumer selector removal date found."
+    },
+    {
+      "canonical_name": "Claude Opus 4.6",
+      "ui_label": "Claude Opus 4.6",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2026-02-05",
+          "end_date": null,
+          "period_status": "active_as_of_2026-09-08",
+          "observed_available_through": "2026-09-08",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-opus-4-6",
+        "https://support.claude.com/en/articles/8664678-change-the-model-effort-and-thinking-settings"
+      ],
+      "notes": "Current first-party model-settings documentation still identifies this model in Claude."
+    },
+    {
+      "canonical_name": "Claude Sonnet 4.6",
+      "ui_label": "Claude Sonnet 4.6",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2026-02-17",
+          "end_date": null,
+          "period_status": "active_as_of_2026-09-08",
+          "observed_available_through": "2026-09-08",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-sonnet-4-6",
+        "https://support.claude.com/en/articles/8664678-change-the-model-effort-and-thinking-settings"
+      ],
+      "notes": "Default in claude.ai Free and Pro at launch and affirmatively present in current model settings."
+    },
+    {
+      "canonical_name": "Claude Opus 4.7",
+      "ui_label": "Claude Opus 4.7",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2026-04-16",
+          "end_date": null,
+          "period_status": "active_as_of_2026-09-08",
+          "observed_available_through": "2026-09-08",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-opus-4-7",
+        "https://support.claude.com/en/articles/8664678-change-the-model-effort-and-thinking-settings"
+      ],
+      "notes": "Anthropic states it was available across all Claude products on 2026-04-16."
+    },
+    {
+      "canonical_name": "Claude Opus 4.8",
+      "ui_label": "Claude Opus 4.8",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2026-05-28",
+          "end_date": null,
+          "period_status": "active_as_of_2026-09-08",
+          "observed_available_through": "2026-09-08",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-opus-4-8",
+        "https://support.claude.com/en/articles/8664678-change-the-model-effort-and-thinking-settings"
+      ],
+      "notes": "Official launch and affirmatively current."
+    },
+    {
+      "canonical_name": "Claude Fable 5",
+      "ui_label": "Claude Fable 5",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2026-06-09",
+          "end_date": "2026-06-12",
+          "period_status": "suspended",
+          "approximate": false,
+          "confidence_level": "official"
+        },
+        {
+          "start_date": "2026-07-01",
+          "end_date": null,
+          "period_status": "active_as_of_2026-09-08",
+          "observed_available_through": "2026-09-08",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-fable-5-mythos-5",
+        "https://www.anthropic.com/news/redeploying-fable-5",
+        "https://support.claude.com/en/articles/8664678-change-the-model-effort-and-thinking-settings"
+      ],
+      "notes": "Launch, suspension, and restoration are all first-party documented. Billing/usage-credit changes do not by themselves terminate UI availability."
+    },
+    {
+      "canonical_name": "Claude Sonnet 5",
+      "ui_label": "Claude Sonnet 5",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2026-06-30",
+          "end_date": null,
+          "period_status": "active_as_of_2026-09-08",
+          "observed_available_through": "2026-09-08",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-sonnet-5",
+        "https://support.claude.com/en/articles/8664678-change-the-model-effort-and-thinking-settings"
+      ],
+      "notes": "Available across Claude plans at launch and affirmatively current."
+    },
+    {
+      "canonical_name": "Claude Opus 5",
+      "ui_label": "Claude Opus 5",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2026-07-24",
+          "end_date": null,
+          "period_status": "active_as_of_2026-09-08",
+          "observed_available_through": "2026-09-08",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-opus-5",
+        "https://support.claude.com/en/articles/8664678-change-the-model-effort-and-thinking-settings"
+      ],
+      "notes": "Official Claude launch and affirmatively current."
+    },
+    {
+      "canonical_name": "Claude Fable 5.1",
+      "ui_label": "Claude Fable 5.1",
+      "aliases": [],
+      "availability_periods": [
+        {
+          "start_date": "2026-09-01",
+          "end_date": null,
+          "period_status": "active_as_of_2026-09-08",
+          "observed_available_through": "2026-09-08",
+          "approximate": false,
+          "confidence_level": "official"
+        }
+      ],
+      "source_urls": [
+        "https://www.anthropic.com/claude-fable-and-mythos-5-1",
+        "https://support.claude.com/en/articles/8664678-change-the-model-effort-and-thinking-settings"
+      ],
+      "notes": "Generally available and affirmatively current."
+    }
+  ],
+  "excluded_or_unverified": [
+    {
+      "canonical_name": "Claude 1.x / Claude 1.3",
+      "reason": "No verified public claude.ai UI period; claude.ai was described as a new public-facing beta when Claude 2 launched.",
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-2"
+      ]
+    },
+    {
+      "canonical_name": "Claude Instant",
+      "reason": "No verified public claude.ai UI period found.",
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-2"
+      ]
+    },
+    {
+      "canonical_name": "Claude 3.5 Haiku",
+      "reason": "Official release evidence names Anthropic API, Amazon Bedrock, and Google Cloud Vertex AI rather than claude.ai; later consumer UI date remains unverified.",
+      "source_urls": [
+        "https://www.anthropic.com/news/3-5-models-and-computer-use"
+      ]
+    },
+    {
+      "canonical_name": "Claude Mythos Preview",
+      "reason": "Restricted Project Glasswing model; reviewed evidence identifies API/cloud access rather than general claude.ai consumer UI.",
+      "source_urls": [
+        "https://www.anthropic.com/glasswing"
+      ]
+    },
+    {
+      "canonical_name": "Claude Mythos 5",
+      "reason": "Restricted vetted-partner model; not verified as ordinary claude.ai model-selector availability.",
+      "source_urls": [
+        "https://www.anthropic.com/news/claude-fable-5-mythos-5",
+        "https://www.anthropic.com/claude/mythos"
+      ]
+    },
+    {
+      "canonical_name": "Claude Mythos 5.1",
+      "reason": "Restricted trusted-access model, not general consumer availability.",
+      "source_urls": [
+        "https://www.anthropic.com/claude/mythos",
+        "https://www.anthropic.com/claude-fable-and-mythos-5-1"
+      ]
+    }
+  ]
+}
