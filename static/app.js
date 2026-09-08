@@ -14,6 +14,7 @@ const state = {
   },
   specialReturnTabId: null,
   pinnedIds: new Set(),
+  compareIds: new Set(), // conversation ids attached to the top "Compare" bar
   folders: [],
   folderOf: new Map(), // conversation_id -> folder_id (for chats inside folders)
   tabs: [],
@@ -1055,15 +1056,31 @@ function buildConvActions(c) {
     loadFolders();
   });
 
-  const archiveBtn = document.createElement("button");
-  archiveBtn.className = "conv-action-btn";
+  // ── ⋮ "More" menu (Archive / Compare) ──────────────────────────────────────
+  // The old standalone archive icon now lives inside this kebab menu.
   const archivedView = state.view === "archived";
   const deletedView = state.view === "deleted";
   const restoreMode = archivedView || deletedView;
-  archiveBtn.title = restoreMode ? "Restore" : "Archive";
-  archiveBtn.textContent = restoreMode ? "↺" : "🗄";
-  archiveBtn.addEventListener("click", async (e) => {
+
+  const menuWrap = document.createElement("div");
+  menuWrap.className = "conv-menu-wrap";
+
+  const menuBtn = document.createElement("button");
+  menuBtn.className = "conv-action-btn";
+  menuBtn.title = "More";
+  menuBtn.setAttribute("aria-haspopup", "true");
+  menuBtn.textContent = "⋮";
+
+  const menu = document.createElement("div");
+  menu.className = "conv-row-menu";
+  menu.hidden = true;
+
+  const archiveItem = document.createElement("button");
+  archiveItem.className = "conv-row-menu-item";
+  archiveItem.textContent = restoreMode ? "Restore" : "Archive";
+  archiveItem.addEventListener("click", async (e) => {
     e.stopPropagation();
+    closeConvRowMenu();
     if (deletedView) {
       await apiUpdateConversationMeta(c.id, { deleted: false });
     } else {
@@ -1083,8 +1100,46 @@ function buildConvActions(c) {
     if (wasPinned) refreshPinnedList();
   });
 
-  wrap.append(pinBtn, renameBtn, archiveBtn);
+  const compareItem = document.createElement("button");
+  compareItem.className = "conv-row-menu-item";
+  compareItem.textContent = "Compare";
+  compareItem.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    closeConvRowMenu();
+    await compareConversation(c.id, c.title);
+  });
+
+  menu.append(archiveItem, compareItem);
+  menuBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = menu.hidden;
+    closeConvRowMenu();
+    if (willOpen) openConvRowMenu(menu);
+  });
+  menuWrap.append(menuBtn, menu);
+
+  wrap.append(pinBtn, renameBtn, menuWrap);
   return wrap;
+}
+
+// ── Sidebar row ⋮ menu open/close (only one open at a time) ───────────────────
+let _openConvRowMenu = null;
+function closeConvRowMenu() {
+  if (!_openConvRowMenu) return;
+  _openConvRowMenu.hidden = true;
+  _openConvRowMenu = null;
+  document.removeEventListener("mousedown", onConvRowMenuOutside, true);
+}
+function onConvRowMenuOutside(e) {
+  if (_openConvRowMenu && _openConvRowMenu.parentElement.contains(e.target)) {
+    return;
+  }
+  closeConvRowMenu();
+}
+function openConvRowMenu(menu) {
+  menu.hidden = false;
+  _openConvRowMenu = menu;
+  document.addEventListener("mousedown", onConvRowMenuOutside, true);
 }
 
 function appendListItems(convs, targetEl = convList) {
@@ -1381,6 +1436,11 @@ function resolveReturnTabId(excludeTabId = null) {
 async function closeTabAndFocusFallback(tabId) {
   const tab = getTabById(tabId);
   if (!tab) return;
+  // Detaching a chip from the top bar also drops it from the Compare set.
+  if (tab.tab_type === "conversation" && state.compareIds.has(tab.conversation_id)) {
+    state.compareIds.delete(tab.conversation_id);
+    saveCompareIds();
+  }
   const wasActive = state.activeTabId === tabId;
   const fallbackId = isSpecialTab(tab)
     ? resolveReturnTabId(tabId)
@@ -1420,13 +1480,9 @@ function renderTabs() {
     tab.className = "top-tab" + (t.id === state.activeTabId ? " active" : "");
     tab.setAttribute("role", "button");
     tab.setAttribute("tabindex", "0");
-    tab.innerHTML = `<span class="tab-label">${escHtml(t.title || "Untitled")}</span><button type="button" class="tab-pin" title="Pin tab">${t.pinned ? "📌" : "📍"}</button><button type="button" class="tab-close" title="Close">×</button>`;
-    tab.querySelector(".tab-pin").addEventListener("click", async (e) => {
-      e.stopPropagation();
-      t.pinned = t.pinned ? 0 : 1;
-      await apiUpdateTab(t.id, { pinned: Boolean(t.pinned) });
-      renderTabs();
-    });
+    // The top bar is the "Compare" strip: chats attached here show only their
+    // title and an × to detach. The old per-tab pin toggle is intentionally gone.
+    tab.innerHTML = `<span class="tab-label">${escHtml(t.title || "Untitled")}</span><button type="button" class="tab-close" title="Remove from Compare">×</button>`;
     tab.querySelector(".tab-close").addEventListener("click", async (e) => {
       e.stopPropagation();
       await closeTabAndFocusFallback(t.id);
@@ -1453,6 +1509,87 @@ async function loadTabs() {
   }
   if (!state.activeTabId || !getTabById(state.activeTabId)) {
     state.activeTabId = state.tabs[0].id;
+  }
+  renderTabs();
+}
+
+// ── Compare bar (the top strip) ───────────────────────────────────────────────
+// "Compare" attaches a conversation to the top bar as a chip so it can be
+// browsed quickly. The set of attached conversations is persisted in the
+// browser via localStorage so it survives reloads.
+const COMPARE_STORAGE_KEY = "compareConversationIds";
+
+function loadCompareIds() {
+  try {
+    const raw = localStorage.getItem(COMPARE_STORAGE_KEY);
+    const arr = raw ? JSON.parse(raw) : [];
+    state.compareIds = new Set(Array.isArray(arr) ? arr.map(String) : []);
+  } catch {
+    state.compareIds = new Set();
+  }
+}
+
+function saveCompareIds() {
+  try {
+    localStorage.setItem(
+      COMPARE_STORAGE_KEY,
+      JSON.stringify([...state.compareIds]),
+    );
+  } catch {
+    /* storage unavailable — compare bar just won't persist this session */
+  }
+}
+
+// Attach a conversation to the top Compare bar without navigating away, so
+// several chats can be queued up and then clicked through.
+async function compareConversation(convId, title) {
+  state.compareIds.add(String(convId));
+  saveCompareIds();
+  let tab = state.tabs.find(
+    (t) => t.tab_type === "conversation" && t.conversation_id === convId,
+  );
+  if (!tab) {
+    const created = await apiCreateTab({
+      tab_type: "conversation",
+      conversation_id: convId,
+      title: title || "Conversation",
+    });
+    tab = {
+      id: created.id,
+      tab_type: "conversation",
+      conversation_id: convId,
+      title: title || "Conversation",
+    };
+    state.tabs.push(tab);
+  }
+  renderTabs();
+}
+
+// Re-attach any localStorage-remembered compare chats that aren't already
+// present as top tabs (e.g. after the server tab list was cleared).
+async function restoreCompareTabs() {
+  for (const convId of state.compareIds) {
+    const has = state.tabs.some(
+      (t) => t.tab_type === "conversation" && t.conversation_id === convId,
+    );
+    if (has) continue;
+    try {
+      const created = await apiCreateTab({
+        tab_type: "conversation",
+        conversation_id: convId,
+        title: "Conversation",
+      });
+      state.tabs.push({
+        id: created.id,
+        tab_type: "conversation",
+        conversation_id: convId,
+        title: created.title || "Conversation",
+      });
+    } catch {
+      /* conversation may no longer exist — drop it from the compare set */
+      state.compareIds.delete(convId);
+      saveCompareIds();
+    }
   }
   renderTabs();
 }
@@ -3385,6 +3522,8 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
         await refreshPinnedList();
         await loadConversations(false);
       }
+    } else if (action === "compare") {
+      await compareConversation(cid, threadTitle.textContent || "");
     } else if (action === "archive") {
       await apiUpdateConversationMeta(cid, { archived: true });
       await refreshPinnedList();
@@ -3398,7 +3537,9 @@ async function initApp() {
   renderSearchHistory();
   await refreshPinnedList();
   await loadFolders();
+  loadCompareIds();
   await loadTabs();
+  await restoreCompareTabs();
   await loadConversations(false);
   if (state.activeTabId) {
     await activateActiveTab();

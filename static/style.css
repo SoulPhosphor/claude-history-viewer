@@ -295,6 +295,41 @@ body.sidebar-collapsed #sidebar-footer {
   background: var(--bg);
   color: var(--text);
 }
+/* ── Sidebar row ⋮ menu (Archive / Compare) ─────────────────────────────────── */
+.conv-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.conv-row-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 1000;
+  min-width: 140px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  padding: 4px;
+}
+.conv-row-menu[hidden] {
+  display: none;
+}
+.conv-row-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.conv-row-menu-item:hover {
+  background: var(--hover);
+}
 .conv-item:hover {
   background: var(--hover);
 }
@@ -644,14 +679,6 @@ mark.search-term-highlight {
   color: inherit;
   cursor: pointer;
   font-size: 12px;
-  line-height: 1;
-}
-.top-tab .tab-pin {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font-size: 11px;
   line-height: 1;
 }
 
