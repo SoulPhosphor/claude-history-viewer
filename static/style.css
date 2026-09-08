@@ -1951,36 +1951,13 @@ kbd {
   color: var(--muted);
 }
 
-/* Renamable persona chip in the thread header */
-.persona-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  padding: 3px 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--hover);
+/* Warning dialog message (honors line breaks in the copy). */
+.modal-message {
+  white-space: pre-line;
+  font-size: 14px;
+  line-height: 1.6;
   color: var(--text);
-  font-size: 12px;
-  cursor: pointer;
-  transition:
-    background 0.12s,
-    border-color 0.12s;
-}
-.persona-chip:hover {
-  border-color: var(--accent);
-}
-.persona-chip.unnamed {
-  border-style: dashed;
-  color: var(--muted);
-}
-.persona-chip-name {
-  font-weight: 600;
-}
-.persona-chip-action {
-  color: var(--accent);
-  font-size: 11px;
+  margin-bottom: 16px;
 }
 
 /* ── Custom GPTs management panel ─────────────────────────────────────────── */
@@ -2554,13 +2531,54 @@ kbd {
 /* ── Thread header actions (Move to / more) ──────────────────────────────── */
 #thread > .thread-header {
   display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.thread-header-top {
+  display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
 }
-.thread-header-main {
+.thread-header-top h2 {
   min-width: 0;
   flex: 1;
+}
+/* Full-width meta row: date · messages · models on the left, the Custom GPT
+   id/name pinned to the far right (under the "Move to" button). Same 11.5px
+   muted styling as the plain meta line. */
+#thread #thread-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+}
+.thread-meta-left {
+  min-width: 0;
+  flex: 1;
+}
+.thread-meta-gizmo {
+  flex-shrink: 0;
+  max-width: 55%;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: text;
+}
+.thread-meta-gizmo:hover {
+  color: var(--text);
+}
+.thread-meta-gizmo-input {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 5px;
+  min-width: 160px;
+  text-align: right;
 }
 #thread-actions {
   display: flex;

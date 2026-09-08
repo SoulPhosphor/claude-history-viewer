@@ -560,26 +560,119 @@ function buildThinkingAccordion(thinkingText) {
   return wrap;
 }
 
-// A clickable chip in the thread header identifying the conversation's Custom
-// GPT. Clicking it renames the gizmo — which applies to every conversation with
-// the same gizmo_id, not just this one.
-function buildPersonaChip(gizmo) {
-  const chip = document.createElement("button");
-  chip.type = "button";
-  chip.className = "persona-chip" + (gizmo.name ? "" : " unnamed");
-  const named = Boolean(gizmo.name);
-  chip.innerHTML =
-    `<span class="persona-chip-icon" aria-hidden="true">🤖</span>` +
-    `<span class="persona-chip-name">${escHtml(gizmo.label)}</span>` +
-    `<span class="persona-chip-action">${named ? "Rename" : "Name this GPT"}</span>`;
-  chip.title = named
-    ? `Custom GPT: ${gizmo.label} — rename across all its conversations`
-    : `Unnamed Custom GPT (${gizmo.id}) — click to name it`;
-  chip.addEventListener("click", (e) => {
-    e.stopPropagation();
-    renameGizmoFlow(gizmo.id, gizmo.name);
+// The far-right Custom GPT label on the thread meta line: shows the gizmo ID
+// until it is named, then the name. Double-click to rename it inline.
+function buildGizmoLabelEl() {
+  const g = state.activeGizmo;
+  const el = document.createElement("span");
+  el.className = "thread-meta-gizmo";
+  el.textContent = g.name || g.id;
+  el.title = g.name
+    ? "Double-click to rename this Custom GPT"
+    : "Double-click to name this Custom GPT";
+  el.addEventListener("dblclick", () => startGizmoRename(el));
+  return el;
+}
+
+// Double-click rename: type the name inline; on commit, warn that it applies to
+// every conversation with this gizmo ID before saving.
+function startGizmoRename(labelEl) {
+  const g = state.activeGizmo;
+  if (!g) return;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "thread-meta-gizmo-input";
+  input.value = g.name || "";
+  input.placeholder = "Name this Custom GPT";
+  labelEl.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let finished = false; // guards Enter + blur both firing
+  const restore = () => input.replaceWith(buildGizmoLabelEl());
+
+  async function commit() {
+    if (finished) return;
+    finished = true;
+    const newName = input.value.trim();
+    restore();
+    if (!newName || newName === (g.name || "")) return;
+    const ok = await openConfirmDialog({
+      message:
+        "This will apply this Custom GPT's name to all conversations with the same ID.\n\n" +
+        `There are currently ${g.count} conversations that has this Custom GPT ID.`,
+      okLabel: "Okay",
+      cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    await apiRenameGizmo(g.id, newName);
+    g.name = newName;
+    if (state.activeId) await openConversation(state.activeId, null);
+    if (state.activeSpecialView === "gizmos") await renderGizmosPanel();
+  }
+  function cancel() {
+    if (finished) return;
+    finished = true;
+    restore();
+  }
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      cancel();
+    }
   });
-  return chip;
+  input.addEventListener("blur", commit);
+}
+
+// A modal warning dialog (Cancel / Okay). Resolves true on Okay, false on
+// Cancel or dismiss. `message` honors line breaks.
+function openConfirmDialog({ message, okLabel = "Okay", cancelLabel = "Cancel" }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    const modal = document.createElement("div");
+    modal.className = "modal";
+    modal.setAttribute("role", "dialog");
+    modal.setAttribute("aria-modal", "true");
+    const msg = document.createElement("div");
+    msg.className = "modal-message";
+    msg.textContent = message;
+    const buttons = document.createElement("div");
+    buttons.className = "modal-buttons";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "modal-btn";
+    cancelBtn.textContent = cancelLabel;
+    const okBtn = document.createElement("button");
+    okBtn.className = "modal-btn modal-btn-primary";
+    okBtn.textContent = okLabel;
+    buttons.append(cancelBtn, okBtn);
+    modal.append(msg, buttons);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    let settled = false;
+    const close = (val) => {
+      if (settled) return;
+      settled = true;
+      overlay.remove();
+      resolve(val);
+    };
+    cancelBtn.addEventListener("click", () => close(false));
+    okBtn.addEventListener("click", () => close(true));
+    overlay.addEventListener("mousedown", (e) => {
+      if (e.target === overlay) close(false);
+    });
+    document.addEventListener("keydown", function onKey(e) {
+      if (e.key === "Escape") {
+        document.removeEventListener("keydown", onKey);
+        close(false);
+      }
+    });
+    okBtn.focus();
+  });
 }
 
 // Prompt for a new display name for a gizmo, save it, and refresh the views that
@@ -879,7 +972,7 @@ let _lastSeenMonth = null;
 function _monthLabel(ts) {
   if (!ts) return null;
   const d = new Date(ts * 1000);
-  return d.toLocaleDateString("zh-CN", { year: "numeric", month: "long" });
+  return d.toLocaleDateString("en-US", { year: "numeric", month: "long" });
 }
 
 // ── File chip helpers ─────────────────────────────────────────────────────────
@@ -2028,18 +2121,32 @@ async function openConversation(id, clickedEl, targetSeq = null) {
 
   threadTitle.textContent = conv.title;
   const ts = formatDate(conv.update_time || conv.create_time);
-  threadMeta.textContent = `${ts} · ${conv.message_count} messages`;
 
-  // Custom GPT identity for this conversation (drives assistant headers + the
-  // renamable persona chip). label is the assigned name, or "Custom GPT".
+  // Meta line: date · N messages · every model used in the conversation. The
+  // models stretch across; the Custom GPT id/name sits at the far right.
+  threadMeta.innerHTML = "";
+  const metaLeft = document.createElement("span");
+  metaLeft.className = "thread-meta-left";
+  let metaText = `${ts} · ${conv.message_count} messages`;
+  const models = Array.isArray(conv.models) ? conv.models : [];
+  const modelLabels = models.map((m) =>
+    conv.source === "chatgpt" ? modelDisplayName(m) : m,
+  );
+  if (modelLabels.length) metaText += ` · ${modelLabels.join(", ")}`;
+  metaLeft.textContent = metaText;
+  threadMeta.appendChild(metaLeft);
+
+  // Custom GPT identity for this conversation. Until the gizmo is named, the
+  // far-right label shows its ID; once named it shows the name. Double-click to
+  // rename it (applies to every conversation with the same gizmo).
   if (conv.gizmo_id) {
     state.activeGizmo = {
       id: conv.gizmo_id,
       name: conv.gizmo_name || "",
       type: conv.gizmo_type || "",
-      label: conv.gizmo_name || "Custom GPT",
+      count: conv.gizmo_conversation_count || 0,
     };
-    threadMeta.appendChild(buildPersonaChip(state.activeGizmo));
+    threadMeta.appendChild(buildGizmoLabelEl());
   } else {
     state.activeGizmo = null;
   }

@@ -608,7 +608,25 @@ def import_claude_conversation(conv: dict, index: int) -> dict:
             msgs = []
         artifacts, status = [], "parse_error"
 
+    # Distinct models used, if the Claude export records them anywhere. Claude
+    # exports do not always include a per-message model; when none is present
+    # this stays empty (the models line simply shows nothing for that chat).
+    models: list[str] = []
+    seen_models: set = set()
+
+    def _note_claude_model(m):
+        if m and isinstance(m, str) and m not in seen_models:
+            seen_models.add(m)
+            models.append(m)
+
+    _note_claude_model(conv.get("model"))
+    for m in raw_msgs:
+        if not isinstance(m, dict):
+            continue
+        _note_claude_model(m.get("model"))
+
     meta = _claude_meta(conv, cid, msgs, status)
+    meta["models"] = json.dumps(models, ensure_ascii=False)
     return {
         "meta":      meta,
         "msgs":      msgs,
@@ -974,6 +992,31 @@ def import_chatgpt_conversation(conv: dict, index: int) -> dict:
         error = f"{type(e).__name__}: {e}"
         msgs, status = [], "parse_error"
 
+    # Distinct models used across the conversation, including every reroll
+    # variant, in first-appearance order.
+    models: list[str] = []
+    seen_models: set = set()
+
+    def _note_model(m):
+        if m and m not in seen_models:
+            seen_models.add(m)
+            models.append(m)
+
+    for row in msgs:
+        if row.get("role") != "assistant":
+            continue
+        try:
+            meta = json.loads(row["meta"]) if row.get("meta") else {}
+        except Exception:
+            meta = {}
+        _note_model(meta.get("model"))
+        if row.get("siblings"):
+            try:
+                for v in json.loads(row["siblings"]):
+                    _note_model(v.get("model"))
+            except Exception:
+                pass
+
     title = (conv.get("title") or "").strip() or "Untitled"
     preview = next((m["content"][:300] for m in msgs if m["role"] == "user" and m["content"]), "")
     if not preview:
@@ -994,6 +1037,7 @@ def import_chatgpt_conversation(conv: dict, index: int) -> dict:
         # GPTs ('gpt') from OpenAI's built-in personalities ('snorlax').
         "gizmo_id":   (str(conv.get("gizmo_id")).strip() or None) if conv.get("gizmo_id") else None,
         "gizmo_type": (str(conv.get("gizmo_type")).strip() or None) if conv.get("gizmo_type") else None,
+        "models":     json.dumps(models, ensure_ascii=False),
     }
     return {
         "meta":      meta,
@@ -1040,7 +1084,10 @@ CREATE TABLE conversations (
     -- they live in userdata.db keyed by gizmo_id so they survive rebuilds and a
     -- single rename applies to every conversation with the same gizmo.
     gizmo_id      TEXT,
-    gizmo_type    TEXT
+    gizmo_type    TEXT,
+    -- Distinct models used across the whole conversation (all assistant turns
+    -- and rerolls), first-appearance order, as a JSON array.
+    models        TEXT
 );
 
 CREATE TABLE conversation_meta (
@@ -1223,7 +1270,7 @@ def build(source, db_path: Path) -> None:
                         "title": "Untitled", "create_time": 0, "update_time": 0,
                         "message_count": 0, "preview": "", "import_status": "parse_error",
                         "source": fmt, "source_conversation_id": None,
-                        "gizmo_id": None, "gizmo_type": None,
+                        "gizmo_id": None, "gizmo_type": None, "models": "[]",
                     },
                     "msgs": [], "artifacts": [], "status": "parse_error",
                     "synthetic": True,
@@ -1266,8 +1313,8 @@ def build(source, db_path: Path) -> None:
 
     db.executemany(
         "INSERT OR REPLACE INTO conversations "
-        "(id, title, create_time, update_time, message_count, preview, import_status, source_index, source, source_conversation_id, gizmo_id, gizmo_type) "
-        "VALUES (:id, :title, :create_time, :update_time, :message_count, :preview, :import_status, :source_index, :source, :source_conversation_id, :gizmo_id, :gizmo_type)",
+        "(id, title, create_time, update_time, message_count, preview, import_status, source_index, source, source_conversation_id, gizmo_id, gizmo_type, models) "
+        "VALUES (:id, :title, :create_time, :update_time, :message_count, :preview, :import_status, :source_index, :source, :source_conversation_id, :gizmo_id, :gizmo_type, :models)",
         conv_rows,
     )
     db.executemany(

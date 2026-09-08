@@ -117,6 +117,8 @@ def _ensure_runtime_schema(db_path: Path) -> None:
             # ChatGPT Custom GPT ("gizmo") identity.
             "ALTER TABLE conversations ADD COLUMN gizmo_id TEXT",
             "ALTER TABLE conversations ADD COLUMN gizmo_type TEXT",
+            # Distinct models used across the conversation (JSON array).
+            "ALTER TABLE conversations ADD COLUMN models TEXT",
             # Per-message ChatGPT display metadata (model, thinking).
             "ALTER TABLE messages ADD COLUMN meta TEXT",
         ):
@@ -939,7 +941,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 conv = conn.execute(
                     "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, c.create_time, c.update_time, c.message_count, c.preview, "
-                    "COALESCE(c.source, 'claude') AS source, c.gizmo_id, c.gizmo_type, "
+                    "COALESCE(c.source, 'claude') AS source, c.gizmo_id, c.gizmo_type, c.models, "
                     "gn.display_name AS gizmo_name "
                     "FROM conversations c LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                     "LEFT JOIN udb.gizmo_names gn ON gn.gizmo_id = c.gizmo_id "
@@ -986,7 +988,29 @@ class Handler(BaseHTTPRequestHandler):
                 artifacts_meta = {r["id"]: dict(r) for r in art_rows}
             except Exception:
                 artifacts_meta = {}
-            self.send_json({"conversation": dict(conv),
+            conv_out = dict(conv)
+            # Parse the models JSON array into a list for the client.
+            raw_models = conv_out.get("models")
+            if raw_models:
+                try:
+                    conv_out["models"] = json.loads(raw_models)
+                except Exception:
+                    conv_out["models"] = []
+            else:
+                conv_out["models"] = []
+            # How many conversations share this gizmo (used in the rename warning).
+            conv_out["gizmo_conversation_count"] = 0
+            gid = conv_out.get("gizmo_id")
+            if gid:
+                try:
+                    conv_out["gizmo_conversation_count"] = conn.execute(
+                        "SELECT COUNT(*) FROM conversations c "
+                        "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                        "WHERE c.gizmo_id = ? AND COALESCE(cm.deleted, 0) = 0", (gid,),
+                    ).fetchone()[0]
+                except sqlite3.Error:
+                    pass
+            self.send_json({"conversation": conv_out,
                             "messages": [parse_msg(m) for m in msgs],
                             "artifacts": artifacts_meta})
         finally:
