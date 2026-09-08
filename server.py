@@ -396,6 +396,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_sources()
         elif path == "/api/gizmos":
             self._api_gizmos_list()
+        elif path == "/api/gizmo-conversations":
+            self._api_gizmo_conversations(qs)
         elif path == "/api/conversations":
             self._api_conversations(qs)
         elif path.startswith("/api/conversation/"):
@@ -685,6 +687,34 @@ class Handler(BaseHTTPRequestHandler):
                     "sample_titles": [s["title"] for s in samples],
                 })
             self.send_json({"gizmos": gizmos})
+        finally:
+            conn.close()
+
+    def _api_gizmo_conversations(self, qs):
+        """List every conversation belonging to one Custom GPT (for the manager's
+        per-gizmo screen)."""
+        gizmo_id = ((qs.get("gizmo_id") or [""])[0]).strip()
+        if not gizmo_id:
+            self.send_json({"error": "missing gizmo_id"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            name_row = conn.execute(
+                "SELECT display_name FROM udb.gizmo_names WHERE gizmo_id = ?", (gizmo_id,)
+            ).fetchone()
+            rows = conn.execute(
+                "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
+                "c.create_time, c.update_time, c.message_count "
+                "FROM conversations c "
+                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                "WHERE c.gizmo_id = ? AND COALESCE(cm.deleted, 0) = 0 "
+                "ORDER BY c.update_time DESC, c.create_time DESC",
+                (gizmo_id,),
+            ).fetchall()
+            self.send_json({
+                "gizmo_id": gizmo_id,
+                "display_name": (name_row["display_name"] if name_row else "") or "",
+                "conversations": [dict(r) for r in rows],
+            })
         finally:
             conn.close()
 

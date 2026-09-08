@@ -570,45 +570,62 @@ function buildGizmoLabelEl() {
   el.title = g.name
     ? "Double-click to rename this Custom GPT"
     : "Double-click to name this Custom GPT";
-  el.addEventListener("dblclick", () => startGizmoRename(el));
+  el.addEventListener("dblclick", () =>
+    beginInlineGizmoRename(el, {
+      gizmoId: g.id,
+      currentName: g.name,
+      count: g.count,
+      rebuild: buildGizmoLabelEl,
+      onSaved: async (newName) => {
+        g.name = newName;
+        if (state.activeId) await openConversation(state.activeId, null);
+        if (state.activeSpecialView === "gizmos") await renderGizmosPanel();
+      },
+    }),
+  );
   return el;
 }
 
-// Double-click rename: type the name inline; on commit, warn that it applies to
-// every conversation with this gizmo ID before saving.
-function startGizmoRename(labelEl) {
-  const g = state.activeGizmo;
-  if (!g) return;
+// The one warning shown before a Custom GPT name is saved, everywhere a rename
+// happens. Resolves true on Okay.
+function confirmGizmoRename(count) {
+  return openConfirmDialog({
+    message:
+      "This will apply this Custom GPT's name to all conversations with the same ID.\n\n" +
+      `There are currently ${count} conversations that have this Custom GPT ID.`,
+    okLabel: "Okay",
+    cancelLabel: "Cancel",
+  });
+}
+
+// Shared inline rename: replace `labelEl` with a text box, type the name, and on
+// commit show the warning before saving. Used by both the conversation header
+// and the Custom GPTs manager so there is only one rename experience.
+//   rebuild()      → returns a fresh label element to restore on cancel/no-change
+//   onSaved(name)  → called after a successful save
+function beginInlineGizmoRename(labelEl, { gizmoId, currentName, count, rebuild, onSaved }) {
   const input = document.createElement("input");
   input.type = "text";
   input.className = "thread-meta-gizmo-input";
-  input.value = g.name || "";
+  input.value = currentName || "";
   input.placeholder = "Name this Custom GPT";
   labelEl.replaceWith(input);
   input.focus();
   input.select();
 
   let finished = false; // guards Enter + blur both firing
-  const restore = () => input.replaceWith(buildGizmoLabelEl());
+  const restore = () => input.replaceWith(rebuild());
 
   async function commit() {
     if (finished) return;
     finished = true;
     const newName = input.value.trim();
     restore();
-    if (!newName || newName === (g.name || "")) return;
-    const ok = await openConfirmDialog({
-      message:
-        "This will apply this Custom GPT's name to all conversations with the same ID.\n\n" +
-        `There are currently ${g.count} conversations that has this Custom GPT ID.`,
-      okLabel: "Okay",
-      cancelLabel: "Cancel",
-    });
+    if (!newName || newName === (currentName || "")) return;
+    const ok = await confirmGizmoRename(count);
     if (!ok) return;
-    await apiRenameGizmo(g.id, newName);
-    g.name = newName;
-    if (state.activeId) await openConversation(state.activeId, null);
-    if (state.activeSpecialView === "gizmos") await renderGizmosPanel();
+    await apiRenameGizmo(gizmoId, newName);
+    if (onSaved) await onSaved(newName);
   }
   function cancel() {
     if (finished) return;
@@ -673,23 +690,6 @@ function openConfirmDialog({ message, okLabel = "Okay", cancelLabel = "Cancel" }
     });
     okBtn.focus();
   });
-}
-
-// Prompt for a new display name for a gizmo, save it, and refresh the views that
-// show persona names. Used by the thread-header chip and the Custom GPTs panel.
-async function renameGizmoFlow(gizmoId, currentName) {
-  const name = await openNameModal({
-    title: "Name this Custom GPT",
-    value: currentName || "",
-    okLabel: "Save",
-  });
-  if (name === null) return; // cancelled
-  await apiRenameGizmo(gizmoId, name);
-  // Reflect the change everywhere it is visible.
-  if (state.activeGizmo && state.activeGizmo.id === gizmoId && state.activeId) {
-    await openConversation(state.activeId, null);
-  }
-  if (state.activeSpecialView === "gizmos") await renderGizmosPanel();
 }
 
 // Swap a message's Thinking accordion for one holding `text` (or remove it when
@@ -3186,7 +3186,52 @@ async function openGizmos() {
   await renderGizmosPanel();
 }
 
+async function apiGizmoConversations(gizmoId) {
+  const r = await fetch(
+    `/api/gizmo-conversations?gizmo_id=${encodeURIComponent(gizmoId)}`,
+  );
+  return r.json();
+}
+
 async function renderGizmosPanel() {
+  await renderGizmosList();
+}
+
+// The inline-renamable name element for a gizmo card.
+function makeGizmoNameEl(g) {
+  const named = Boolean(g.display_name);
+  const nameEl = document.createElement("div");
+  nameEl.className = "gizmo-name";
+  nameEl.textContent = named ? g.display_name : "Custom GPT (unnamed)";
+  nameEl.title = named
+    ? "Double-click to rename this Custom GPT"
+    : "Double-click to name this Custom GPT";
+  nameEl.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    startGizmoCardRename(nameEl, g);
+  });
+  return nameEl;
+}
+
+function startGizmoCardRename(nameEl, g) {
+  beginInlineGizmoRename(nameEl, {
+    gizmoId: g.gizmo_id,
+    currentName: g.display_name,
+    count: g.conversation_count,
+    rebuild: () => makeGizmoNameEl(g),
+    onSaved: async (newName) => {
+      g.display_name = newName;
+      await renderGizmosList();
+      // Keep an open conversation with this gizmo in sync.
+      if (state.activeGizmo && state.activeGizmo.id === g.gizmo_id) {
+        state.activeGizmo.name = newName;
+        if (state.activeId) await openConversation(state.activeId, null);
+      }
+    },
+  });
+}
+
+async function renderGizmosList() {
   if (!gizmosContent) return;
   gizmosContent.innerHTML = '<div class="loading">Loading…</div>';
   let data;
@@ -3206,22 +3251,20 @@ async function renderGizmosPanel() {
 
   for (const g of gizmos) {
     const named = Boolean(g.display_name);
+    const count = g.conversation_count;
     const card = document.createElement("div");
     card.className = "gizmo-card" + (named ? "" : " unnamed");
 
     const head = document.createElement("div");
     head.className = "gizmo-card-head";
-    const nameEl = document.createElement("div");
-    nameEl.className = "gizmo-name";
-    nameEl.textContent = named ? g.display_name : "Custom GPT (unnamed)";
+    head.append(makeGizmoNameEl(g));
     const typeBadge = document.createElement("span");
     typeBadge.className = "gizmo-type";
     typeBadge.textContent = g.gizmo_type || "gpt";
-    head.append(nameEl, typeBadge);
+    head.append(typeBadge);
 
     const meta = document.createElement("div");
     meta.className = "gizmo-meta";
-    const count = g.conversation_count;
     meta.textContent =
       `${count} conversation${count !== 1 ? "s" : ""} · ${g.gizmo_id}`;
 
@@ -3231,21 +3274,76 @@ async function renderGizmosPanel() {
 
     const actions = document.createElement("div");
     actions.className = "gizmo-actions";
+    const viewBtn = document.createElement("button");
+    viewBtn.className = "gizmo-btn";
+    viewBtn.textContent = `View ${count} conversation${count !== 1 ? "s" : ""}`;
+    viewBtn.addEventListener("click", () => renderGizmoConversations(g));
     const renameBtn = document.createElement("button");
     renameBtn.className = "gizmo-btn";
     renameBtn.textContent = named ? "Rename" : "Name this GPT";
-    renameBtn.addEventListener("click", () =>
-      renameGizmoFlow(g.gizmo_id, g.display_name),
-    );
+    renameBtn.addEventListener("click", () => {
+      const nameEl = head.querySelector(".gizmo-name");
+      if (nameEl) startGizmoCardRename(nameEl, g);
+    });
     const moveBtn = document.createElement("button");
     moveBtn.className = "gizmo-btn";
     moveBtn.textContent = `Move all ${count} to folder`;
     moveBtn.addEventListener("click", () => moveGizmoToFolderFlow(g));
-    actions.append(renameBtn, moveBtn);
+    actions.append(viewBtn, renameBtn, moveBtn);
 
     card.append(head, meta, samples, actions);
     gizmosContent.appendChild(card);
   }
+}
+
+// The per-Custom-GPT screen: every conversation for one gizmo on one screen,
+// each opening the conversation when clicked.
+async function renderGizmoConversations(g) {
+  if (!gizmosContent) return;
+  gizmosContent.innerHTML = '<div class="loading">Loading…</div>';
+  let data;
+  try {
+    data = await apiGizmoConversations(g.gizmo_id);
+  } catch (e) {
+    gizmosContent.innerHTML = `<div class="no-results">Could not load conversations: ${escHtml(e.message)}.</div>`;
+    return;
+  }
+
+  gizmosContent.innerHTML = "";
+  const back = document.createElement("button");
+  back.className = "gizmo-back";
+  back.textContent = "← All Custom GPTs";
+  back.addEventListener("click", () => renderGizmosList());
+  gizmosContent.appendChild(back);
+
+  const title = document.createElement("div");
+  title.className = "gizmo-detail-title";
+  title.textContent = data.display_name || "Custom GPT";
+  gizmosContent.appendChild(title);
+
+  const convs = data.conversations || [];
+  const sub = document.createElement("div");
+  sub.className = "gizmo-detail-sub";
+  sub.textContent =
+    `${convs.length} conversation${convs.length !== 1 ? "s" : ""} · ${g.gizmo_id}`;
+  gizmosContent.appendChild(sub);
+
+  const list = document.createElement("div");
+  list.className = "gizmo-conv-list";
+  for (const c of convs) {
+    const item = document.createElement("button");
+    item.className = "gizmo-conv-item";
+    const date = formatDate(c.update_time || c.create_time);
+    item.innerHTML =
+      `<div class="gizmo-conv-title">${escHtml(c.title || "Untitled")}</div>` +
+      `<div class="gizmo-conv-meta"><span>${escHtml(date)}</span><span>${c.message_count} msg${c.message_count !== 1 ? "s" : ""}</span></div>`;
+    item.addEventListener("click", () => openConversation(c.id, null));
+    list.appendChild(item);
+  }
+  if (!convs.length) {
+    list.innerHTML = '<div class="no-results">No conversations.</div>';
+  }
+  gizmosContent.appendChild(list);
 }
 
 // Move every conversation of a gizmo into a folder. Offers existing folders and
