@@ -2710,3 +2710,8 @@ kbd {
   margin-bottom: 18px;
   line-height: 1.5;
 }
+
+/* A source object collapsed into another with the same ID (import audit). */
+.audit-conv-dup {
+  color: var(--accent);
+}
