@@ -2172,9 +2172,25 @@ if (sidebarResizeHandle) {
 
 // ── Keyboard navigation ───────────────────────────────────────────────────────
 
+// True for anything the user types into: the search box, a rename dialog, the
+// model form's fields. Shortcuts must not fire from these — bare "/" and the
+// arrows would otherwise steal focus mid-word and make text like "React/Vue"
+// impossible to type.
+function isTextEntryTarget(el) {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  const tag = el.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  // Buttons and checkboxes are inputs too, but nothing is typed into them.
+  return (
+    tag === "INPUT" &&
+    !["button", "submit", "reset", "checkbox", "radio"].includes(el.type)
+  );
+}
+
 document.addEventListener("keydown", (e) => {
-  // Don't intercept when typing in the search box
-  if (e.target === searchEl) return;
+  // Don't intercept while the user is typing into any field
+  if (isTextEntryTarget(e.target)) return;
 
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
     e.preventDefault();
