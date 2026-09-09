@@ -2491,3 +2491,222 @@ kbd {
 .modal-btn-primary:hover {
   background: var(--user-label);
 }
+
+/* ── Claude model availability ────────────────────────────────────────────── */
+
+/* The model strip in the conversation header: selected models as removable
+   text, then an unobtrusive [ + ] to add another, then any warning icons. */
+.model-strip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 5px;
+  flex-wrap: wrap;
+}
+
+.model-sep {
+  color: var(--muted);
+}
+
+.model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.model-chip-x,
+.model-row-delete {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85em;
+  line-height: 1;
+}
+
+.model-chip-x:hover,
+.model-row-delete:hover {
+  color: var(--accent);
+}
+
+.model-select {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 4px;
+  max-width: 240px;
+  cursor: pointer;
+}
+
+.model-select:hover {
+  border-color: var(--accent);
+}
+
+/* The "add another" state is deliberately small — available, not attention-
+   seeking, since a model is usually already chosen by then. */
+.model-select-add {
+  /* Just wide enough for the + and the dropdown arrow: the option list is a
+     native popup, so it is never clipped by this width. */
+  width: 2.9em;
+  padding: 1px 0 1px 5px;
+  color: var(--muted);
+}
+
+/* Both warnings are black so they read as information, not as an error. */
+.warn-icon {
+  display: inline-flex;
+  align-items: center;
+  color: #000;
+}
+
+.warn-icon svg {
+  width: 1em;
+  height: 1em;
+}
+
+.warn-btn {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  margin-left: 4px;
+  cursor: pointer;
+}
+
+/* In the sidebar the icons sit in front of the conversation name. */
+.conv-title .warn-icon {
+  margin-right: 4px;
+  vertical-align: -0.15em;
+}
+
+/* ── Add Claude Models screen ─────────────────────────────────────────────── */
+
+#claude-models-content {
+  padding: 16px 24px 32px;
+  overflow-y: auto;
+}
+
+#model-add-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.model-add-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.model-add-field label {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.model-add-field input {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.model-add-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+#model-add-btn {
+  font: inherit;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  padding: 7px 18px;
+  cursor: pointer;
+}
+
+#model-add-btn:hover {
+  filter: brightness(1.05);
+}
+
+.model-form-error {
+  margin-top: 10px;
+  color: #b3261e;
+  font-size: 0.85rem;
+}
+
+#model-table {
+  width: 100%;
+  margin-top: 18px;
+  border-collapse: collapse;
+}
+
+#model-table th {
+  text-align: left;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+#model-table td {
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Give the dates only the room they need so the model names get the rest. */
+#model-table th:nth-child(2),
+#model-table th:nth-child(3),
+#model-table td:nth-child(2),
+#model-table td:nth-child(3) {
+  width: 170px;
+}
+
+/* A model's second availability window is tied to the first by dropping the
+   rule between them, so the pair reads as one model with two date ranges. */
+#model-table tr.model-row-continued td {
+  border-top: none;
+}
+
+#model-table tr.model-row-continued td:first-child .model-cell-input {
+  color: var(--muted);
+}
+
+.model-cell-input {
+  font: inherit;
+  color: inherit;
+  width: 100%;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 5px 6px;
+}
+
+.model-cell-input:hover {
+  border-color: var(--border);
+}
+
+.model-cell-input:focus {
+  outline: none;
+  background: var(--bg);
+  border-color: var(--accent);
+}
+
+.model-cell-actions {
+  width: 32px;
+  text-align: right;
+}
+
+/* Plain text in a dialog, for the two model warnings. */
+.modal-text {
+  margin-bottom: 18px;
+  line-height: 1.5;
+}
