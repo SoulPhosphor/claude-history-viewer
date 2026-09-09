@@ -1441,8 +1441,10 @@ async function activateTab(tabId) {
 function renderTabs() {
   tabsList.innerHTML = "";
   const tabsToRender = state.tabs.filter(isTopTab);
-  // The strip exists to sit two or more things side by side. With one tab
-  // there is nothing to compare it against, so the strip stays out of the way.
+  // The strip is for comparing chats side by side, so it appears only once
+  // there are two. One chat needs no tab — the sidebar switches between them —
+  // and hiding the strip lets the header sit at the very top of the screen.
+  // The row itself stays open in workspace_tabs; it is not closed, just undrawn.
   tabsWrap.hidden = tabsToRender.length < 2;
   for (const t of tabsToRender) {
     const tab = document.createElement("div");
