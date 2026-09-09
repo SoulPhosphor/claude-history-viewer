@@ -2968,34 +2968,55 @@ async function applyModelState(convId, data) {
   state.models = data;
   renderModelStrip();
   refreshConvWarningIcons(convId, data);
-  await refreshUnverifiedCount();
+  await refreshModelWarnings();
 }
 
 function refreshConvWarningIcons(convId, data) {
-  const row = findConvItemEl(convId);
-  const titleEl = row?.querySelector(".conv-title");
+  const titleEl = findConvItemEl(convId)?.querySelector(".conv-title");
   if (!titleEl) return;
-  titleEl.querySelectorAll(".warn-icon").forEach((el) => el.remove());
-  titleEl.insertAdjacentHTML(
-    "afterbegin",
-    warningIconsHtml({
-      warn_range: data.warn_range,
-      warn_coverage: data.warn_coverage,
-    }),
+  setRowWarningIcons(
+    titleEl,
+    data.warn_range || data.warn_coverage ? data : null,
   );
 }
 
-async function refreshUnverifiedCount() {
+// Editing availability dates can flip the warning state of conversations that
+// are already on screen. Their icons were baked into the rendered rows, so the
+// whole visible list has to be swept, not just the aggregate count.
+const UNVERIFIED_SWEEP_LIMIT = 500;
+
+async function refreshModelWarnings() {
   if (!isClaudeSide()) return;
+  let data;
   try {
-    const d = await fetch("/api/conversations?view=unverified&limit=1").then(
-      (r) => r.json(),
-    );
-    state.unverifiedCount = d.unverified_count || 0;
+    data = await fetch(
+      `/api/conversations?view=unverified&limit=${UNVERIFIED_SWEEP_LIMIT}`,
+    ).then((r) => r.json());
   } catch {
-    /* leave the last known count in place */
+    return; // leave the last known state in place
   }
+  state.unverifiedCount = data.unverified_count || 0;
   syncUnverifiedOption();
+
+  const flagged = data.conversations || [];
+  // The Unverified view lists exactly the flagged conversations, so a change
+  // adds or removes rows rather than just icons — and more flagged rows than
+  // one sweep page means the list itself is the only reliable source.
+  if (state.view === "unverified" || (data.total || 0) > flagged.length) {
+    loadConversations(false);
+    return;
+  }
+  const byId = new Map(flagged.map((c) => [c.id, c]));
+  for (const el of convList.querySelectorAll(".conv-item")) {
+    const titleEl = el.querySelector(".conv-title");
+    if (!titleEl) continue;
+    setRowWarningIcons(titleEl, byId.get(el.dataset.id));
+  }
+}
+
+function setRowWarningIcons(titleEl, conv) {
+  titleEl.querySelectorAll(".warn-icon").forEach((el) => el.remove());
+  if (conv) titleEl.insertAdjacentHTML("afterbegin", warningIconsHtml(conv));
 }
 
 async function addConvModel(convId, modelId) {
@@ -3178,7 +3199,7 @@ async function saveModelRow(row, field, next, input, previous) {
     showModelError(e.message);
   }
   // Changed dates can move conversations in or out of range.
-  await refreshUnverifiedCount();
+  await refreshModelWarnings();
 }
 
 async function deleteModelRow(row) {
@@ -3193,7 +3214,7 @@ async function deleteModelRow(row) {
   } catch (e) {
     showModelError(e.message);
   }
-  await refreshUnverifiedCount();
+  await refreshModelWarnings();
 }
 
 function showModelError(msg) {
@@ -3223,7 +3244,7 @@ modelAddForm?.addEventListener("submit", async (e) => {
     showModelError(err.message);
     return;
   }
-  await refreshUnverifiedCount();
+  await refreshModelWarnings();
 });
 
 // ── Sidebar popup menu ("More" button) ─────────────────────────────────────────

@@ -1754,11 +1754,16 @@ class Handler(BaseHTTPRequestHandler):
         payload = self._read_json_body()
         name  = str(payload.get("name") or "").strip()
         start = _norm_date(payload.get("start_date"))
-        end   = _norm_date(payload.get("end_date"))
+        # An omitted end date means "still available"; a malformed one is an
+        # error. Collapsing the two would turn a typo into an open-ended period.
+        raw_end = str(payload.get("end_date") or "").strip()
+        end = None if not raw_end else _norm_date(raw_end)
         if not name:
             self.send_json({"error": "Model Name is required"}, 400); return
         if not start:
             self.send_json({"error": "Beginning date is required (YYYY-MM-DD)"}, 400); return
+        if raw_end and not end:
+            self.send_json({"error": "End date must be YYYY-MM-DD"}, 400); return
         if end and end <= start:
             self.send_json({"error": "End date must be after the beginning date"}, 400); return
         conn = open_db(self.db_path)
