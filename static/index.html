@@ -234,7 +234,7 @@
       <div id="sidebar-resize" aria-hidden="true"></div>
 
       <main id="main">
-        <div id="tabs-wrap">
+        <div id="tabs-wrap" hidden>
           <div id="tabs-list"></div>
         </div>
         <div id="empty-state">
@@ -286,7 +286,30 @@
         </div>
 
         <div id="thread" hidden>
-          <div class="thread-header">
+          <!-- Thin title bar, always visible. Its chevron shows or hides the
+               header below it; collapsed, the bar carries the chat's name so
+               the top of the pane is one slim line. -->
+          <div class="thread-titlebar">
+            <button
+              id="thread-collapse-btn"
+              type="button"
+              title="Collapse header"
+              aria-label="Collapse header"
+              aria-expanded="true"
+            >
+              <svg class="thread-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path
+                  d="M6 4l4 4-4 4"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+            <span id="thread-titlebar-label"></span>
+          </div>
+          <div class="thread-header" id="thread-header">
             <div class="thread-header-main">
               <h2 id="thread-title"></h2>
               <div id="thread-meta"></div>

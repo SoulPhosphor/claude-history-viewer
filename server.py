@@ -2127,8 +2127,12 @@ class Handler(BaseHTTPRequestHandler):
         conn = open_db(self.db_path)
         try:
             rows = conn.execute(
+                # No pinned DESC: the tab strip has no pin control any more, so
+                # honouring the flag would strand a database written by an
+                # older version with some tabs permanently jumping the queue
+                # and no way to release them.
                 "SELECT id, tab_type, conversation_id, artifact_id, title, pinned, sort_index, last_active_at "
-                "FROM workspace_tabs WHERE closed = 0 ORDER BY pinned DESC, sort_index ASC, last_active_at DESC"
+                "FROM workspace_tabs WHERE closed = 0 ORDER BY sort_index ASC, last_active_at DESC"
             ).fetchall()
             self.send_json({"tabs": [dict(r) for r in rows]})
         finally:

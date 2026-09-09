@@ -605,6 +605,10 @@ mark.search-term-highlight {
   min-width: 0;
 }
 
+/* A class display value beats the UA [hidden] rule, so restore it explicitly. */
+#tabs-wrap[hidden] {
+  display: none;
+}
 #tabs-wrap {
   display: flex;
   align-items: center;
@@ -644,14 +648,6 @@ mark.search-term-highlight {
   color: inherit;
   cursor: pointer;
   font-size: 12px;
-  line-height: 1;
-}
-.top-tab .tab-pin {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font-size: 11px;
   line-height: 1;
 }
 
@@ -2714,4 +2710,81 @@ kbd {
 /* A source object collapsed into another with the same ID (import audit). */
 .audit-conv-dup {
   color: var(--accent);
+
+/* ── Thread title bar ─────────────────────────────────────────────────────── */
+/* One line above the title / Move-to row, inside the same header box: the
+   chevron rolls that row up the way a window collapses into its title bar. */
+.thread-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 40px 0;
+  background: var(--bg);
+  flex-shrink: 0;
+  min-height: 20px;
+}
+
+#thread-titlebar-label {
+  order: 1;
+}
+
+/* Expanded, the bar and the header read as one box, so only the header carries
+   the rule. Collapsed, the bar is the whole thing and carries it instead. */
+#thread.header-collapsed .thread-titlebar {
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* The chevron is pinned to the right edge so it does not move between the two
+   states: open, the line holds nothing else; closed, the title sits to its
+   left and the chevron stays exactly where it was. */
+#thread-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  order: 2;
+  margin-left: auto;
+}
+
+#thread-collapse-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* Points right when collapsed, down when open — an outline chevron, not a
+   filled triangle. */
+.thread-chevron {
+  width: 13px;
+  height: 13px;
+  transform: rotate(90deg);
+  transition: transform 0.12s ease;
+}
+
+#thread.header-collapsed .thread-chevron {
+  transform: rotate(0deg);
+}
+
+#thread-titlebar-label {
+  /* min-width:0 lets a long title actually shrink and ellipsise inside the
+     flex row instead of shoving the chevron off the right edge. */
+  min-width: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The header keeps its own padding; the bar above supplies the top gap. */
+#thread.header-collapsed .thread-header {
+  display: none;
 }
