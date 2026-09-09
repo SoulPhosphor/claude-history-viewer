@@ -1448,24 +1448,35 @@ class Handler(BaseHTTPRequestHandler):
                 # duplicates included, so the audit adds up to the source file.
                 # Databases built before it existed fall back to conversations,
                 # which undercounts collapsed duplicates but still works.
-                by_source = bool(conn.execute(
+                by_source = False
+                if conn.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='import_sources'"
-                ).fetchone()) and bool(conn.execute(
-                    "SELECT 1 FROM import_sources LIMIT 1"
-                ).fetchone())
+                ).fetchone():
+                    # message_count arrived with the per-source metadata; an
+                    # import_sources built before it can't answer these queries.
+                    cols = {r[1] for r in conn.execute("PRAGMA table_info(import_sources)")}
+                    by_source = "message_count" in cols and bool(
+                        conn.execute("SELECT 1 FROM import_sources LIMIT 1").fetchone()
+                    )
 
                 if status:
                     if status not in valid:
                         self.send_json({"error": "unknown status"}, 400); return
                     if by_source:
+                        # Every column comes from the source object itself. A
+                        # collapsed duplicate reporting the winning record's
+                        # message count and dates would contradict the very
+                        # thing this view exists to show. Only a user's rename
+                        # is borrowed, and only for the record actually stored.
                         rows = conn.execute(
                             "SELECT s.conversation_id AS id, "
-                            "COALESCE(NULLIF(cm.custom_title, ''), s.title) AS title, "
-                            "c.create_time, c.update_time, "
-                            "COALESCE(c.message_count, 0) AS message_count, c.preview, "
+                            "CASE WHEN s.kept = 1 "
+                            "     THEN COALESCE(NULLIF(cm.custom_title, ''), s.title) "
+                            "     ELSE s.title END AS title, "
+                            "s.create_time, s.update_time, "
+                            "COALESCE(s.message_count, 0) AS message_count, s.preview, "
                             "s.import_status, s.source_index, s.kept "
                             "FROM import_sources s "
-                            "LEFT JOIN conversations c ON c.id = s.conversation_id "
                             "LEFT JOIN conversation_meta cm ON cm.conversation_id = s.conversation_id "
                             "WHERE s.import_status = ? "
                             "ORDER BY s.source_index ASC",

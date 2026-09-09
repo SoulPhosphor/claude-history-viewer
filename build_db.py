@@ -878,7 +878,15 @@ CREATE TABLE import_sources (
     title           TEXT,
     import_status   TEXT,
     synthetic       INTEGER DEFAULT 0,
-    kept            INTEGER DEFAULT 1   -- 0 = collapsed duplicate of this ID
+    kept            INTEGER DEFAULT 1,  -- 0 = collapsed duplicate of this ID
+    -- Each source object's own counts and dates. Reading these off the winning
+    -- conversations row instead would make a collapsed record report the
+    -- winner's message count and dates, which is exactly what the audit is
+    -- meant to let you check.
+    create_time     REAL,
+    update_time     REAL,
+    message_count   INTEGER,
+    preview         TEXT
 );
 
 CREATE INDEX idx_import_sources_status ON import_sources (import_status);
@@ -953,9 +961,12 @@ def build(source: Path, db_path: Path) -> None:
         # the ID, so the audit's totals still match conversations.json and the
         # collapsed indices stay traceable.
         for rec in recs:
+            rm = rec["meta"]
             source_rows.append((
-                rec["index"], cid, rec["meta"]["title"], rec["status"],
+                rec["index"], cid, rm["title"], rec["status"],
                 1 if rec["synthetic"] else 0, 1 if rec is best else 0,
+                rm.get("create_time"), rm.get("update_time"),
+                rm.get("message_count"), rm.get("preview"),
             ))
         # Record which top-level object in conversations.json this row came from,
         # so an audit view can trace a DB record back to the exact source entry.
@@ -983,8 +994,9 @@ def build(source: Path, db_path: Path) -> None:
     db.executemany("INSERT INTO search_index VALUES (?, ?, ?)", fts_rows)
     db.executemany(
         "INSERT OR REPLACE INTO import_sources "
-        "(source_index, conversation_id, title, import_status, synthetic, kept) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
+        "(source_index, conversation_id, title, import_status, synthetic, kept, "
+        " create_time, update_time, message_count, preview) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         source_rows,
     )
 
