@@ -2713,10 +2713,14 @@ kbd {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 40px 0 34px;
+  padding: 3px 40px 0;
   background: var(--bg);
   flex-shrink: 0;
   min-height: 20px;
+}
+
+#thread-titlebar-label {
+  order: 1;
 }
 
 /* Expanded, the bar and the header read as one box, so only the header carries
@@ -2726,6 +2730,9 @@ kbd {
   border-bottom: 1px solid var(--border);
 }
 
+/* The chevron is pinned to the right edge so it does not move between the two
+   states: open, the line holds nothing else; closed, the title sits to its
+   left and the chevron stays exactly where it was. */
 #thread-collapse-btn {
   display: inline-flex;
   align-items: center;
@@ -2738,6 +2745,8 @@ kbd {
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  order: 2;
+  margin-left: auto;
 }
 
 #thread-collapse-btn:hover {
@@ -2759,6 +2768,9 @@ kbd {
 }
 
 #thread-titlebar-label {
+  /* min-width:0 lets a long title actually shrink and ellipsise inside the
+     flex row instead of shoving the chevron off the right edge. */
+  min-width: 0;
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
