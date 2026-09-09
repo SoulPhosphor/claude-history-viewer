@@ -1106,9 +1106,15 @@ class Handler(BaseHTTPRequestHandler):
         conn = open_db(self.db_path)
         try:
             conv = conn.execute(
-                "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, c.create_time, c.update_time, c.message_count, c.preview "
+                "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
+                "c.create_time, c.update_time, c.message_count, c.preview, "
+                "COALESCE(c.import_status, 'normal') AS import_status, "
+                "COALESCE(cm.deleted, 0) AS deleted "
                 "FROM conversations c LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
-                "WHERE c.id = ? AND COALESCE(cm.deleted, 0) = 0", (conv_id,)
+                # No deleted filter: soft-deleted means "kept out of the lists",
+                # not "unreadable". The import audit lists these deliberately,
+                # and refusing them here left it opening records it could not show.
+                "WHERE c.id = ?", (conv_id,)
             ).fetchone()
             if not conv:
                 self.send_error(404); return
@@ -1438,22 +1444,58 @@ class Handler(BaseHTTPRequestHandler):
             # import_status/source_index may be absent on very old DBs; the
             # runtime schema adds them, but stay defensive.
             try:
+                # import_sources holds one row per object in conversations.json,
+                # duplicates included, so the audit adds up to the source file.
+                # Databases built before it existed fall back to conversations,
+                # which undercounts collapsed duplicates but still works.
+                by_source = False
+                if conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='import_sources'"
+                ).fetchone():
+                    # message_count arrived with the per-source metadata; an
+                    # import_sources built before it can't answer these queries.
+                    cols = {r[1] for r in conn.execute("PRAGMA table_info(import_sources)")}
+                    by_source = "message_count" in cols and bool(
+                        conn.execute("SELECT 1 FROM import_sources LIMIT 1").fetchone()
+                    )
+
                 if status:
                     if status not in valid:
                         self.send_json({"error": "unknown status"}, 400); return
-                    rows = conn.execute(
-                        "SELECT c.id, "
-                        "COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
-                        "c.create_time, c.update_time, c.message_count, c.preview, "
-                        "c.import_status, c.source_index "
-                        "FROM conversations c "
-                        "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
-                        # No archived/deleted filter: this is an import audit, so
-                        # it must show every record of the status (counts match).
-                        "WHERE COALESCE(c.import_status, 'normal') = ? "
-                        "ORDER BY c.source_index IS NULL, c.source_index ASC, c.create_time DESC",
-                        (status,),
-                    ).fetchall()
+                    if by_source:
+                        # Every column comes from the source object itself. A
+                        # collapsed duplicate reporting the winning record's
+                        # message count and dates would contradict the very
+                        # thing this view exists to show. Only a user's rename
+                        # is borrowed, and only for the record actually stored.
+                        rows = conn.execute(
+                            "SELECT s.conversation_id AS id, "
+                            "CASE WHEN s.kept = 1 "
+                            "     THEN COALESCE(NULLIF(cm.custom_title, ''), s.title) "
+                            "     ELSE s.title END AS title, "
+                            "s.create_time, s.update_time, "
+                            "COALESCE(s.message_count, 0) AS message_count, s.preview, "
+                            "s.import_status, s.source_index, s.kept "
+                            "FROM import_sources s "
+                            "LEFT JOIN conversation_meta cm ON cm.conversation_id = s.conversation_id "
+                            "WHERE s.import_status = ? "
+                            "ORDER BY s.source_index ASC",
+                            (status,),
+                        ).fetchall()
+                    else:
+                        rows = conn.execute(
+                            "SELECT c.id, "
+                            "COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
+                            "c.create_time, c.update_time, c.message_count, c.preview, "
+                            "c.import_status, c.source_index, 1 AS kept "
+                            "FROM conversations c "
+                            "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                            # No archived/deleted filter: this is an import audit, so
+                            # it must show every record of the status (counts match).
+                            "WHERE COALESCE(c.import_status, 'normal') = ? "
+                            "ORDER BY c.source_index IS NULL, c.source_index ASC, c.create_time DESC",
+                            (status,),
+                        ).fetchall()
                     self.send_json({
                         "status": status,
                         "conversations": [dict(r) for r in rows],
@@ -1462,15 +1504,30 @@ class Handler(BaseHTTPRequestHandler):
                     return
 
                 counts = {}
-                for r in conn.execute(
-                    "SELECT COALESCE(import_status, 'normal') AS s, COUNT(*) AS n "
-                    "FROM conversations GROUP BY COALESCE(import_status, 'normal')"
-                ).fetchall():
-                    counts[r["s"]] = r["n"]
-                total = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-                synthetic = conn.execute(
-                    "SELECT COUNT(*) FROM conversations WHERE id LIKE 'synthetic-%'"
-                ).fetchone()[0]
+                if by_source:
+                    for r in conn.execute(
+                        "SELECT import_status AS s, COUNT(*) AS n "
+                        "FROM import_sources GROUP BY import_status"
+                    ).fetchall():
+                        counts[r["s"]] = r["n"]
+                    total = conn.execute("SELECT COUNT(*) FROM import_sources").fetchone()[0]
+                    synthetic = conn.execute(
+                        "SELECT COUNT(*) FROM import_sources WHERE synthetic = 1"
+                    ).fetchone()[0]
+                    collapsed = conn.execute(
+                        "SELECT COUNT(*) FROM import_sources WHERE kept = 0"
+                    ).fetchone()[0]
+                else:
+                    for r in conn.execute(
+                        "SELECT COALESCE(import_status, 'normal') AS s, COUNT(*) AS n "
+                        "FROM conversations GROUP BY COALESCE(import_status, 'normal')"
+                    ).fetchall():
+                        counts[r["s"]] = r["n"]
+                    total = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+                    synthetic = conn.execute(
+                        "SELECT COUNT(*) FROM conversations WHERE id LIKE 'synthetic-%'"
+                    ).fetchone()[0]
+                    collapsed = 0
             except sqlite3.Error as e:
                 self.send_json({"error": f"audit unavailable: {e}"}, 500); return
 
@@ -1481,6 +1538,8 @@ class Handler(BaseHTTPRequestHandler):
                 "metadata_only": counts.get("metadata_only", 0),
                 "parse_error":   counts.get("parse_error", 0),
                 "synthetic":     synthetic,
+                "collapsed":     collapsed,
+                "stored":        conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0],
             })
         finally:
             conn.close()

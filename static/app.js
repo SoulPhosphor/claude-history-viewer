@@ -987,7 +987,16 @@ async function apiSearch(q) {
 
 async function apiConversation(id) {
   const r = await fetch(`/api/conversation/${encodeURIComponent(id)}`);
-  return r.json();
+  // An error response is HTML, not JSON, so parsing it unconditionally threw
+  // and left the thread stuck on "Loading…". Hand back the shape the caller
+  // already checks for instead.
+  try {
+    const data = await r.json();
+    if (!r.ok) return { error: data.error || `HTTP ${r.status}` };
+    return data;
+  } catch {
+    return { error: r.ok ? "Malformed response" : `HTTP ${r.status}` };
+  }
 }
 
 // ── Highlight query terms in a text snippet ───────────────────────────────────
@@ -1808,6 +1817,16 @@ function createArtifactChips(artifactIds, artifactsMeta) {
 
 // ── Open a conversation ───────────────────────────────────────────────────────
 
+const EMPTY_CONV_NOTICE = {
+  metadata_only:
+    "This conversation has no displayable messages (metadata-only import).",
+  parse_error:
+    "This conversation could not be parsed from the export, and no messages were recovered (parse error).",
+  fallback:
+    "This conversation was recovered by the fallback parser, but it yielded no displayable messages.",
+  default: "This conversation has no displayable messages.",
+};
+
 async function openConversation(id, clickedEl, targetSeq = null) {
   state.activeSpecialView = null;
   // Update sidebar selection (main list and folder tree)
@@ -1844,12 +1863,12 @@ async function openConversation(id, clickedEl, targetSeq = null) {
 
   messagesEl.innerHTML = "";
   if (!messages.length) {
-    // Metadata-only import: the record was kept for the audit, but the export
-    // had no displayable human/assistant messages to show here.
+    // The record was kept so the import audit can account for it. Name the
+    // status that actually left it empty — calling a parse_error a
+    // metadata-only import misreports the very thing the audit exists to show.
     const note = document.createElement("div");
     note.className = "no-results";
-    note.textContent =
-      "This conversation has no displayable messages (metadata-only import).";
+    note.textContent = EMPTY_CONV_NOTICE[conv.import_status] || EMPTY_CONV_NOTICE.default;
     messagesEl.appendChild(note);
   }
   for (const msg of messages) {
@@ -2756,6 +2775,17 @@ async function renderImportAuditSummary() {
     note.textContent = `${data.synthetic.toLocaleString()} of these have synthetic IDs (no original Claude UUID).`;
     importAuditContent.appendChild(note);
   }
+
+  if (data.collapsed) {
+    // The totals above count source objects; the database stores one row per
+    // distinct ID. Say so, rather than letting the two numbers silently differ.
+    const note = document.createElement("div");
+    note.className = "audit-note";
+    note.textContent =
+      `${data.collapsed.toLocaleString()} shared an ID with another record and were ` +
+      `collapsed — ${(data.stored || 0).toLocaleString()} conversations are stored.`;
+    importAuditContent.appendChild(note);
+  }
 }
 
 async function renderImportAuditList(status, label) {
@@ -2805,12 +2835,19 @@ async function renderImportAuditList(status, label) {
     const date = formatDate(c.update_time || c.create_time);
     const srcIdx =
       c.source_index != null ? `source #${c.source_index}` : "source index n/a";
+    // kept === 0 marks a source object that shares its ID with another and was
+    // collapsed at import. It still opens — to the conversation that won the ID.
+    const dup =
+      c.kept === 0
+        ? '<span class="audit-conv-dup">duplicate ID — collapsed</span>'
+        : "";
     item.innerHTML = `
       <div class="audit-conv-title">${escHtml(c.title || "Untitled")}</div>
       <div class="audit-conv-meta">
         <span>${escHtml(date)}</span>
         <span>${c.message_count} msg${c.message_count !== 1 ? "s" : ""}</span>
         <span>${escHtml(srcIdx)}</span>
+        ${dup}
       </div>
       <div class="audit-conv-id">${escHtml(c.id)}</div>`;
     item.addEventListener("click", () => openConversation(c.id, null));
@@ -3685,7 +3722,9 @@ function renderFolders() {
       e.preventDefault();
       row.classList.remove("folder-drop");
       const cid = e.dataTransfer.getData("text/plain");
-      if (cid) {
+      // Dropping a chat back on the folder it is already in is a no-op, not a
+      // move — going through with it would clear its pin-within-folder.
+      if (cid && state.folderOf.get(cid) !== f.id) {
         await apiMoveToFolder(f.id, cid);
         await afterFolderChange();
       }
@@ -3730,6 +3769,10 @@ function renderFolders() {
 // have entered/left it) and the open conversation's Move-to menu state.
 async function afterFolderChange() {
   await loadFolders();
+  // Moving a conversation into a folder drops its loose pin server-side, so
+  // state.pinnedIds goes stale — and a stale entry makes the star render
+  // filled and turns the next click into a no-op unpin.
+  await refreshPinnedList();
   await loadConversations(false);
 }
 
@@ -3818,10 +3861,13 @@ function buildMoveToMenu() {
   for (const f of state.folders) {
     const b = document.createElement("button");
     b.className = "thread-dropdown-item";
-    if (state.folderOf.get(cid) === f.id) b.classList.add("current");
+    const isCurrent = state.folderOf.get(cid) === f.id;
+    if (isCurrent) b.classList.add("current");
     b.textContent = f.name;
     b.addEventListener("click", async () => {
       closeThreadMenus();
+      // Already here: moving again would only clear the pin-within-folder.
+      if (isCurrent) return;
       await apiMoveToFolder(f.id, cid);
       await afterFolderChange();
     });

@@ -509,13 +509,14 @@ def _claude_fallback_messages(conv: dict, cid: str, raw_msgs: list) -> list:
     """
     rows = []
     seq = 0
+    # Drop non-dict entries before sorting: the sort key reads each entry, so a
+    # single malformed one would raise here — inside the handler that is itself
+    # the recovery path — and cost the conversation every recoverable message.
     ordered = sorted(
-        enumerate(raw_msgs),
+        ((i, m) for i, m in enumerate(raw_msgs) if isinstance(m, dict)),
         key=lambda pair: (_iso_to_ts(pair[1].get("created_at") or ""), pair[0]),
     )
     for _idx, m in ordered:
-        if not isinstance(m, dict):
-            continue
         sender = m.get("sender", m.get("role", ""))
         if sender not in ("human", "assistant"):
             continue
@@ -639,12 +640,15 @@ def extract_thread(mapping: dict, current_node: str) -> list:
 # ── Per-conversation parser ───────────────────────────────────────────────────
 
 
-def parse_conversation(conv: dict):
+def parse_conversation(conv: dict, cid: str | None = None):
     """
     Returns (meta_dict, message_list) or (None, []) when the
     conversation has no usable messages.
+
+    cid overrides the conversation's own id, which is how the importer hands
+    over a synthesized one for a record that shipped without any id at all.
     """
-    cid = conv.get("id") or conv.get("conversation_id")
+    cid = cid or conv.get("id") or conv.get("conversation_id")
     if not cid:
         return None, []
 
@@ -712,7 +716,9 @@ def import_chatgpt_conversation(conv: dict, index: int) -> dict:
     error = None
     msgs = []
     try:
-        _meta, parsed = parse_conversation(conv)
+        # Pass cid explicitly: for a record with no id of its own the parser
+        # would otherwise bail out and lose a perfectly good message tree.
+        _meta, parsed = parse_conversation(conv, cid)
         if parsed:
             for m in parsed:
                 m["conversation_id"] = cid
@@ -859,6 +865,31 @@ CREATE TABLE artifacts (
     lang     TEXT,
     content  TEXT
 );
+
+DROP TABLE IF EXISTS import_sources;
+
+-- One row per top-level object in conversations.json, including the extras
+-- collapsed away when several objects share an ID. `conversations` keeps one
+-- row per distinct ID, so counting the audit from there would come out lower
+-- than the source file; count it from here instead.
+CREATE TABLE import_sources (
+    source_index    INTEGER PRIMARY KEY,
+    conversation_id TEXT,
+    title           TEXT,
+    import_status   TEXT,
+    synthetic       INTEGER DEFAULT 0,
+    kept            INTEGER DEFAULT 1,  -- 0 = collapsed duplicate of this ID
+    -- Each source object's own counts and dates. Reading these off the winning
+    -- conversations row instead would make a collapsed record report the
+    -- winner's message count and dates, which is exactly what the audit is
+    -- meant to let you check.
+    create_time     REAL,
+    update_time     REAL,
+    message_count   INTEGER,
+    preview         TEXT
+);
+
+CREATE INDEX idx_import_sources_status ON import_sources (import_status);
 """
 
 
@@ -922,9 +953,21 @@ def build(source: Path, db_path: Path) -> None:
 
     conv_rows, msg_rows, fts_rows = [], [], []
     artifact_rows: list[dict] = []
+    source_rows = []
     for cid, recs in by_id.items():
         best = sorted(recs, key=lambda r: (-len(r["msgs"]), r["index"]))[0]
         meta, msgs, artifacts = best["meta"], best["msgs"], best["artifacts"]
+        # Keep an audit row for every source object, not just the one that wins
+        # the ID, so the audit's totals still match conversations.json and the
+        # collapsed indices stay traceable.
+        for rec in recs:
+            rm = rec["meta"]
+            source_rows.append((
+                rec["index"], cid, rm["title"], rec["status"],
+                1 if rec["synthetic"] else 0, 1 if rec is best else 0,
+                rm.get("create_time"), rm.get("update_time"),
+                rm.get("message_count"), rm.get("preview"),
+            ))
         # Record which top-level object in conversations.json this row came from,
         # so an audit view can trace a DB record back to the exact source entry.
         meta["source_index"] = best["index"]
@@ -949,6 +992,13 @@ def build(source: Path, db_path: Path) -> None:
         [{**m, "artifact_ids": m.get("artifact_ids")} for m in msg_rows],
     )
     db.executemany("INSERT INTO search_index VALUES (?, ?, ?)", fts_rows)
+    db.executemany(
+        "INSERT OR REPLACE INTO import_sources "
+        "(source_index, conversation_id, title, import_status, synthetic, kept, "
+        " create_time, update_time, message_count, preview) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        source_rows,
+    )
 
     # Deduplicate artifacts by id (keep last version seen)
     seen_aids: set[str] = set()

@@ -2706,6 +2706,11 @@ kbd {
   margin-bottom: 18px;
   line-height: 1.5;
 }
+
+/* A source object collapsed into another with the same ID (import audit). */
+.audit-conv-dup {
+  color: var(--accent);
+
 /* ── Thread title bar ─────────────────────────────────────────────────────── */
 /* One line above the title / Move-to row, inside the same header box: the
    chevron rolls that row up the way a window collapses into its title bar. */
