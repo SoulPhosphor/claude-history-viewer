@@ -54,9 +54,13 @@ const pinnedHintEl = $("pinned-hint");
 const sidebarToggleBtn = $("sidebar-toggle");
 const sidebarResizeHandle = $("sidebar-resize");
 const tabsList = $("tabs-list");
+const tabsWrap = $("tabs-wrap");
 const emptyState = $("empty-state");
 const thread = $("thread");
 const threadTitle = $("thread-title");
+const threadHeader = $("thread-header");
+const threadTitlebarLabel = $("thread-titlebar-label");
+const threadCollapseBtn = $("thread-collapse-btn");
 const threadMeta = $("thread-meta");
 const messagesEl = $("messages");
 const galleryPanel = $("gallery");
@@ -1428,18 +1432,15 @@ async function activateTab(tabId) {
 function renderTabs() {
   tabsList.innerHTML = "";
   const tabsToRender = state.tabs.filter(isTopTab);
+  // The strip exists to sit two or more things side by side. With one tab
+  // there is nothing to compare it against, so the strip stays out of the way.
+  tabsWrap.hidden = tabsToRender.length < 2;
   for (const t of tabsToRender) {
     const tab = document.createElement("div");
     tab.className = "top-tab" + (t.id === state.activeTabId ? " active" : "");
     tab.setAttribute("role", "button");
     tab.setAttribute("tabindex", "0");
-    tab.innerHTML = `<span class="tab-label">${escHtml(t.title || "Untitled")}</span><button type="button" class="tab-pin" title="Pin tab">${t.pinned ? "📌" : "📍"}</button><button type="button" class="tab-close" title="Close">×</button>`;
-    tab.querySelector(".tab-pin").addEventListener("click", async (e) => {
-      e.stopPropagation();
-      t.pinned = t.pinned ? 0 : 1;
-      await apiUpdateTab(t.id, { pinned: Boolean(t.pinned) });
-      renderTabs();
-    });
+    tab.innerHTML = `<span class="tab-label">${escHtml(t.title || "Untitled")}</span><button type="button" class="tab-close" title="Close">×</button>`;
     tab.querySelector(".tab-close").addEventListener("click", async (e) => {
       e.stopPropagation();
       await closeTabAndFocusFallback(t.id);
@@ -1532,7 +1533,7 @@ async function renderArtifactTabContent(artifactId, title) {
   thread.hidden = false;
   closeArtifactPanel();
   state.activeSpecialView = null;
-  threadTitle.textContent = title || artifactId;
+  setThreadTitle(title || artifactId);
   threadMeta.textContent = "Artifact tab";
   messagesEl.innerHTML = '<div class="loading">Loading…</div>';
   const data = await fetch(
@@ -1821,7 +1822,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   if (!state.q) clearSearchNav(); // remove stale nav bar when no search active
   thread.hidden = false;
   messagesEl.innerHTML = '<div class="loading">Loading…</div>';
-  threadTitle.textContent = "";
+  setThreadTitle("");
   threadMeta.textContent = "";
 
   const data = await apiConversation(id);
@@ -1832,7 +1833,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
 
   const { conversation: conv, messages, artifacts: artifactsMeta = {} } = data;
 
-  threadTitle.textContent = conv.title;
+  setThreadTitle(conv.title);
   const ts = formatDate(conv.update_time || conv.create_time);
   threadMeta.textContent = "";
   const metaText = document.createElement("span");
@@ -3263,6 +3264,40 @@ modelAddForm?.addEventListener("submit", async (e) => {
   await refreshModelWarnings();
 });
 
+// ── Collapsible thread header ────────────────────────────────────────────────
+// The header (title, date/messages, Move to, ⋮) folds away behind the chevron
+// in the thin bar above it, the way a window rolls up into its title bar.
+// Collapsed, that bar also carries the chat's name so the pane still says what
+// you are looking at. The choice is remembered per browser.
+
+function setThreadTitle(text) {
+  threadTitle.textContent = text;
+  threadTitlebarLabel.textContent = text;
+}
+
+function threadHeaderCollapsed() {
+  return _lsGet("threadHeaderCollapsed", "0") === "1";
+}
+
+function applyThreadHeaderCollapsed() {
+  const collapsed = threadHeaderCollapsed();
+  threadHeader.hidden = collapsed;
+  // Only worth naming the chat up here when the heading below is hidden.
+  threadTitlebarLabel.hidden = !collapsed;
+  thread.classList.toggle("header-collapsed", collapsed);
+  threadCollapseBtn.setAttribute("aria-expanded", String(!collapsed));
+  threadCollapseBtn.title = collapsed ? "Expand header" : "Collapse header";
+  threadCollapseBtn.setAttribute(
+    "aria-label",
+    collapsed ? "Expand header" : "Collapse header",
+  );
+}
+
+threadCollapseBtn?.addEventListener("click", () => {
+  _lsSet("threadHeaderCollapsed", threadHeaderCollapsed() ? "0" : "1");
+  applyThreadHeaderCollapsed();
+});
+
 // ── Sidebar popup menu ("More" button) ─────────────────────────────────────────
 // The "More" button opens a small menu anchored to it instead of jumping
 // straight to a screen. Add future entries as .sidebar-menu-item buttons in
@@ -3840,7 +3875,7 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
       });
       if (!name || name === cur) return;
       await apiUpdateConversationMeta(cid, { title: name });
-      threadTitle.textContent = name;
+      setThreadTitle(name);
       await loadConversations(false);
       await refreshPinnedList();
       await loadFolders();
@@ -3879,6 +3914,7 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
 });
 
 async function initApp() {
+  applyThreadHeaderCollapsed();
   await loadDatasetFormat();
   await loadUiPreferences();
   renderSearchHistory();
