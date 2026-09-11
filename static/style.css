@@ -596,6 +596,13 @@ mark.search-term-highlight {
   flex-shrink: 0;
 }
 
+/* The folders context menu holds a single short item, so it drops the
+   "More" menu's 200px min-width and just hugs its own text instead. */
+#folders-ctx-menu {
+  min-width: 0;
+  width: max-content;
+}
+
 /* ── Main panel ──────────────────────────────────────────────────────────── */
 #main {
   flex: 1;
