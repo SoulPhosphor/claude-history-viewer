@@ -87,7 +87,8 @@ def _ensure_runtime_schema(db_path: Path) -> None:
                 sort_index      INTEGER DEFAULT 0,
                 last_active_at  REAL,
                 closed          INTEGER DEFAULT 0,
-                provider        TEXT
+                provider        TEXT,
+                compare         INTEGER DEFAULT 0
             );
             """
         )
@@ -117,11 +118,25 @@ def _ensure_runtime_schema(db_path: Path) -> None:
             "ALTER TABLE conversations ADD COLUMN provider TEXT",
             # Compare items carry their own provider for tab colouring.
             "ALTER TABLE workspace_tabs ADD COLUMN provider TEXT",
+            # 1 only when the user explicitly added the chat to Compare.
+            "ALTER TABLE workspace_tabs ADD COLUMN compare INTEGER DEFAULT 0",
         ):
             try:
                 conn.execute(col_sql)
             except sqlite3.Error:
                 pass
+        # The top strip is now the Compare bar. Older versions created a tab row
+        # every time a chat was opened; none of those were deliberate Compare
+        # selections, so drop every non-compare row. Compare additions are
+        # written with compare = 1, so this only ever removes the legacy rows
+        # and, on a database with nothing selected, leaves the table empty (no
+        # reserved space for the strip).
+        try:
+            conn.execute(
+                "DELETE FROM workspace_tabs WHERE COALESCE(compare, 0) = 0"
+            )
+        except sqlite3.Error:
+            pass
         try:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_conv_status ON conversations (import_status)"
@@ -2600,7 +2615,8 @@ class Handler(BaseHTTPRequestHandler):
                 # older version with some tabs permanently jumping the queue
                 # and no way to release them.
                 "SELECT id, tab_type, conversation_id, artifact_id, title, pinned, sort_index, last_active_at, provider "
-                "FROM workspace_tabs WHERE closed = 0 ORDER BY sort_index ASC, last_active_at DESC"
+                "FROM workspace_tabs WHERE closed = 0 AND compare = 1 "
+                "ORDER BY sort_index ASC, last_active_at DESC"
             ).fetchall()
             self.send_json({"tabs": [dict(r) for r in rows]})
         finally:
@@ -2617,8 +2633,8 @@ class Handler(BaseHTTPRequestHandler):
             if provider not in ("claude", "chatgpt"):
                 provider = None
             conn.execute(
-                "INSERT OR REPLACE INTO workspace_tabs(id, tab_type, conversation_id, artifact_id, title, pinned, sort_index, last_active_at, closed, provider) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
+                "INSERT OR REPLACE INTO workspace_tabs(id, tab_type, conversation_id, artifact_id, title, pinned, sort_index, last_active_at, closed, provider, compare) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1)",
                 (
                     tab_id,
                     tab_type,

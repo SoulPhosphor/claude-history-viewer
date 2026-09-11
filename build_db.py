@@ -843,7 +843,11 @@ CREATE TABLE workspace_tabs (
     last_active_at REAL,
     closed         INTEGER DEFAULT 0,
     -- Compare items cross providers, so each stores its own side for colouring.
-    provider       TEXT
+    provider       TEXT,
+    -- 1 only for a chat the user explicitly added to Compare. Opening a chat
+    -- never writes a row, so with nothing selected the table holds no compare
+    -- rows and the top strip reserves no space.
+    compare        INTEGER DEFAULT 0
 );
 
 CREATE TABLE messages (
