@@ -83,6 +83,7 @@ const claudeModelsMenuItem = $("claude-models-menu-item");
 const modelTableBody = $("model-table-body");
 const modelAddForm = $("model-add-form");
 const modelAddError = $("model-add-error");
+const modelReloadBtn = $("model-reload-btn");
 const importAuditContent = $("import-audit-content");
 const artifactPanel = $("artifact-panel");
 const artifactPanelTitle = $("artifact-panel-title");
@@ -3505,6 +3506,29 @@ modelAddForm?.addEventListener("submit", async (e) => {
   } catch (err) {
     showModelError(err.message);
     return;
+  }
+  await refreshModelWarnings();
+});
+
+// Re-reads claude_models.json and applies any corrections (e.g. dates that
+// were missing on an earlier import) to the models it names, without
+// touching models the user added by hand.
+modelReloadBtn?.addEventListener("click", async () => {
+  showModelError("");
+  modelReloadBtn.disabled = true;
+  const originalLabel = modelReloadBtn.textContent;
+  modelReloadBtn.textContent = "Reloading…";
+  try {
+    const data = await apiModelState("/api/claude-models/reload", {
+      method: "POST",
+    });
+    state.modelRows = data.models || [];
+    renderModelTable();
+  } catch (e) {
+    showModelError(e.message);
+  } finally {
+    modelReloadBtn.disabled = false;
+    modelReloadBtn.textContent = originalLabel;
   }
   await refreshModelWarnings();
 });

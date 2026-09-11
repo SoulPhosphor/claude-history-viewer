@@ -2671,7 +2671,22 @@ kbd {
 
 /* ── Add Claude Models screen ─────────────────────────────────────────────── */
 
+/* Missing this (unlike every sibling panel: #gallery, #memories-panel,
+   #import-audit-panel, …) left #claude-models-content with no bounded
+   height to scroll within, so a model list longer than the viewport had no
+   way to reach its later rows. */
+#claude-models-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#claude-models-panel[hidden] {
+  display: none;
+}
+
 #claude-models-content {
+  flex: 1;
   padding: 16px 24px 32px;
   overflow-y: auto;
 }
@@ -2722,6 +2737,30 @@ kbd {
 
 #model-add-btn:hover {
   filter: brightness(1.05);
+}
+
+/* Pushed to the far right of the same row without disturbing the Name /
+   Beginning / End / Add fields to its left. */
+#model-reload-btn {
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 7px 14px;
+  cursor: pointer;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+#model-reload-btn:hover {
+  background: var(--hover);
+}
+
+#model-reload-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .model-form-error {

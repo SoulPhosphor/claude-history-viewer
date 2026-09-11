@@ -570,6 +570,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_folder_item_add()
         elif path == "/api/claude-models":
             self._api_claude_model_add()
+        elif path == "/api/claude-models/reload":
+            self._api_claude_models_reload()
         elif path == "/api/conversation-models":
             self._api_conversation_model_add()
         elif path == "/api/conversation-models/dismiss":
@@ -1842,6 +1844,72 @@ class Handler(BaseHTTPRequestHandler):
         conn = open_db(self.db_path)
         try:
             self.send_json({"models": self._model_rows(conn),
+                            "format": self._dataset_format(conn)})
+        finally:
+            conn.close()
+
+    def _reload_claude_models_from_seed(self, conn) -> dict:
+        """Re-import claude_models.json's periods into the user-data DB.
+
+        Unlike the one-time startup seed (_seed_claude_models), this runs on
+        demand — the "Reload Model Data" button — to pick up corrections to
+        the shipped file, such as periods that were missing an end date on
+        an earlier import. For a model whose name matches an entry in the
+        file, its existing periods are dropped and replaced with exactly
+        what the file lists; a model the user added by hand, with no entry
+        in the file, is left untouched.
+        """
+        try:
+            with open(MODEL_SEED_FILE, encoding="utf-8") as f:
+                rows = json.load(f).get("models") or []
+        except Exception as e:
+            return {"error": f"Could not read {MODEL_SEED_FILE.name}: {e}"}
+
+        now = time.time()
+        touched: set[str] = set()
+        added = 0
+        for entry in rows:
+            name = str(entry.get("name") or "").strip()
+            start = str(entry.get("start_date") or "").strip()
+            if not name or not start:
+                continue
+            end = entry.get("end_date")
+            end = str(end).strip() if end else None
+            row = conn.execute(
+                "SELECT id FROM udb.claude_models WHERE name = ? COLLATE NOCASE", (name,)
+            ).fetchone()
+            if row:
+                model_id = row["id"]
+            else:
+                model_id = uuid.uuid4().hex
+                conn.execute(
+                    "INSERT INTO udb.claude_models(id, name, created_at) VALUES (?, ?, ?)",
+                    (model_id, name, now),
+                )
+                added += 1
+            if model_id not in touched:
+                # First entry seen for this model in this reload: clear its
+                # old periods so a stale/broken one (e.g. a prior import
+                # that lost its end date) doesn't linger next to the fix.
+                conn.execute(
+                    "DELETE FROM udb.claude_model_periods WHERE model_id = ?", (model_id,),
+                )
+                touched.add(model_id)
+            conn.execute(
+                "INSERT INTO udb.claude_model_periods(id, model_id, start_date, end_date, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (uuid.uuid4().hex, model_id, start, end, now),
+            )
+        conn.commit()
+        return {"ok": True, "models_touched": len(touched), "models_added": added}
+
+    def _api_claude_models_reload(self):
+        conn = open_db(self.db_path)
+        try:
+            result = self._reload_claude_models_from_seed(conn)
+            if result.get("error"):
+                self.send_json(result, 400); return
+            self.send_json({**result, "models": self._model_rows(conn),
                             "format": self._dataset_format(conn)})
         finally:
             conn.close()
