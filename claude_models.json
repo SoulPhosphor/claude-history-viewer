@@ -1,5 +1,5 @@
 {
-  "note": "Seed list of Claude models shown in claude.ai, one row per availability period. Imported once into userdata.db on first run; after that the database is the source of truth and this file is not re-read.",
+  "note": "Seed list of Claude models shown in claude.ai, one row per availability period. End dates are consumer claude.ai selector removal/replacement dates, not API retirement dates. Imported once into userdata.db on first run; after that the database is the source of truth and this file is not re-read.",
   "interval_semantics": "[start_date, end_date) - end_date is exclusive; null means still available",
   "models": [
     {
@@ -50,7 +50,7 @@
     {
       "name": "Claude Opus 4.5",
       "start_date": "2025-11-24",
-      "end_date": null
+      "end_date": "2026-04-16"
     },
     {
       "name": "Claude Haiku 4.5",
@@ -60,7 +60,7 @@
     {
       "name": "Claude Sonnet 4.5",
       "start_date": "2025-09-29",
-      "end_date": null
+      "end_date": "2026-05-26"
     },
     {
       "name": "Claude Opus 4.1",
@@ -70,7 +70,7 @@
     {
       "name": "Claude Sonnet 4",
       "start_date": "2025-05-22",
-      "end_date": null
+      "end_date": "2026-02-17"
     },
     {
       "name": "Claude Opus 4",
@@ -80,12 +80,12 @@
     {
       "name": "Claude 3.7 Sonnet",
       "start_date": "2025-02-24",
-      "end_date": null
+      "end_date": "2025-11-14"
     },
     {
       "name": "Claude Sonnet 3.5 October Revision",
       "start_date": "2024-10-22",
-      "end_date": null
+      "end_date": "2025-02-24"
     },
     {
       "name": "Claude Sonnet 3.5 June Revision",
@@ -100,22 +100,22 @@
     {
       "name": "Claude 3 Haiku",
       "start_date": "2024-03-13",
-      "end_date": null
+      "end_date": "2025-10-15"
     },
     {
       "name": "Claude 3 Sonnet",
       "start_date": "2024-03-04",
-      "end_date": null
+      "end_date": "2024-06-21"
     },
     {
       "name": "Claude 3 Opus",
       "start_date": "2024-03-04",
-      "end_date": null
+      "end_date": "2025-05-22"
     },
     {
       "name": "Claude 2.1",
       "start_date": "2023-11-21",
-      "end_date": null
+      "end_date": "2024-03-04"
     },
     {
       "name": "Claude 2",
