@@ -2744,7 +2744,9 @@ $("att-report-refresh-btn").addEventListener("click", () =>
 // imported, and lets you drill into each status to see (and open) the records
 // that came in as fallback / metadata_only / parse_error.
 
-async function openImportAudit() {
+// Chrome setup shared by opening the audit panel fresh and restoring it on a
+// browser Back/Forward (popstate) — only the content rendered inside differs.
+async function showImportAuditPanel() {
   rememberReturnTab();
   state.activeSpecialView = "import_audit";
   state.activeTabId = null;
@@ -2755,6 +2757,10 @@ async function openImportAudit() {
   await ensureSpecialTab("import_audit", "Import Audit");
   hideAllPanels();
   importAuditPanel.hidden = false;
+}
+
+async function openImportAudit() {
+  await showImportAuditPanel();
   renderImportAuditSummary();
 }
 
@@ -2821,7 +2827,15 @@ async function renderImportAuditSummary() {
   }
 }
 
-async function renderImportAuditList(status, label) {
+// `push`/`scrollTop` drive the browser-history integration: a forward click
+// on a summary row pushes a new history entry for this category so a later
+// Back returns to it; restoring that same entry on popstate re-renders it
+// without pushing again and puts the scroll position back where it was.
+async function renderImportAuditList(
+  status,
+  label,
+  { push = true, scrollTop = null } = {},
+) {
   importAuditContent.innerHTML = '<div class="loading">Loading…</div>';
   let data;
   try {
@@ -2833,6 +2847,13 @@ async function renderImportAuditList(status, label) {
   } catch (e) {
     importAuditContent.innerHTML = `<div class="no-results">Could not load this category: ${escHtml(e.message)}.</div>`;
     return;
+  }
+
+  if (push) {
+    history.pushState(
+      { auditNav: true, view: "audit-list", status, label },
+      "",
+    );
   }
 
   importAuditContent.innerHTML = "";
@@ -2857,6 +2878,7 @@ async function renderImportAuditList(status, label) {
     empty.className = "no-results";
     empty.textContent = "No conversations in this category.";
     importAuditContent.appendChild(empty);
+    if (scrollTop != null) importAuditContent.scrollTop = scrollTop;
     return;
   }
 
@@ -2883,12 +2905,51 @@ async function renderImportAuditList(status, label) {
         ${dup}
       </div>
       <div class="audit-conv-id">${escHtml(c.id)}</div>`;
-    item.addEventListener("click", () => openConversation(c.id, null));
+    item.addEventListener("click", () =>
+      openConversationFromAudit(c.id, status, label),
+    );
     listEl.appendChild(item);
   }
   importAuditContent.appendChild(listEl);
+  if (scrollTop != null) importAuditContent.scrollTop = scrollTop;
 }
 
+// Opening a conversation from an audit category list snapshots that list's
+// scroll position into its (already-pushed) history entry, then pushes a
+// second entry for the conversation itself — so browser Back pops straight
+// back to the same category, scrolled to the same place.
+function openConversationFromAudit(convId, status, label) {
+  history.replaceState(
+    {
+      auditNav: true,
+      view: "audit-list",
+      status,
+      label,
+      scrollTop: importAuditContent.scrollTop,
+    },
+    "",
+  );
+  history.pushState({ auditNav: true, view: "conversation", convId }, "");
+  openConversation(convId, null);
+}
+
+// Browser Back/Forward through audit-originated navigation: restore the same
+// category list (with scroll position) or reopen the conversation, rather
+// than falling through to whatever the SPA happens to have on screen.
+window.addEventListener("popstate", (e) => {
+  const st = e.state;
+  if (!st || !st.auditNav) return;
+  if (st.view === "audit-list") {
+    showImportAuditPanel().then(() =>
+      renderImportAuditList(st.status, st.label, {
+        push: false,
+        scrollTop: st.scrollTop ?? 0,
+      }),
+    );
+  } else if (st.view === "conversation") {
+    openConversation(st.convId, null);
+  }
+});
 
 // ── Claude model availability ────────────────────────────────────────────────
 // Each conversation can be tagged with the model(s) it was written with. Which
