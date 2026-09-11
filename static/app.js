@@ -31,6 +31,8 @@ const state = {
   models: null, // model state for the open conversation
   modelRows: [], // the Add Claude Models table
   unverifiedCount: 0,
+  tags: [], // tags on the open conversation
+  allTagsCache: null, // every tag in use, for the add-tag autocomplete
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -62,6 +64,7 @@ const threadHeader = $("thread-header");
 const threadTitlebarLabel = $("thread-titlebar-label");
 const threadCollapseBtn = $("thread-collapse-btn");
 const threadMeta = $("thread-meta");
+const threadTags = $("thread-tags");
 const messagesEl = $("messages");
 const galleryPanel = $("gallery");
 const galleryGrid = $("gallery-grid");
@@ -712,7 +715,7 @@ let _lastSeenMonth = null;
 function _monthLabel(ts) {
   if (!ts) return null;
   const d = new Date(ts * 1000);
-  return d.toLocaleDateString("zh-CN", { year: "numeric", month: "long" });
+  return d.toLocaleDateString("en-US", { year: "numeric", month: "long" });
 }
 
 // ── File chip helpers ─────────────────────────────────────────────────────────
@@ -997,6 +1000,30 @@ async function apiConversation(id) {
   } catch {
     return { error: r.ok ? "Malformed response" : `HTTP ${r.status}` };
   }
+}
+
+// ── Tags ─────────────────────────────────────────────────────────────────────
+async function apiAllTags() {
+  const r = await fetch("/api/tags");
+  const data = await r.json();
+  return data.tags || [];
+}
+
+async function apiAddTag(convId, tag) {
+  const r = await fetch("/api/tags", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conv_id: convId, tag }),
+  });
+  return r.json();
+}
+
+async function apiRemoveTag(convId, tag) {
+  const r = await fetch(
+    `/api/tags/${encodeURIComponent(convId)}/${encodeURIComponent(tag)}`,
+    { method: "DELETE" },
+  );
+  return r.json();
 }
 
 // ── Highlight query terms in a text snippet ───────────────────────────────────
@@ -1546,6 +1573,7 @@ async function renderArtifactTabContent(artifactId, title) {
   state.activeSpecialView = null;
   setThreadTitle(title || artifactId);
   threadMeta.textContent = "Artifact tab";
+  threadTags.innerHTML = "";
   messagesEl.innerHTML = '<div class="loading">Loading…</div>';
   const data = await fetch(
     `/api/artifact/${encodeURIComponent(artifactId)}`,
@@ -1845,6 +1873,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   messagesEl.innerHTML = '<div class="loading">Loading…</div>';
   setThreadTitle("");
   threadMeta.textContent = "";
+  threadTags.innerHTML = "";
 
   const data = await apiConversation(id);
   if (data.error) {
@@ -1862,6 +1891,8 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   threadMeta.appendChild(metaText);
   state.models = data.models || null;
   renderModelStrip();
+  state.tags = data.tags || [];
+  renderThreadTags();
 
   messagesEl.innerHTML = "";
   if (!messages.length) {
@@ -3015,6 +3046,120 @@ function renderModelStrip() {
   }
 
   threadMeta.appendChild(strip);
+}
+
+// ── Conversation tags ────────────────────────────────────────────────────────
+// "Tags: [chip ×] [chip ×] [+]" under the thread meta line. Works the same on
+// both a Claude and a ChatGPT export, unlike the model strip above.
+
+function renderThreadTags() {
+  threadTags.innerHTML = "";
+  if (!state.activeId) return;
+  const convId = state.activeId;
+
+  const label = document.createElement("span");
+  label.className = "tags-label";
+  label.textContent = "Tags:";
+  threadTags.appendChild(label);
+
+  for (const tag of state.tags) {
+    const chip = document.createElement("span");
+    chip.className = "tag-chip";
+    const name = document.createElement("span");
+    name.className = "tag-chip-name";
+    name.textContent = tag;
+    const x = document.createElement("button");
+    x.className = "tag-chip-x";
+    x.type = "button";
+    x.title = `Remove ${tag}`;
+    x.setAttribute("aria-label", `Remove ${tag}`);
+    x.textContent = "✕";
+    x.addEventListener("click", () => removeThreadTag(convId, tag));
+    chip.append(name, x);
+    threadTags.appendChild(chip);
+  }
+
+  const addBtn = document.createElement("button");
+  addBtn.className = "tag-add-btn";
+  addBtn.type = "button";
+  addBtn.title = "Add tag";
+  addBtn.setAttribute("aria-label", "Add tag");
+  addBtn.textContent = "+";
+  addBtn.addEventListener("click", () => showTagInput(convId, addBtn));
+  threadTags.appendChild(addBtn);
+}
+
+async function showTagInput(convId, addBtn) {
+  if (state.allTagsCache === null) {
+    state.allTagsCache = await apiAllTags().catch(() => []);
+  }
+  const form = document.createElement("form");
+  form.className = "tag-add-form";
+  const input = document.createElement("input");
+  input.className = "tag-add-input";
+  input.type = "text";
+  input.maxLength = 40;
+  input.placeholder = "Tag name";
+  input.setAttribute("list", "tag-suggestions");
+  if (!$("tag-suggestions")) {
+    const datalist = document.createElement("datalist");
+    datalist.id = "tag-suggestions";
+    document.body.appendChild(datalist);
+  }
+  const datalist = $("tag-suggestions");
+  datalist.innerHTML = "";
+  for (const t of state.allTagsCache) {
+    if (state.tags.includes(t)) continue;
+    const opt = document.createElement("option");
+    opt.value = t;
+    datalist.appendChild(opt);
+  }
+  form.appendChild(input);
+  addBtn.replaceWith(form);
+  input.focus();
+
+  let settled = false;
+  const finish = async () => {
+    if (settled) return;
+    settled = true;
+    const tag = input.value.trim();
+    if (tag) await addThreadTag(convId, tag);
+    else renderThreadTags();
+  };
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    finish();
+  });
+  input.addEventListener("blur", finish);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      settled = true;
+      renderThreadTags();
+    }
+  });
+}
+
+async function addThreadTag(convId, tag) {
+  try {
+    const data = await apiAddTag(convId, tag);
+    if (state.activeId !== convId) return;
+    state.tags = data.tags || state.tags;
+    state.allTagsCache = null; // pick up the new tag next time the list opens
+    renderThreadTags();
+  } catch {
+    renderThreadTags();
+  }
+}
+
+async function removeThreadTag(convId, tag) {
+  try {
+    const data = await apiRemoveTag(convId, tag);
+    if (state.activeId !== convId) return;
+    state.tags = data.tags || state.tags.filter((t) => t !== tag);
+    renderThreadTags();
+  } catch {
+    /* leave the chip as-is if the write failed */
+  }
 }
 
 // A change to one conversation's models can add or clear its warning icons, so

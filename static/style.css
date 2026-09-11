@@ -2577,6 +2577,98 @@ kbd {
   vertical-align: -0.15em;
 }
 
+/* ── Conversation tags ────────────────────────────────────────────────────── */
+/* "Tags: [chip ×] [chip ×] [+]" on its own line under the thread meta. Works
+   on both a Claude and a ChatGPT export. */
+#thread-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11.5px;
+}
+
+#thread-tags:empty {
+  display: none;
+}
+
+.tags-label {
+  color: var(--muted);
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px 2px 9px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text);
+}
+
+.tag-chip-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-chip-x {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85em;
+  line-height: 1;
+}
+
+.tag-chip-x:hover {
+  color: var(--accent);
+}
+
+.tag-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.tag-add-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tag-add-form {
+  display: inline-flex;
+}
+
+.tag-add-input {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  padding: 2px 8px;
+  width: 110px;
+}
+
+.tag-add-input:focus {
+  outline: none;
+}
+
 /* ── Add Claude Models screen ─────────────────────────────────────────────── */
 
 #claude-models-content {
@@ -2710,6 +2802,7 @@ kbd {
 /* A source object collapsed into another with the same ID (import audit). */
 .audit-conv-dup {
   color: var(--accent);
+}
 
 /* ── Thread title bar ─────────────────────────────────────────────────────── */
 /* One line above the title / Move-to row, inside the same header box: the

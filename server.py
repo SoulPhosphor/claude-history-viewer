@@ -207,6 +207,17 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 meta_key   TEXT PRIMARY KEY,
                 meta_value TEXT
             );
+
+            -- Free-form tags a user attaches to a conversation. Lives here (not
+            -- in history.db's conversation_meta) so tags survive a rebuild —
+            -- conversation IDs are stable across rebuilds, so membership holds.
+            CREATE TABLE IF NOT EXISTS conversation_tags (
+                conversation_id TEXT NOT NULL,
+                tag             TEXT NOT NULL,
+                added_at        REAL,
+                PRIMARY KEY (conversation_id, tag)
+            );
+            CREATE INDEX IF NOT EXISTS idx_conv_tags_tag ON conversation_tags (tag);
             """
         )
         conn.commit()
@@ -563,6 +574,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_model_add()
         elif path == "/api/conversation-models/dismiss":
             self._api_conversation_model_dismiss()
+        elif path == "/api/tags":
+            self._api_tag_add()
         else:
             self.send_error(404)
 
@@ -599,6 +612,12 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) != 2:
                 self.send_error(404); return
             self._api_conversation_model_remove(parts[0], parts[1])
+        elif path.startswith("/api/tags/"):
+            parts = [urllib.parse.unquote(p) for p
+                     in path[len("/api/tags/"):].split("/") if p]
+            if len(parts) != 2:
+                self.send_error(404); return
+            self._api_tag_remove(parts[0], parts[1])
         else:
             self.send_error(404)
 
@@ -703,6 +722,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_claude_models()
         elif path == "/api/conversation-models":
             self._api_conversation_models(qs)
+        elif path == "/api/tags":
+            self._api_tags_all()
         elif path == "/api/preferences":
             self._api_preferences()
         elif path == "/api/pinned":
@@ -1022,10 +1043,12 @@ class Handler(BaseHTTPRequestHandler):
                             "  SELECT c2.id FROM conversations c2 "
                             "  LEFT JOIN conversation_meta cm2 ON cm2.conversation_id = c2.id "
                             "  WHERE COALESCE(cm2.deleted, 0) = 0 AND COALESCE(NULLIF(cm2.custom_title, ''), c2.title) LIKE ?"
+                            "  UNION "
+                            "  SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?"
                             ") "
                             + order_sql + " "
                             "LIMIT ? OFFSET ?",
-                            (q, like, limit, offset),
+                            (q, like, like, limit, offset),
                         ).fetchall()
                         total = conn.execute(
                             "SELECT COUNT(*) FROM conversations c "
@@ -1036,8 +1059,10 @@ class Handler(BaseHTTPRequestHandler):
                             "  SELECT c2.id FROM conversations c2 "
                             "  LEFT JOIN conversation_meta cm2 ON cm2.conversation_id = c2.id "
                             "  WHERE COALESCE(cm2.deleted, 0) = 0 AND COALESCE(NULLIF(cm2.custom_title, ''), c2.title) LIKE ?"
+                            "  UNION "
+                            "  SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?"
                             ")",
-                            (q, like),
+                            (q, like, like),
                         ).fetchone()[0]
                     except Exception:
                         order_sql = (
@@ -1049,15 +1074,17 @@ class Handler(BaseHTTPRequestHandler):
                             "FROM conversations c "
                             "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                             "LEFT JOIN pinned_conversations p ON p.conversation_id = c.id "
-                            "WHERE " + where_sql + " AND COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ? "
+                            "WHERE " + where_sql + " AND (COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ? "
+                            "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?)) "
                             + order_sql + " LIMIT ? OFFSET ?",
-                            (like, limit, offset),
+                            (like, like, limit, offset),
                         ).fetchall()
                         total = conn.execute(
                             "SELECT COUNT(*) FROM conversations c "
                             "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
-                            "WHERE " + where_sql + " AND COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ?",
-                            (like,)
+                            "WHERE " + where_sql + " AND (COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ? "
+                            "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?))",
+                            (like, like)
                         ).fetchone()[0]
                 else:
                     order_sql = (
@@ -1069,15 +1096,17 @@ class Handler(BaseHTTPRequestHandler):
                         "FROM conversations c "
                         "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                         "LEFT JOIN pinned_conversations p ON p.conversation_id = c.id "
-                        "WHERE " + where_sql + " AND COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ? "
+                        "WHERE " + where_sql + " AND (COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ? "
+                            "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?)) "
                         + order_sql + " LIMIT ? OFFSET ?",
-                        (like, limit, offset),
+                        (like, like, limit, offset),
                     ).fetchall()
                     total = conn.execute(
                         "SELECT COUNT(*) FROM conversations c "
                         "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
-                        "WHERE " + where_sql + " AND COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ?",
-                        (like,)
+                        "WHERE " + where_sql + " AND (COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ? "
+                        "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?))",
+                        (like, like)
                     ).fetchone()[0]
             else:
                 order_sql = (
@@ -1147,7 +1176,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"conversation": dict(conv),
                             "messages": [parse_msg(m) for m in msgs],
                             "artifacts": artifacts_meta,
-                            "models": models})
+                            "models": models,
+                            "tags": self._conv_tags(conn, conv_id)})
         finally:
             conn.close()
 
@@ -1174,6 +1204,13 @@ class Handler(BaseHTTPRequestHandler):
             # Always add title LIKE matches
             for r in conn.execute(
                 "SELECT id FROM conversations WHERE title LIKE ? LIMIT 15",
+                (f"%{q}%",)
+            ).fetchall():
+                if r[0] not in conv_ids_set:
+                    conv_ids.append(r[0]); conv_ids_set.add(r[0])
+            # And tag matches
+            for r in conn.execute(
+                "SELECT DISTINCT conversation_id FROM udb.conversation_tags WHERE tag LIKE ? LIMIT 15",
                 (f"%{q}%",)
             ).fetchall():
                 if r[0] not in conv_ids_set:
@@ -2027,6 +2064,64 @@ class Handler(BaseHTTPRequestHandler):
             if state is None:
                 self.send_json({"error": "Unknown conversation"}, 404); return
             self.send_json(state)
+        finally:
+            conn.close()
+
+    # ── Conversation tags ────────────────────────────────────────────────────
+    # Free-form tags, stored in the persistent user-data DB (see
+    # conversation_tags in _ensure_userdata_schema) so they survive a
+    # history.db rebuild the way folders and model choices do.
+
+    def _conv_tags(self, conn, conv_id):
+        rows = conn.execute(
+            "SELECT tag FROM udb.conversation_tags WHERE conversation_id = ? "
+            "ORDER BY added_at", (conv_id,),
+        ).fetchall()
+        return [r["tag"] for r in rows]
+
+    def _api_tags_all(self):
+        """Every distinct tag in use, for the add-tag autocomplete."""
+        conn = open_db(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT tag FROM udb.conversation_tags ORDER BY tag COLLATE NOCASE"
+            ).fetchall()
+            self.send_json({"tags": [r["tag"] for r in rows]})
+        finally:
+            conn.close()
+
+    def _api_tag_add(self):
+        payload = self._read_json_body()
+        conv_id = str(payload.get("conv_id") or "").strip()
+        # Collapse internal whitespace along with trimming the ends, so
+        # "  UI   Test " and "UI Test" land as the same tag.
+        tag = " ".join(str(payload.get("tag") or "").split())[:40]
+        if not conv_id or not tag:
+            self.send_json({"error": "conv_id and tag are required"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            if not conn.execute(
+                "SELECT 1 FROM conversations WHERE id = ?", (conv_id,)
+            ).fetchone():
+                self.send_json({"error": "Unknown conversation"}, 404); return
+            conn.execute(
+                "INSERT OR IGNORE INTO udb.conversation_tags(conversation_id, tag, added_at) "
+                "VALUES (?, ?, ?)", (conv_id, tag, time.time()),
+            )
+            conn.commit()
+            self.send_json({"tags": self._conv_tags(conn, conv_id)})
+        finally:
+            conn.close()
+
+    def _api_tag_remove(self, conv_id, tag):
+        conn = open_db(self.db_path)
+        try:
+            conn.execute(
+                "DELETE FROM udb.conversation_tags WHERE conversation_id = ? AND tag = ?",
+                (conv_id, tag),
+            )
+            conn.commit()
+            self.send_json({"tags": self._conv_tags(conn, conv_id)})
         finally:
             conn.close()
 
