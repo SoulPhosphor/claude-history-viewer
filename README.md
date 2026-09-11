@@ -50,10 +50,12 @@ If you want to keep the starter completely clean, leave the placeholder `source/
 - **ChatGPT / Claude toggle** - A toggle at the top of the sidebar switches the whole view between your ChatGPT and Claude conversations; conversations **and** folders are scoped to the selected side, and the app reopens on the side you last used.
 - **Conversation views that match your workflow** - Recent / Pinned / Archived / Deleted / All, with smooth pagination for large exports.
 - **Pinning with manual ordering** - Keep long-lived threads at the top in the order you choose.
-- **Workspace tabs**
-  - Top tabs are **content tabs only** (conversation + artifact)
-  - Bottom-left quick buttons open **transient views** (they do not create top tabs)
-  - Re-clicking a quick view exits cleanly back to your previous content context
+- **Compare bar** (the top strip)
+  - Holds up to **4 conversations you explicitly add** via the **Compare** action (chat row ⋮ menu or the in-chat ⋮ menu) — opening a chat never adds one
+  - Compare items are a fast pinned-conversation type and are the **one place providers may mix**: a Claude and a ChatGPT chat can sit side by side even though the sidebar, folders and pins are per-side
+  - Each tab is outlined in its provider's colour; the active tab fills with that colour
+  - Bottom-left quick buttons open **transient views** (they do not add to the bar)
+- **Settings** (ⓘ menu) - **Compare Tab Model Identifier**: choose the outline colour for ChatGPT and Claude Compare tabs (defaults: royal blue / green)
 - **Rich message rendering**
   - Markdown: headings, bold/italic, lists, blockquotes, horizontal rules, strikethrough
   - Fenced code blocks with language labels and one-click **copy button**

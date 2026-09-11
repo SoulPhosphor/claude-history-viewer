@@ -86,7 +86,8 @@ def _ensure_runtime_schema(db_path: Path) -> None:
                 pinned          INTEGER DEFAULT 0,
                 sort_index      INTEGER DEFAULT 0,
                 last_active_at  REAL,
-                closed          INTEGER DEFAULT 0
+                closed          INTEGER DEFAULT 0,
+                provider        TEXT
             );
             """
         )
@@ -114,6 +115,8 @@ def _ensure_runtime_schema(db_path: Path) -> None:
             # column existed get it here and are backfilled below from the
             # dataset-wide format recorded at build time.
             "ALTER TABLE conversations ADD COLUMN provider TEXT",
+            # Compare items carry their own provider for tab colouring.
+            "ALTER TABLE workspace_tabs ADD COLUMN provider TEXT",
         ):
             try:
                 conn.execute(col_sql)
@@ -1382,6 +1385,7 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
                 "c.create_time, c.update_time, c.message_count, c.preview, "
                 "COALESCE(c.import_status, 'normal') AS import_status, "
+                "c.provider AS provider, "
                 "COALESCE(cm.deleted, 0) AS deleted "
                 "FROM conversations c LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                 # No deleted filter: soft-deleted means "kept out of the lists",
@@ -2595,7 +2599,7 @@ class Handler(BaseHTTPRequestHandler):
                 # honouring the flag would strand a database written by an
                 # older version with some tabs permanently jumping the queue
                 # and no way to release them.
-                "SELECT id, tab_type, conversation_id, artifact_id, title, pinned, sort_index, last_active_at "
+                "SELECT id, tab_type, conversation_id, artifact_id, title, pinned, sort_index, last_active_at, provider "
                 "FROM workspace_tabs WHERE closed = 0 ORDER BY sort_index ASC, last_active_at DESC"
             ).fetchall()
             self.send_json({"tabs": [dict(r) for r in rows]})
@@ -2609,9 +2613,12 @@ class Handler(BaseHTTPRequestHandler):
         conn = open_db(self.db_path)
         try:
             next_idx = conn.execute("SELECT COALESCE(MAX(sort_index), -1) + 1 FROM workspace_tabs WHERE closed = 0").fetchone()[0]
+            provider = (payload.get("provider") or "").strip().lower()
+            if provider not in ("claude", "chatgpt"):
+                provider = None
             conn.execute(
-                "INSERT OR REPLACE INTO workspace_tabs(id, tab_type, conversation_id, artifact_id, title, pinned, sort_index, last_active_at, closed) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                "INSERT OR REPLACE INTO workspace_tabs(id, tab_type, conversation_id, artifact_id, title, pinned, sort_index, last_active_at, closed, provider) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
                 (
                     tab_id,
                     tab_type,
@@ -2621,6 +2628,7 @@ class Handler(BaseHTTPRequestHandler):
                     1 if payload.get("pinned") else 0,
                     int(payload.get("sort_index", next_idx)),
                     float(payload.get("last_active_at", time.time())),
+                    provider,
                 ),
             )
             conn.commit()

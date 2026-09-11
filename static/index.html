@@ -233,6 +233,10 @@
           <span class="sidebar-menu-item-icon" aria-hidden="true">📥</span>
           <span class="sidebar-menu-item-label">Import New Chats</span>
         </button>
+        <button class="sidebar-menu-item" role="menuitem" data-action="settings">
+          <span class="sidebar-menu-item-icon" aria-hidden="true">⚙️</span>
+          <span class="sidebar-menu-item-label">Settings</span>
+        </button>
         <button
           class="sidebar-menu-item"
           role="menuitem"
@@ -391,6 +395,9 @@
                   role="menu"
                   hidden
                 >
+                  <button class="thread-dropdown-item" data-action="compare">
+                    Compare
+                  </button>
                   <button class="thread-dropdown-item" data-action="rename">
                     Rename
                   </button>
@@ -507,6 +514,39 @@
                 <tbody id="import-history-body"></tbody>
               </table>
             </div>
+          </div>
+        </div>
+
+        <div id="settings-panel" hidden>
+          <div class="thread-header">
+            <h2>Settings</h2>
+            <div id="settings-meta">
+              Preferences for how this app looks and behaves.
+            </div>
+          </div>
+          <div id="settings-content">
+            <section class="settings-section">
+              <h3 class="settings-section-title">Compare Tab Model Identifier</h3>
+              <p class="settings-section-hint">
+                The colour each provider's Compare tab is outlined in. An active
+                tab fills with its colour.
+              </p>
+              <div class="settings-row">
+                <label class="settings-color-label" for="compare-color-chatgpt"
+                  >ChatGPT</label
+                >
+                <input type="color" id="compare-color-chatgpt" />
+              </div>
+              <div class="settings-row">
+                <label class="settings-color-label" for="compare-color-claude"
+                  >Claude</label
+                >
+                <input type="color" id="compare-color-claude" />
+              </div>
+              <button type="button" id="compare-color-reset" class="settings-reset-btn">
+                Reset to defaults
+              </button>
+            </section>
           </div>
         </div>
 

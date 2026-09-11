@@ -19,6 +19,9 @@
   --text: #1a1817;
   --muted: #7c6f67;
   --accent: #d97757;
+  /* Compare-tab provider colours; overridden at runtime from Settings. */
+  --compare-chatgpt: #4169e1;
+  --compare-claude: #2e7d32;
   --user-label: #b55a2e;
   --code-bg: #eeeae3;
   --user-bubble: #ede9e1;
@@ -683,10 +686,29 @@ mark.search-term-highlight {
   cursor: pointer;
   white-space: nowrap;
 }
+/* Compare tabs are outlined in their provider's colour (Settings → Compare Tab
+   Model Identifier). An active tab inverts: it fills with that colour and its
+   text turns white, instead of drawing a border rectangle. */
+.top-tab.provider-chatgpt {
+  border-color: var(--compare-chatgpt);
+}
+.top-tab.provider-claude {
+  border-color: var(--compare-claude);
+}
 .top-tab.active {
-  color: var(--text);
+  color: #fff;
+  background: var(--accent);
   border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px rgba(217, 119, 87, 0.2);
+}
+.top-tab.provider-chatgpt.active {
+  background: var(--compare-chatgpt);
+  border-color: var(--compare-chatgpt);
+  color: #fff;
+}
+.top-tab.provider-claude.active {
+  background: var(--compare-claude);
+  border-color: var(--compare-claude);
+  color: #fff;
 }
 .top-tab .tab-close {
   border: 0;
@@ -695,6 +717,12 @@ mark.search-term-highlight {
   cursor: pointer;
   font-size: 12px;
   line-height: 1;
+}
+.compare-note {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 2px 8px;
+  white-space: nowrap;
 }
 
 /* ── Empty state ─────────────────────────────────────────────────────────── */
@@ -3195,4 +3223,96 @@ kbd {
   text-align: center;
   color: var(--muted);
   padding: 20px 0;
+}
+
+/* ── Chat-row ⋮ menu button ───────────────────────────────────────────────── */
+.conv-menu-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.conv-menu-btn:hover {
+  border-color: var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+.conv-menu-btn svg {
+  fill: currentColor;
+}
+
+/* Floating chat-row menu reuses the sidebar-menu look but is positioned in JS. */
+.conv-item-menu {
+  min-width: 150px;
+}
+
+/* ── Settings screen ──────────────────────────────────────────────────────── */
+#settings-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#settings-panel[hidden] {
+  display: none;
+}
+#settings-content {
+  flex: 1;
+  padding: 20px 28px 40px;
+  overflow-y: auto;
+}
+.settings-section {
+  max-width: 520px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+}
+.settings-section-title {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+.settings-section-hint {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+.settings-color-label {
+  min-width: 90px;
+  font-weight: 600;
+}
+.settings-row input[type="color"] {
+  width: 44px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+  padding: 2px;
+}
+.settings-reset-btn {
+  margin-top: 8px;
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.settings-reset-btn:hover {
+  background: var(--hover);
 }

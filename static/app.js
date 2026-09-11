@@ -16,8 +16,10 @@ const state = {
   pinnedIds: new Set(),
   folders: [],
   folderOf: new Map(), // conversation_id -> folder_id (for chats inside folders)
-  tabs: [],
+  tabs: [], // Compare items only
   activeTabId: null,
+  lastConversationId: null, // for returning from a special view
+  activeProvider: null, // provider of the open conversation
   preferences: {
     sidebarCollapsed: false,
     sidebarWidth: 300,
@@ -36,6 +38,8 @@ const state = {
   unverifiedCount: 0,
   tags: [], // tags on the open conversation
   allTagsCache: null, // every tag in use, for the add-tag autocomplete
+  // Compare-tab outline colours, per provider. CSS-driven, editable in Settings.
+  compareColors: { chatgpt: "#4169E1", claude: "#2E7D32" },
   importNew: {
     backups: [], // rows for the import-history table
     provider: "all", // filter radio
@@ -98,6 +102,7 @@ const modelAddError = $("model-add-error");
 const modelReloadBtn = $("model-reload-btn");
 const importAuditContent = $("import-audit-content");
 const importNewPanel = $("import-new-panel");
+const settingsPanel = $("settings-panel");
 const artifactPanel = $("artifact-panel");
 const artifactPanelTitle = $("artifact-panel-title");
 const artifactPanelBody = $("artifact-panel-body");
@@ -1087,70 +1092,156 @@ function renderSearchResults(results, q) {
 
 // ── Render conversation list items ────────────────────────────────────────────
 
+// Each chat row now carries a single right-aligned ⋮ button; its menu holds
+// Rename, Compare, Pin, Archive (in that order).
 function buildConvActions(c) {
   const wrap = document.createElement("div");
   wrap.className = "conv-actions";
-
-  const isPinned = state.pinnedIds.has(c.id);
-  const pinBtn = document.createElement("button");
-  pinBtn.className = "conv-action-btn";
-  pinBtn.title = isPinned ? "Unpin" : "Pin";
-  pinBtn.textContent = isPinned ? "★" : "☆";
-  pinBtn.addEventListener("click", async (e) => {
+  const btn = document.createElement("button");
+  btn.className = "conv-menu-btn";
+  btn.title = "More";
+  btn.setAttribute("aria-haspopup", "true");
+  btn.innerHTML =
+    '<svg viewBox="0 0 4 16" width="4" height="16" aria-hidden="true">' +
+    '<circle cx="2" cy="2" r="1.7"/><circle cx="2" cy="8" r="1.7"/>' +
+    '<circle cx="2" cy="14" r="1.7"/></svg>';
+  btn.addEventListener("click", (e) => {
     e.stopPropagation();
-    if (state.pinnedIds.has(c.id)) await apiUnpinConversation(c.id);
-    else await apiPinConversation(c.id);
-    await refreshPinnedList();
-    loadConversations(false);
+    openConvItemMenu(c, btn);
   });
+  wrap.appendChild(btn);
+  return wrap;
+}
 
-  const renameBtn = document.createElement("button");
-  renameBtn.className = "conv-action-btn";
-  renameBtn.title = "Rename";
-  renameBtn.textContent = "✎";
-  renameBtn.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    const next = await openNameModal({
-      title: "Rename conversation",
-      value: c.title || "",
+// ── Chat-row action menu (shared, floating) ───────────────────────────────────
+let _convMenuEl = null;
+
+function closeConvItemMenu() {
+  if (_convMenuEl) {
+    _convMenuEl.remove();
+    _convMenuEl = null;
+    document.removeEventListener("mousedown", onConvMenuOutside, true);
+    document.removeEventListener("keydown", onConvMenuKey, true);
+    window.removeEventListener("scroll", closeConvItemMenu, true);
+  }
+}
+function onConvMenuOutside(e) {
+  if (_convMenuEl && !_convMenuEl.contains(e.target)) closeConvItemMenu();
+}
+function onConvMenuKey(e) {
+  if (e.key === "Escape") closeConvItemMenu();
+}
+
+async function renameConversation(c) {
+  const next = await openNameModal({
+    title: "Rename conversation",
+    value: c.title || "",
+  });
+  if (!next || next === c.title) return;
+  await apiUpdateConversationMeta(c.id, { title: next });
+  if (state.activeId === c.id) setThreadTitle(next);
+  loadConversations(false);
+  refreshPinnedList();
+  loadFolders();
+  const compareTab = compareTabForConv(c.id);
+  if (compareTab) {
+    compareTab.title = next;
+    renderTabs();
+    apiUpdateTab(compareTab.id, {
+      title: next,
+      conversation_id: c.id,
+      tab_type: "conversation",
     });
-    if (!next || next === c.title) return;
-    await apiUpdateConversationMeta(c.id, { title: next });
-    loadConversations(false);
-    refreshPinnedList();
-    loadFolders();
-  });
+  }
+}
 
-  const archiveBtn = document.createElement("button");
-  archiveBtn.className = "conv-action-btn";
+async function togglePinConversation(c) {
+  if (state.pinnedIds.has(c.id)) await apiUnpinConversation(c.id);
+  else await apiPinConversation(c.id);
+  await refreshPinnedList();
+  loadConversations(false);
+}
+
+async function archiveOrRestoreConversation(c) {
   const archivedView = state.view === "archived";
   const deletedView = state.view === "deleted";
   const restoreMode = archivedView || deletedView;
-  archiveBtn.title = restoreMode ? "Restore" : "Archive";
-  archiveBtn.textContent = restoreMode ? "↺" : "🗄";
-  archiveBtn.addEventListener("click", async (e) => {
-    e.stopPropagation();
-    if (deletedView) {
-      await apiUpdateConversationMeta(c.id, { deleted: false });
-    } else {
-      await apiUpdateConversationMeta(c.id, { archived: !archivedView });
-    }
-    // Does this action remove the row from the CURRENT view? recent+archive,
-    // archived+unarchive and deleted+undelete all do; "all" view keeps it.
-    const leavesView =
-      (state.view === "recent" && !restoreMode) || archivedView || deletedView;
-    const wasPinned = state.pinnedIds.has(c.id);
-    const itemEl = findConvItemEl(c.id);
-    if (leavesView && itemEl && !state.q) {
-      removeConvItemFromList(itemEl); // fast path: drop just this row
-    } else {
-      loadConversations(false); // fallback preserves prior behavior
-    }
-    if (wasPinned) refreshPinnedList();
-  });
+  if (deletedView) {
+    await apiUpdateConversationMeta(c.id, { deleted: false });
+  } else {
+    await apiUpdateConversationMeta(c.id, { archived: !archivedView });
+  }
+  const leavesView =
+    (state.view === "recent" && !restoreMode) || archivedView || deletedView;
+  const wasPinned = state.pinnedIds.has(c.id);
+  const itemEl = findConvItemEl(c.id);
+  if (leavesView && itemEl && !state.q) {
+    removeConvItemFromList(itemEl);
+  } else {
+    loadConversations(false);
+  }
+  if (wasPinned) refreshPinnedList();
+}
 
-  wrap.append(pinBtn, renameBtn, archiveBtn);
-  return wrap;
+function openConvItemMenu(c, anchorBtn) {
+  const wasForThis =
+    _convMenuEl && _convMenuEl.dataset.convId === c.id;
+  closeConvItemMenu();
+  if (wasForThis) return; // clicking the same ⋮ again closes it
+
+  const menu = document.createElement("div");
+  menu.className = "sidebar-menu conv-item-menu";
+  menu.dataset.convId = c.id;
+  menu.setAttribute("role", "menu");
+
+  const archivedView = state.view === "archived";
+  const deletedView = state.view === "deleted";
+  const pinned = state.pinnedIds.has(c.id);
+  const items = [
+    { label: "Rename", fn: () => renameConversation(c) },
+    {
+      label: compareTabForConv(c.id) ? "Remove from Compare" : "Compare",
+      fn: () => {
+        const existing = compareTabForConv(c.id);
+        if (existing) removeFromCompare(existing.id);
+        else addToCompare(c.id, c.title, state.providerSide);
+      },
+    },
+    { label: pinned ? "Unpin" : "Pin", fn: () => togglePinConversation(c) },
+    {
+      label: archivedView || deletedView ? "Restore" : "Archive",
+      fn: () => archiveOrRestoreConversation(c),
+    },
+  ];
+  for (const it of items) {
+    const b = document.createElement("button");
+    b.className = "sidebar-menu-item";
+    b.setAttribute("role", "menuitem");
+    b.innerHTML = `<span class="sidebar-menu-item-label">${escHtml(it.label)}</span>`;
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeConvItemMenu();
+      it.fn();
+    });
+    menu.appendChild(b);
+  }
+
+  document.body.appendChild(menu);
+  _convMenuEl = menu;
+  // Position under the button, right-aligned, kept on screen.
+  const r = anchorBtn.getBoundingClientRect();
+  const mw = menu.offsetWidth;
+  let left = r.right - mw;
+  if (left < 8) left = 8;
+  let top = r.bottom + 4;
+  if (top + menu.offsetHeight > window.innerHeight - 8) {
+    top = r.top - menu.offsetHeight - 4;
+  }
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  document.addEventListener("mousedown", onConvMenuOutside, true);
+  document.addEventListener("keydown", onConvMenuKey, true);
+  window.addEventListener("scroll", closeConvItemMenu, true);
 }
 
 function appendListItems(convs, targetEl = convList) {
@@ -1376,6 +1467,18 @@ async function loadUiPreferences() {
     p.scrollByConversation && typeof p.scrollByConversation === "object"
       ? p.scrollByConversation
       : {};
+  state.lastConversationId =
+    typeof p.lastConversationId === "string" ? p.lastConversationId : null;
+  const cc = p.compareColors || {};
+  state.compareColors = {
+    chatgpt: _validHexColor(cc.chatgpt)
+      ? cc.chatgpt
+      : DEFAULT_COMPARE_COLORS.chatgpt,
+    claude: _validHexColor(cc.claude)
+      ? cc.claude
+      : DEFAULT_COMPARE_COLORS.claude,
+  };
+  applyCompareColors();
   // Restore the side last viewed. With no saved choice, start on whichever side
   // the dataset itself is (loadDatasetFormat runs before this).
   const savedSide = String(p.providerSide || "");
@@ -1431,58 +1534,109 @@ function getTabById(tabId) {
   return state.tabs.find((tab) => tab.id === tabId) || null;
 }
 
-function isSpecialTab(tab) {
-  return false;
-}
-
+// Every persisted tab is now a Compare item, and Compare holds conversations
+// only — artifacts open transiently, and the sidebar switches between chats.
 function isTopTab(tab) {
+  return !!tab && tab.tab_type === "conversation";
+}
+
+function compareCount() {
+  return state.tabs.filter(isTopTab).length;
+}
+
+function compareTabForConv(convId) {
   return (
-    !!tab && (tab.tab_type === "conversation" || tab.tab_type === "artifact")
+    state.tabs.find(
+      (t) => t.tab_type === "conversation" && t.conversation_id === convId,
+    ) || null
   );
 }
 
-function rememberReturnTab(tabId = state.activeTabId) {
-  const tab = getTabById(tabId);
-  if (isTopTab(tab)) {
-    state.specialReturnTabId = tab.id;
-  }
+// Remember which conversation to return to when a special view (Memories,
+// Settings, …) is closed. A Compare item is not "the last thing viewed" unless
+// one is actually open, so track the open conversation id directly.
+function rememberReturnTab() {
+  if (state.activeId) state.lastConversationId = state.activeId;
 }
 
-function resolveReturnTabId(excludeTabId = null) {
-  const remembered = getTabById(state.specialReturnTabId);
-  if (remembered && remembered.id !== excludeTabId) return remembered.id;
-  const fallback = state.tabs.find(
-    (tab) => isTopTab(tab) && tab.id !== excludeTabId,
-  );
-  return fallback?.id || null;
+// The conversation a closing special view should return to: the last one
+// opened if it still exists, else the first Compare item, else none.
+function returnConversationId() {
+  if (state.lastConversationId) return state.lastConversationId;
+  const first = state.tabs.find(isTopTab);
+  return first ? first.conversation_id : null;
 }
 
-async function closeTabAndFocusFallback(tabId) {
-  const tab = getTabById(tabId);
-  if (!tab) return;
-  const wasActive = state.activeTabId === tabId;
-  const fallbackId = isSpecialTab(tab)
-    ? resolveReturnTabId(tabId)
-    : state.tabs.find((candidate) => candidate.id !== tabId)?.id || null;
-
-  await apiDeleteTab(tabId);
-  state.tabs = state.tabs.filter((candidate) => candidate.id !== tabId);
-  if (state.specialReturnTabId === tabId) {
-    state.specialReturnTabId = null;
-  }
-
-  if (wasActive) {
-    state.activeTabId = fallbackId;
-    if (fallbackId) {
-      await activateActiveTab();
-    } else if (!(await openMostRecentConversation())) {
-      // No conversations at all (fresh install, everything deleted, …) —
-      // only then fall back to the empty placeholder.
-      hideAllPanels();
-      emptyState.hidden = false;
-    }
+async function returnFromSpecialView() {
+  state.activeSpecialView = null;
+  const cid = returnConversationId();
+  if (cid) {
+    await openConversation(cid, findConvItemEl(cid));
+  } else {
+    hideAllPanels();
+    emptyState.hidden = false;
   }
   renderTabs();
+}
+
+// ── Compare (the top strip) ───────────────────────────────────────────────────
+// The strip holds up to MAX_COMPARE conversations the user explicitly added via
+// the Compare action. They behave like fast pins and, unlike folders / pins /
+// the sidebar list, may mix Claude and ChatGPT.
+const MAX_COMPARE = 4;
+
+async function addToCompare(convId, title, provider) {
+  if (!convId) return;
+  if (compareTabForConv(convId)) {
+    flashCompareMessage("Already in Compare");
+    return;
+  }
+  if (compareCount() >= MAX_COMPARE) {
+    flashCompareMessage(`Compare holds at most ${MAX_COMPARE} chats`);
+    return;
+  }
+  const created = await apiCreateTab({
+    tab_type: "conversation",
+    conversation_id: convId,
+    title: title || "Conversation",
+    provider: provider || null,
+  });
+  state.tabs.push({
+    id: created.id,
+    tab_type: "conversation",
+    conversation_id: convId,
+    title: title || "Conversation",
+    provider: provider || null,
+  });
+  renderTabs();
+}
+
+async function removeFromCompare(tabId) {
+  const tab = getTabById(tabId);
+  if (!tab) return;
+  await apiDeleteTab(tabId);
+  state.tabs = state.tabs.filter((t) => t.id !== tabId);
+  renderTabs();
+}
+
+// A small, self-clearing note in the strip when Compare can't add a chat.
+let _compareMsgTimer = null;
+function flashCompareMessage(text) {
+  if (!tabsWrap) return;
+  tabsWrap.hidden = false;
+  let note = document.getElementById("compare-note");
+  if (!note) {
+    note = document.createElement("div");
+    note.id = "compare-note";
+    note.className = "compare-note";
+    tabsWrap.appendChild(note);
+  }
+  note.textContent = text;
+  clearTimeout(_compareMsgTimer);
+  _compareMsgTimer = setTimeout(() => {
+    note.remove();
+    renderTabs();
+  }, 2200);
 }
 
 // Closing the last open tab used to leave the pane blank ("Untitled"/empty)
@@ -1506,39 +1660,43 @@ async function openMostRecentConversation() {
   }
 }
 
+// Clicking a Compare tab just opens its conversation. Compare crosses
+// providers, so this can open a chat from the side the sidebar isn't showing.
 async function activateTab(tabId) {
-  state.activeTabId = tabId;
-  rememberReturnTab(tabId);
-  await apiUpdateTab(tabId, { last_active_at: Date.now() / 1000 });
-  await activateActiveTab();
-  renderTabs();
+  const tab = getTabById(tabId);
+  if (!tab) return;
+  await openConversation(tab.conversation_id, findConvItemEl(tab.conversation_id));
 }
 
 function renderTabs() {
+  if (!tabsList) return;
   tabsList.innerHTML = "";
-  const tabsToRender = state.tabs.filter(isTopTab);
-  // The strip is for comparing chats side by side, so it appears only once
-  // there are two. One chat needs no tab — the sidebar switches between them —
-  // and hiding the strip lets the header sit at the very top of the screen.
-  // The row itself stays open in workspace_tabs; it is not closed, just undrawn.
-  tabsWrap.hidden = tabsToRender.length < 2;
-  for (const t of tabsToRender) {
+  const items = state.tabs.filter(isTopTab);
+  // The strip appears as soon as there's one Compare item (they're fast pins),
+  // or while a transient note is showing.
+  const hasNote = !!document.getElementById("compare-note");
+  tabsWrap.hidden = items.length === 0 && !hasNote;
+  for (const t of items) {
     const tab = document.createElement("div");
-    tab.className = "top-tab" + (t.id === state.activeTabId ? " active" : "");
+    const active = t.conversation_id === state.activeId;
+    tab.className = "top-tab" + (active ? " active" : "");
+    if (t.provider === "chatgpt" || t.provider === "claude") {
+      tab.classList.add(`provider-${t.provider}`);
+    }
     tab.setAttribute("role", "button");
     tab.setAttribute("tabindex", "0");
-    tab.innerHTML = `<span class="tab-label">${escHtml(t.title || "Untitled")}</span><button type="button" class="tab-close" title="Close">×</button>`;
+    tab.innerHTML = `<span class="tab-label">${escHtml(t.title || "Untitled")}</span><button type="button" class="tab-close" title="Remove from Compare">×</button>`;
     tab.querySelector(".tab-close").addEventListener("click", async (e) => {
       e.stopPropagation();
-      await closeTabAndFocusFallback(t.id);
+      await removeFromCompare(t.id);
     });
-    tab.addEventListener("click", async () => {
-      await activateTab(t.id);
-    });
-    tab.addEventListener("keydown", async (e) => {
+    tab.addEventListener("click", () =>
+      openConversation(t.conversation_id, findConvItemEl(t.conversation_id)),
+    );
+    tab.addEventListener("keydown", (e) => {
       if (e.key !== "Enter" && e.key !== " ") return;
       e.preventDefault();
-      await activateTab(t.id);
+      openConversation(t.conversation_id, findConvItemEl(t.conversation_id));
     });
     tabsList.appendChild(tab);
   }
@@ -1547,72 +1705,20 @@ function renderTabs() {
 async function loadTabs() {
   const data = await apiTabs();
   state.tabs = (data.tabs || []).filter(isTopTab);
-  if (!state.tabs.length) {
-    state.activeTabId = null;
-    renderTabs();
-    return;
-  }
-  if (!state.activeTabId || !getTabById(state.activeTabId)) {
-    state.activeTabId = state.tabs[0].id;
-  }
-  renderTabs();
-}
-
-async function ensureConversationTab(convId, title) {
-  let tab = state.tabs.find(
-    (t) => t.tab_type === "conversation" && t.conversation_id === convId,
-  );
-  if (!tab) {
-    const created = await apiCreateTab({
-      tab_type: "conversation",
-      conversation_id: convId,
-      title: title || "Conversation",
-    });
-    tab = {
-      id: created.id,
-      tab_type: "conversation",
-      conversation_id: convId,
-      title: title || "Conversation",
-    };
-    state.tabs.push(tab);
-  }
-  state.activeTabId = tab.id;
-  rememberReturnTab(tab.id);
   renderTabs();
 }
 
 async function ensureSpecialTab(tabType, title) {
   state.activeSpecialView = tabType;
-  if (!isTopTab(getTabById(state.activeTabId))) {
-    state.specialReturnTabId = resolveReturnTabId();
-  }
-  state.activeTabId = null;
   renderTabs();
 }
 
+// Artifacts open transiently in the reading pane — they never join the Compare
+// strip. Kept as its own function so existing callers need no changes.
 async function openArtifactTab(artifactId, title) {
   state.activeSpecialView = null;
-  let tab = state.tabs.find(
-    (t) => t.tab_type === "artifact" && t.artifact_id === artifactId,
-  );
-  if (!tab) {
-    const created = await apiCreateTab({
-      tab_type: "artifact",
-      artifact_id: artifactId,
-      title: title || "Artifact",
-    });
-    tab = {
-      id: created.id,
-      tab_type: "artifact",
-      artifact_id: artifactId,
-      title: title || "Artifact",
-    };
-    state.tabs.push(tab);
-  }
-  state.activeTabId = tab.id;
-  rememberReturnTab(tab.id);
+  await renderArtifactTabContent(artifactId, title);
   renderTabs();
-  await activateActiveTab();
 }
 
 async function renderArtifactTabContent(artifactId, title) {
@@ -1684,38 +1790,25 @@ async function renderArtifactTabContent(artifactId, title) {
   messagesEl.appendChild(wrap);
 }
 
+// Restore whatever the app was showing (a special view, else the last
+// conversation, else the empty state). Used on load and by tab cycling.
 async function activateActiveTab() {
-  const tab = state.tabs.find((t) => t.id === state.activeTabId);
-  if (!tab) {
-    if (state.activeSpecialView === "gallery") return openGallery(false);
-    if (state.activeSpecialView === "memories") return openMemories(false);
-    if (state.activeSpecialView === "projects") return openProjects(false);
-    if (state.activeSpecialView === "attachment_report")
-      return openAttReport(false, false);
-    if (state.activeSpecialView === "claude_models")
-      return openClaudeModels();
-    if (state.activeSpecialView === "import_audit")
-      return openImportAudit(false);
-    if (state.activeSpecialView === "import_new") return openImportNew();
-    hideAllPanels();
-    emptyState.hidden = false;
+  if (state.activeSpecialView === "gallery") return openGallery(false);
+  if (state.activeSpecialView === "memories") return openMemories(false);
+  if (state.activeSpecialView === "projects") return openProjects(false);
+  if (state.activeSpecialView === "attachment_report")
+    return openAttReport(false, false);
+  if (state.activeSpecialView === "claude_models") return openClaudeModels();
+  if (state.activeSpecialView === "import_audit") return openImportAudit(false);
+  if (state.activeSpecialView === "import_new") return openImportNew();
+  if (state.activeSpecialView === "settings") return openSettings();
+  const cid = returnConversationId();
+  if (cid) {
+    await openConversation(cid, findConvItemEl(cid));
     return;
   }
-  if (tab.tab_type === "conversation" && tab.conversation_id) {
-    openConversation(
-      tab.conversation_id,
-      resolveConversationSidebarEl(tab.conversation_id),
-    );
-    return;
-  }
-  if (tab.tab_type === "artifact" && tab.artifact_id) {
-    rememberReturnTab(tab.id);
-    await renderArtifactTabContent(
-      tab.artifact_id,
-      tab.title || tab.artifact_id,
-    );
-    return;
-  }
+  hideAllPanels();
+  emptyState.hidden = false;
 }
 
 async function loadConversations(append = false) {
@@ -1774,6 +1867,7 @@ function hideAllPanels() {
   attReportPanel.hidden = true;
   importAuditPanel.hidden = true;
   importNewPanel.hidden = true;
+  settingsPanel.hidden = true;
   claudeModelsPanel.hidden = true;
   closeArtifactPanel();
   closeFilePanel();
@@ -1933,6 +2027,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   }
 
   const { conversation: conv, messages, artifacts: artifactsMeta = {} } = data;
+  state.activeProvider = conv.provider || null;
 
   setThreadTitle(conv.title);
   const ts = formatDate(conv.update_time || conv.create_time);
@@ -2170,21 +2265,23 @@ async function openConversation(id, clickedEl, targetSeq = null) {
     buildSearchNavBar(id, state.q);
   }
 
-  // Tab bookkeeping runs AFTER the conversation is on screen so it never delays
-  // rendering. Only persist the tab title when it actually changed (e.g. after a
-  // rename) — the previous code re-wrote the same title on every open. The write
-  // is fire-and-forget; ensureConversationTab already refreshes the tab strip.
-  await ensureConversationTab(id, conv.title);
-  const activeTab = state.tabs.find((t) => t.id === state.activeTabId);
-  if (activeTab && activeTab.title !== conv.title) {
-    activeTab.title = conv.title;
-    renderTabs();
-    apiUpdateTab(activeTab.id, {
+  // Opening a chat no longer creates a tab — the top strip is the Compare list
+  // only. Just remember this as the conversation to return to, and keep a
+  // matching Compare item's title in sync (e.g. after a rename).
+  state.lastConversationId = id;
+  const compareTab = compareTabForConv(id);
+  if (compareTab && compareTab.title !== conv.title) {
+    compareTab.title = conv.title;
+    if (compareTab.provider == null && conv.provider) {
+      compareTab.provider = conv.provider;
+    }
+    apiUpdateTab(compareTab.id, {
       title: conv.title,
       conversation_id: id,
       tab_type: "conversation",
     });
   }
+  renderTabs();
 }
 
 // ── Search (debounced) ────────────────────────────────────────────────────────
@@ -2311,12 +2408,11 @@ document.addEventListener("keydown", (e) => {
 
   if ((e.ctrlKey || e.metaKey) && e.key === "Tab") {
     e.preventDefault();
-    if (!state.tabs.length) return;
-    const idx = state.tabs.findIndex((t) => t.id === state.activeTabId);
-    const next = state.tabs[(idx + 1) % state.tabs.length];
-    state.activeTabId = next.id;
-    activateActiveTab();
-    renderTabs();
+    const items = state.tabs.filter(isTopTab);
+    if (!items.length) return;
+    const idx = items.findIndex((t) => t.conversation_id === state.activeId);
+    const next = items[(idx + 1) % items.length];
+    openConversation(next.conversation_id, findConvItemEl(next.conversation_id));
     return;
   }
 
@@ -2600,15 +2696,7 @@ function renderMediaHub(data) {
 
 async function openGallery(fromButton = false) {
   if (fromButton && state.activeSpecialView === "gallery") {
-    state.activeSpecialView = null;
-    state.activeTabId = resolveReturnTabId();
-    if (state.activeTabId) {
-      await activateActiveTab();
-    } else {
-      hideAllPanels();
-      emptyState.hidden = false;
-    }
-    renderTabs();
+    await returnFromSpecialView();
     return;
   }
   rememberReturnTab();
@@ -2651,15 +2739,7 @@ $("gallery-btn").addEventListener("click", () => openGallery(true));
 
 async function openAttReport(forceRefresh, fromButton = false) {
   if (fromButton && state.activeSpecialView === "attachment_report") {
-    state.activeSpecialView = null;
-    state.activeTabId = resolveReturnTabId();
-    if (state.activeTabId) {
-      await activateActiveTab();
-    } else {
-      hideAllPanels();
-      emptyState.hidden = false;
-    }
-    renderTabs();
+    await returnFromSpecialView();
     return;
   }
   rememberReturnTab();
@@ -3451,6 +3531,67 @@ document.addEventListener("keydown", (e) => {
   if (!coverageModal.hidden) coverageModal.hidden = true;
 });
 
+// ── Settings screen ──────────────────────────────────────────────────────────
+
+const DEFAULT_COMPARE_COLORS = { chatgpt: "#4169E1", claude: "#2E7D32" };
+
+// Push the current compare colours into CSS custom properties. All compare-tab
+// colouring is driven by these two variables, so future settings can extend the
+// same pattern.
+function applyCompareColors() {
+  const root = document.documentElement.style;
+  root.setProperty("--compare-chatgpt", state.compareColors.chatgpt);
+  root.setProperty("--compare-claude", state.compareColors.claude);
+}
+
+function _validHexColor(v) {
+  return typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v);
+}
+
+async function openSettings() {
+  rememberReturnTab();
+  state.activeSpecialView = "settings";
+  state.activeTabId = null;
+  document
+    .querySelectorAll(".conv-item.active")
+    .forEach((el) => el.classList.remove("active"));
+  state.activeId = null;
+  await ensureSpecialTab("settings", "Settings");
+  hideAllPanels();
+  settingsPanel.hidden = false;
+  const gpt = $("compare-color-chatgpt");
+  const claude = $("compare-color-claude");
+  if (gpt) gpt.value = state.compareColors.chatgpt;
+  if (claude) claude.value = state.compareColors.claude;
+}
+
+function saveCompareColors() {
+  applyCompareColors();
+  renderTabs();
+  saveUiPreferences({ compareColors: { ...state.compareColors } });
+}
+
+$("compare-color-chatgpt")?.addEventListener("input", (e) => {
+  if (_validHexColor(e.target.value)) {
+    state.compareColors.chatgpt = e.target.value;
+    saveCompareColors();
+  }
+});
+$("compare-color-claude")?.addEventListener("input", (e) => {
+  if (_validHexColor(e.target.value)) {
+    state.compareColors.claude = e.target.value;
+    saveCompareColors();
+  }
+});
+$("compare-color-reset")?.addEventListener("click", () => {
+  state.compareColors = { ...DEFAULT_COMPARE_COLORS };
+  const gpt = $("compare-color-chatgpt");
+  const claude = $("compare-color-claude");
+  if (gpt) gpt.value = state.compareColors.chatgpt;
+  if (claude) claude.value = state.compareColors.claude;
+  saveCompareColors();
+});
+
 // ── Import New Chats screen ──────────────────────────────────────────────────
 // Scans the source folder for backup files not yet imported, identifies each as
 // a Claude or ChatGPT export, merges it in, and renames the source file. Below
@@ -3948,6 +4089,7 @@ sidebarMenu.querySelectorAll(".sidebar-menu-item").forEach((item) => {
     if (action === "attachment-report") openAttReport(false);
     else if (action === "import-audit") openImportAudit(false);
     else if (action === "import-new") openImportNew();
+    else if (action === "settings") openSettings();
     else if (action === "claude-models") openClaudeModels();
   });
 });
@@ -3956,15 +4098,7 @@ sidebarMenu.querySelectorAll(".sidebar-menu-item").forEach((item) => {
 
 async function openMemories(fromButton = false) {
   if (fromButton && state.activeSpecialView === "memories") {
-    state.activeSpecialView = null;
-    state.activeTabId = resolveReturnTabId();
-    if (state.activeTabId) {
-      await activateActiveTab();
-    } else {
-      hideAllPanels();
-      emptyState.hidden = false;
-    }
-    renderTabs();
+    await returnFromSpecialView();
     return;
   }
   rememberReturnTab();
@@ -4012,15 +4146,7 @@ $("memories-btn").addEventListener("click", () => openMemories(true));
 
 async function openProjects(fromButton = false) {
   if (fromButton && state.activeSpecialView === "projects") {
-    state.activeSpecialView = null;
-    state.activeTabId = resolveReturnTabId();
-    if (state.activeTabId) {
-      await activateActiveTab();
-    } else {
-      hideAllPanels();
-      emptyState.hidden = false;
-    }
-    renderTabs();
+    await returnFromSpecialView();
     return;
   }
   rememberReturnTab();
@@ -4519,6 +4645,12 @@ threadMoreBtn?.addEventListener("click", (e) => {
   const wasOpen = !threadMoreMenu.hidden;
   closeThreadMenus();
   if (wasOpen) return;
+  const compareItem = threadMoreMenu.querySelector('[data-action="compare"]');
+  if (compareItem) {
+    compareItem.textContent = compareTabForConv(state.activeId)
+      ? "Remove from Compare"
+      : "Compare";
+  }
   const pinItem = threadMoreMenu.querySelector('[data-action="pin"]');
   if (pinItem) {
     if (state.folderOf.has(state.activeId)) {
@@ -4540,7 +4672,16 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
     const cid = state.activeId;
     closeThreadMenus();
     if (!cid) return;
-    if (action === "rename") {
+    if (action === "compare") {
+      const existing = compareTabForConv(cid);
+      if (existing) removeFromCompare(existing.id);
+      else
+        addToCompare(
+          cid,
+          threadTitle.textContent || "Conversation",
+          state.activeProvider || state.providerSide,
+        );
+    } else if (action === "rename") {
       const cur = threadTitle.textContent || "";
       const name = await openNameModal({
         title: "Rename conversation",
@@ -4595,8 +4736,17 @@ async function initApp() {
   await loadFolders();
   await loadTabs();
   await loadConversations(false);
-  if (state.activeTabId) {
+  // Restore the last conversation viewed, else open the most recent so the
+  // reading pane is never empty on a populated database.
+  if (state.activeSpecialView) {
     await activateActiveTab();
+  } else if (state.lastConversationId) {
+    await openConversation(
+      state.lastConversationId,
+      findConvItemEl(state.lastConversationId),
+    );
+  } else {
+    await openMostRecentConversation();
   }
 }
 
@@ -4612,5 +4762,6 @@ window.addEventListener("beforeunload", () => {
     ...state.preferences,
     conversationView: state.view,
     scrollByConversation: state.scrollByConversation,
+    lastConversationId: state.lastConversationId,
   });
 });

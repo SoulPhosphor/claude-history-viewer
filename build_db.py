@@ -841,7 +841,9 @@ CREATE TABLE workspace_tabs (
     pinned         INTEGER DEFAULT 0,
     sort_index     INTEGER DEFAULT 0,
     last_active_at REAL,
-    closed         INTEGER DEFAULT 0
+    closed         INTEGER DEFAULT 0,
+    -- Compare items cross providers, so each stores its own side for colouring.
+    provider       TEXT
 );
 
 CREATE TABLE messages (
