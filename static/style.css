@@ -57,6 +57,7 @@ body.sidebar-collapsed #sidebar {
   min-width: var(--sidebar-collapsed-w);
 }
 body.sidebar-collapsed #sidebar .sidebar-title,
+body.sidebar-collapsed #sidebar .provider-toggle,
 body.sidebar-collapsed #sidebar .search-wrap,
 body.sidebar-collapsed #sidebar #result-count,
 body.sidebar-collapsed #sidebar .conv-section,
@@ -86,10 +87,48 @@ body.sidebar-collapsed #sidebar-footer {
 }
 
 .sidebar-title-row {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
+  min-height: 28px;
   margin-bottom: 10px;
+}
+
+/* The collapse button sits pinned to the left so the provider toggle can be
+   centered in the full width of the row. */
+.sidebar-title-row #sidebar-toggle {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* ── Provider toggle (ChatGPT / Claude) ──────────────────────────────────── */
+.provider-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.provider-seg {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 16px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.provider-seg:hover {
+  color: var(--text);
+}
+.provider-seg.active {
+  background: var(--accent);
+  color: #fff;
 }
 
 .sidebar-title {

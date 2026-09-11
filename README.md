@@ -47,6 +47,7 @@ If you want to keep the starter completely clean, leave the placeholder `source/
   - Imported files are renamed to `Provider-conversations-YYYY-MM-DD.json` (the date is the latest message in the backup); identical re-drops are detected by hash and skipped, and same-date collisions get a `-1`, `-2`, … suffix
   - Conversation identity is the original UUID plus its provider, so overlapping backups reconcile in place instead of duplicating, a deleted conversation is never re-added, and renaming a chat never changes its identity
   - An import-history table below the button lists every backup with First / Last chat dates, total chats, and import date; filter by provider and sort by any column
+- **ChatGPT / Claude toggle** - A toggle at the top of the sidebar switches the whole view between your ChatGPT and Claude conversations; conversations **and** folders are scoped to the selected side, and the app reopens on the side you last used.
 - **Conversation views that match your workflow** - Recent / Pinned / Archived / Deleted / All, with smooth pagination for large exports.
 - **Pinning with manual ordering** - Keep long-lived threads at the top in the order you choose.
 - **Workspace tabs**

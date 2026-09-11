@@ -25,6 +25,9 @@ const state = {
     searchHistory: [],
   },
   scrollByConversation: {},
+  // Which side the sidebar toggle shows: "claude" or "chatgpt". Persisted so
+  // reopening the app returns to the side last viewed.
+  providerSide: "claude",
   // Claude model availability. Everything under here stays inert on a ChatGPT
   // export, where the whole feature is hidden.
   datasetFormat: "claude",
@@ -901,6 +904,7 @@ async function apiConversations(q, offset, signal) {
     offset,
     view: state.view,
     pinned_first: state.view === "recent" ? "1" : "0",
+    provider: state.providerSide,
   });
   if (q) p.set("q", q);
   const r = await fetch(`/api/conversations?${p}`, { signal });
@@ -1372,6 +1376,17 @@ async function loadUiPreferences() {
     p.scrollByConversation && typeof p.scrollByConversation === "object"
       ? p.scrollByConversation
       : {};
+  // Restore the side last viewed. With no saved choice, start on whichever side
+  // the dataset itself is (loadDatasetFormat runs before this).
+  const savedSide = String(p.providerSide || "");
+  state.providerSide = ["claude", "chatgpt"].includes(savedSide)
+    ? savedSide
+    : state.datasetFormat === "chatgpt"
+      ? "chatgpt"
+      : "claude";
+  state.preferences.providerSide = state.providerSide;
+  renderProviderToggle();
+  if (claudeModelsMenuItem) claudeModelsMenuItem.hidden = !isClaudeSide();
   state.view = state.preferences.conversationView;
   if (viewFilterEl) viewFilterEl.value = state.view;
   updateListSectionTitle();
@@ -3007,7 +3022,9 @@ const ICON_REPORT =
   '17.3c-.72 0-1.3-.58-1.3-1.3s.58-1.3 1.3-1.3 1.3.58 1.3 1.3-.58 1.3-1.3 ' +
   '1.3zm1-4.3h-2V7h2v6z"/></svg>';
 
-const isClaudeSide = () => state.datasetFormat === "claude";
+// Which side the UI is currently showing. Claude-only features (model tagging,
+// unverified filter) key off this, so switching to ChatGPT hides them.
+const isClaudeSide = () => state.providerSide === "claude";
 
 async function apiModelState(path, options) {
   const resp = await fetch(path, options);
@@ -3027,6 +3044,45 @@ async function loadDatasetFormat() {
   }
   if (claudeModelsMenuItem) claudeModelsMenuItem.hidden = !isClaudeSide();
 }
+
+// ── Provider toggle (ChatGPT / Claude) ───────────────────────────────────────
+
+function renderProviderToggle() {
+  document
+    .querySelectorAll("#provider-toggle .provider-seg")
+    .forEach((btn) => {
+      btn.classList.toggle(
+        "active",
+        btn.dataset.provider === state.providerSide,
+      );
+    });
+}
+
+async function switchProviderSide(side) {
+  if (side !== "claude" && side !== "chatgpt") return;
+  if (state.providerSide === side) return;
+  state.providerSide = side;
+  renderProviderToggle();
+  saveUiPreferences({ providerSide: side });
+  // Claude-only UI follows the active side.
+  if (claudeModelsMenuItem) claudeModelsMenuItem.hidden = !isClaudeSide();
+  // A ChatGPT dataset can never be on the Unverified (Claude models) view.
+  if (!isClaudeSide() && state.view === "unverified") {
+    state.view = "recent";
+    if (viewFilterEl) viewFilterEl.value = "recent";
+    updateListSectionTitle();
+  }
+  state.offset = 0;
+  await loadFolders();
+  await loadConversations(false);
+  syncUnverifiedOption();
+}
+
+document
+  .querySelectorAll("#provider-toggle .provider-seg")
+  .forEach((btn) => {
+    btn.addEventListener("click", () => switchProviderSide(btn.dataset.provider));
+  });
 
 // The "Unverified Models" filter exists only while something is flagged.
 function syncUnverifiedOption() {
@@ -4084,13 +4140,15 @@ nameModal?.addEventListener("mousedown", (e) => {
 
 // ── Folders ─────────────────────────────────────────────────────────────────
 async function apiFolders() {
-  return fetch("/api/folders").then((r) => r.json());
+  const p = new URLSearchParams({ provider: state.providerSide });
+  return fetch(`/api/folders?${p}`).then((r) => r.json());
 }
 async function apiCreateFolder(name) {
   return fetch("/api/folders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name }),
+    // Folders belong to the side they were created on.
+    body: JSON.stringify({ name, provider: state.providerSide }),
   }).then((r) => r.json());
 }
 
