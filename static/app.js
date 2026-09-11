@@ -44,8 +44,10 @@ const viewFilterEl = $("view-filter");
 const resultCount = $("result-count");
 const convList = $("conv-list");
 const listSectionTitle = $("list-section-title");
+const foldersSection = $("folders-section");
 const foldersToggle = $("folders-toggle");
 const foldersTree = $("folders-tree");
+const foldersCtxMenu = $("folders-ctx-menu");
 const pinnedSection = $("pinned-section");
 const pinnedList = $("pinned-list");
 const loadMoreWrap = $("load-more-wrap");
@@ -1450,12 +1452,35 @@ async function closeTabAndFocusFallback(tabId) {
     state.activeTabId = fallbackId;
     if (fallbackId) {
       await activateActiveTab();
-    } else {
+    } else if (!(await openMostRecentConversation())) {
+      // No conversations at all (fresh install, everything deleted, …) —
+      // only then fall back to the empty placeholder.
       hideAllPanels();
       emptyState.hidden = false;
     }
   }
   renderTabs();
+}
+
+// Closing the last open tab used to leave the pane blank ("Untitled"/empty)
+// even though the sidebar is full of conversations. Open the most recent one
+// instead, so there is always something in that space.
+async function openMostRecentConversation() {
+  try {
+    const p = new URLSearchParams({
+      limit: 1,
+      offset: 0,
+      view: "recent",
+      pinned_first: "0",
+    });
+    const data = await fetch(`/api/conversations?${p}`).then((r) => r.json());
+    const top = (data.conversations || [])[0];
+    if (!top) return false;
+    await openConversation(top.id, findConvItemEl(top.id));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function activateTab(tabId) {
@@ -3826,6 +3851,29 @@ async function apiCreateFolder(name) {
     body: JSON.stringify({ name }),
   }).then((r) => r.json());
 }
+
+// Shared "New folder" dialog flow, used by the sidebar's Add New Folder
+// button, its right-click context menu, and the Move-to menu's own entry.
+// Returns the created folder (with its id) or null if the user cancelled.
+async function promptCreateFolder() {
+  const name = await openNameModal({ title: "New folder", value: "" });
+  if (!name) return null;
+  const res = await apiCreateFolder(name);
+  return res && res.id ? res : null;
+}
+
+// Create a folder from the sidebar (not tied to any conversation): expand it
+// so the user sees it landed, then refresh the tree.
+async function createFolderFromSidebar() {
+  const res = await promptCreateFolder();
+  if (!res) return;
+  _expandedFolders.add(res.id);
+  _lsSet("expandedFolders", JSON.stringify([..._expandedFolders]));
+  // Right-clicking a collapsed Folders section still creates the folder;
+  // open the section too so the new folder is actually visible afterward.
+  _lsSet("foldersOpen", "1");
+  await loadFolders();
+}
 async function apiRenameFolder(id, name) {
   return fetch(`/api/folders/${encodeURIComponent(id)}`, {
     method: "PATCH",
@@ -3906,9 +3954,8 @@ function renderFolders() {
   if (!state.folders.length) {
     const empty = document.createElement("div");
     empty.className = "folders-empty";
-    empty.textContent = 'None yet — use "Move to" in a conversation to make one.';
+    empty.textContent = "None yet.";
     foldersTree.appendChild(empty);
-    return;
   }
 
   for (const f of state.folders) {
@@ -3995,6 +4042,13 @@ function renderFolders() {
       foldersTree.appendChild(kids);
     }
   }
+
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "folder-add-btn";
+  addBtn.textContent = "+ Add New Folder";
+  addBtn.addEventListener("click", createFolderFromSidebar);
+  foldersTree.appendChild(addBtn);
 }
 
 // After a folder-membership change: refresh folders + the main list (a chat may
@@ -4012,6 +4066,49 @@ foldersToggle?.addEventListener("click", () => {
   _lsSet("foldersOpen", foldersSectionOpen() ? "0" : "1");
   renderFolders();
 });
+
+// ── Folders right-click menu ─────────────────────────────────────────────────
+// Right-clicking anywhere in the Folders section pops up a small menu, at the
+// cursor, with the same "New folder" dialog as the sidebar button.
+
+function closeFoldersCtxMenu() {
+  if (!foldersCtxMenu) return;
+  foldersCtxMenu.hidden = true;
+  document.removeEventListener("mousedown", onFoldersCtxMenuOutside, true);
+  document.removeEventListener("keydown", onFoldersCtxMenuKey, true);
+}
+
+function onFoldersCtxMenuOutside(e) {
+  if (!foldersCtxMenu.contains(e.target)) closeFoldersCtxMenu();
+}
+
+function onFoldersCtxMenuKey(e) {
+  if (e.key === "Escape") closeFoldersCtxMenu();
+}
+
+foldersSection?.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  closeFoldersCtxMenu();
+  foldersCtxMenu.hidden = false;
+  // Clamp to the viewport so a click near the sidebar's edge doesn't hang
+  // the menu off-screen.
+  const mw = foldersCtxMenu.offsetWidth;
+  const mh = foldersCtxMenu.offsetHeight;
+  const left = Math.min(e.clientX, window.innerWidth - mw - 8);
+  const top = Math.min(e.clientY, window.innerHeight - mh - 8);
+  foldersCtxMenu.style.left = `${Math.max(8, left)}px`;
+  foldersCtxMenu.style.top = `${Math.max(8, top)}px`;
+  document.addEventListener("mousedown", onFoldersCtxMenuOutside, true);
+  document.addEventListener("keydown", onFoldersCtxMenuKey, true);
+});
+
+foldersCtxMenu?.querySelector('[data-action="add-folder"]')?.addEventListener(
+  "click",
+  async () => {
+    closeFoldersCtxMenu();
+    await createFolderFromSidebar();
+  },
+);
 
 // Drag a conversation OUT of a folder by dropping it on the main list.
 function wireFolderDropOut(el) {
@@ -4063,10 +4160,8 @@ function buildMoveToMenu() {
   addNew.textContent = "Add New Folder";
   addNew.addEventListener("click", async () => {
     closeThreadMenus();
-    const name = await openNameModal({ title: "New folder", value: "" });
-    if (!name) return;
-    const res = await apiCreateFolder(name);
-    if (res && res.id) {
+    const res = await promptCreateFolder();
+    if (res) {
       await apiMoveToFolder(res.id, cid);
       await afterFolderChange();
     }
