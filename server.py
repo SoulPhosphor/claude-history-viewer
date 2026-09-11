@@ -86,7 +86,9 @@ def _ensure_runtime_schema(db_path: Path) -> None:
                 pinned          INTEGER DEFAULT 0,
                 sort_index      INTEGER DEFAULT 0,
                 last_active_at  REAL,
-                closed          INTEGER DEFAULT 0
+                closed          INTEGER DEFAULT 0,
+                provider        TEXT,
+                compare         INTEGER DEFAULT 0
             );
             """
         )
@@ -110,14 +112,80 @@ def _ensure_runtime_schema(db_path: Path) -> None:
         for col_sql in (
             "ALTER TABLE conversations ADD COLUMN import_status TEXT DEFAULT 'normal'",
             "ALTER TABLE conversations ADD COLUMN source_index INTEGER",
+            # Conversation identity is (id, provider). Databases built before this
+            # column existed get it here and are backfilled below from the
+            # dataset-wide format recorded at build time.
+            "ALTER TABLE conversations ADD COLUMN provider TEXT",
+            # Compare items carry their own provider for tab colouring.
+            "ALTER TABLE workspace_tabs ADD COLUMN provider TEXT",
+            # 1 only when the user explicitly added the chat to Compare.
+            "ALTER TABLE workspace_tabs ADD COLUMN compare INTEGER DEFAULT 0",
         ):
             try:
                 conn.execute(col_sql)
             except sqlite3.Error:
                 pass
+        # The top strip is now the Compare bar. Older versions created a tab row
+        # every time a chat was opened; none of those were deliberate Compare
+        # selections, so drop every non-compare row. Compare additions are
+        # written with compare = 1, so this only ever removes the legacy rows
+        # and, on a database with nothing selected, leaves the table empty (no
+        # reserved space for the strip).
+        try:
+            conn.execute(
+                "DELETE FROM workspace_tabs WHERE COALESCE(compare, 0) = 0"
+            )
+        except sqlite3.Error:
+            pass
         try:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_conv_status ON conversations (import_status)"
+            )
+        except sqlite3.Error:
+            pass
+        # Backfill provider on legacy rows from the recorded dataset format.
+        try:
+            row = conn.execute(
+                "SELECT pref_value FROM ui_preferences WHERE pref_key = 'dataset_format'"
+            ).fetchone()
+            fmt = "claude"
+            if row and row[0]:
+                try:
+                    fmt = json.loads(row[0])
+                except Exception:
+                    fmt = row[0]
+            if fmt not in ("claude", "chatgpt"):
+                fmt = "claude"
+            conn.execute(
+                "UPDATE conversations SET provider = ? WHERE provider IS NULL OR provider = ''",
+                (fmt,),
+            )
+        except sqlite3.Error:
+            pass
+        # Import-history table: one row per backup brought in via "Import New
+        # Chats". Created at runtime so databases built before the feature gain
+        # it without a rebuild.
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS imported_backups (
+                    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                    file_name    TEXT,
+                    provider     TEXT,
+                    file_hash    TEXT,
+                    first_chat   REAL,
+                    last_chat    REAL,
+                    total_chats  INTEGER,
+                    imported_at  REAL,
+                    added        INTEGER DEFAULT 0,
+                    updated      INTEGER DEFAULT 0,
+                    unchanged    INTEGER DEFAULT 0,
+                    skipped      INTEGER DEFAULT 0,
+                    errors       INTEGER DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_imported_backups_provider
+                    ON imported_backups (provider);
+                """
             )
         except sqlite3.Error:
             pass
@@ -157,7 +225,10 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 id         TEXT PRIMARY KEY,
                 name       TEXT NOT NULL,
                 created_at REAL,
-                updated_at REAL
+                updated_at REAL,
+                -- Which side the folder belongs to: folders are scoped to a
+                -- provider so the Claude and ChatGPT sidebars stay separate.
+                provider   TEXT
             );
             CREATE TABLE IF NOT EXISTS folder_items (
                 conversation_id TEXT PRIMARY KEY,
@@ -220,8 +291,50 @@ def _ensure_userdata_schema(db_path: Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_conv_tags_tag ON conversation_tags (tag);
             """
         )
+        # Add the folders.provider column on databases created before folders
+        # were scoped by provider. ADD COLUMN errors if it already exists.
+        try:
+            conn.execute("ALTER TABLE folders ADD COLUMN provider TEXT")
+        except sqlite3.Error:
+            pass
         conn.commit()
         _seed_claude_models(conn)
+    finally:
+        conn.close()
+
+
+def _backfill_folder_providers(db_path: Path) -> None:
+    """Give every pre-existing folder a provider. A folder that already holds a
+    conversation inherits that conversation's provider; an empty one falls back
+    to the dataset's own format. Runs once at startup, then no-ops."""
+    conn = open_db(db_path)
+    try:
+        row = conn.execute(
+            "SELECT pref_value FROM ui_preferences WHERE pref_key = 'dataset_format'"
+        ).fetchone()
+        fmt = "claude"
+        if row and row[0]:
+            try:
+                fmt = json.loads(row[0])
+            except Exception:
+                fmt = row[0]
+        if fmt not in ("claude", "chatgpt"):
+            fmt = "claude"
+        conn.execute(
+            "UPDATE udb.folders SET provider = ("
+            "  SELECT c.provider FROM udb.folder_items fi "
+            "  JOIN conversations c ON c.id = fi.conversation_id "
+            "  WHERE fi.folder_id = udb.folders.id AND c.provider IS NOT NULL "
+            "  LIMIT 1"
+            ") WHERE provider IS NULL OR provider = ''"
+        )
+        conn.execute(
+            "UPDATE udb.folders SET provider = ? WHERE provider IS NULL OR provider = ''",
+            (fmt,),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        pass
     finally:
         conn.close()
 
@@ -519,6 +632,132 @@ def _build_source_index(source_dir):
             _source_index_add(rel, p)
             _source_index_add(rel_stem, p)
 
+# ── Import New Chats (scan / detect / merge / rename) ─────────────────────────
+
+def _resolve_backup_name(source_dir: Path, this_path: Path, base: str, file_hash: str):
+    """
+    Pick the final filename for a backup and detect an exact duplicate.
+
+    Returns (final_name, is_duplicate). Starts from `base.json`; if that name is
+    taken by a *different* file it compares hashes: a match means the identical
+    backup is already present (skip the import), a mismatch is a date collision
+    so it tries -1, -2, … until a free name is found.
+    """
+    import hashlib
+    n = 0
+    while True:
+        name = f"{base}.json" if n == 0 else f"{base}-{n}.json"
+        p = source_dir / name
+        if not p.exists():
+            return name, False
+        try:
+            if p.samefile(this_path):
+                return name, False  # this very file is already correctly named
+        except OSError:
+            pass
+        try:
+            other_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+        except OSError:
+            other_hash = None
+        if other_hash == file_hash:
+            return name, True
+        n += 1
+
+
+def import_new_backups(conn, source_dir: Path) -> dict:
+    """
+    Scan `source_dir` for conversation backups not yet imported, identify each
+    by its contents, merge it into the database, and rename it to
+    Provider-conversations-YYYY-MM-DD.json. Returns a summary the UI shows.
+    """
+    import hashlib
+    import build_db
+
+    summary = {
+        "added": 0, "updated": 0, "unchanged": 0, "skipped": 0, "errors": 0,
+        "files": [], "notes": [],
+    }
+    known_hashes = set()
+    for row in conn.execute("SELECT file_hash FROM imported_backups"):
+        if row[0]:
+            known_hashes.add(row[0])
+
+    # Only top-level *.json files are candidates. memories/users are export
+    # siblings, never conversation backups.
+    candidates = sorted(p for p in source_dir.glob("*.json") if p.is_file())
+    for path in candidates:
+        name = path.name
+        if name in ("memories.json", "users.json"):
+            continue
+        try:
+            raw = path.read_bytes()
+        except OSError as e:
+            summary["notes"].append(f"{name}: could not read ({e}) — skipped")
+            continue
+        file_hash = hashlib.sha256(raw).hexdigest()
+        if file_hash in known_hashes:
+            continue  # exact same file already imported
+
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception:
+            summary["notes"].append(f"{name}: not valid JSON — skipped")
+            continue
+
+        provider = build_db.detect_provider(data)
+        if provider is None:
+            summary["notes"].append(
+                f"{name}: not a recognized Claude or ChatGPT export — skipped"
+            )
+            continue
+
+        records = build_db.dedup_records(build_db.parse_backup(data, provider))
+        if not records:
+            summary["notes"].append(f"{name}: no conversations found — skipped")
+            continue
+        first_ts, last_ts = build_db.backup_date_range(records)
+
+        date_str = _ts_to_date(last_ts) or datetime.date.today().isoformat()
+        label = "Claude" if provider == "claude" else "ChatGPT"
+        base = f"{label}-conversations-{date_str}"
+        final_name, is_dup = _resolve_backup_name(source_dir, path, base, file_hash)
+        if is_dup:
+            summary["notes"].append(
+                f"{name}: identical to already-imported {final_name} — skipped"
+            )
+            known_hashes.add(file_hash)
+            continue
+
+        counts = build_db.reconcile_backup(conn, records, provider)
+        for k in ("added", "updated", "unchanged", "skipped", "errors"):
+            summary[k] += counts[k]
+
+        final_path = source_dir / final_name
+        try:
+            if final_path != path:
+                path.rename(final_path)
+        except OSError:
+            final_name = name  # keep the original name if the rename fails
+
+        conn.execute(
+            "INSERT INTO imported_backups "
+            "(file_name, provider, file_hash, first_chat, last_chat, "
+            " total_chats, imported_at, added, updated, unchanged, skipped, errors) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (final_name, provider, file_hash, first_ts, last_ts,
+             len(records), time.time(),
+             counts["added"], counts["updated"], counts["unchanged"],
+             counts["skipped"], counts["errors"]),
+        )
+        known_hashes.add(file_hash)
+        summary["files"].append({
+            "file_name": final_name, "provider": provider,
+            "total_chats": len(records), **counts,
+        })
+
+    return summary
+
+
 class Handler(BaseHTTPRequestHandler):
     db_path = Path("history.db")
 
@@ -578,6 +817,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_model_dismiss()
         elif path == "/api/tags":
             self._api_tag_add()
+        elif path == "/api/import-new":
+            self._api_import_new()
         else:
             self.send_error(404)
 
@@ -710,8 +951,10 @@ class Handler(BaseHTTPRequestHandler):
             self._api_attachment_report()
         elif path == "/api/import-audit":
             self._api_import_audit(qs)
+        elif path == "/api/imported-backups":
+            self._api_imported_backups(qs)
         elif path == "/api/folders":
-            self._api_folders_list()
+            self._api_folders_list(qs)
         elif path == "/api/memories":
             self._api_memories()
         elif path == "/api/projects":
@@ -920,14 +1163,18 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _send_conv_list(self, conn, rows, total, offset, limit):
+    def _send_conv_list(self, conn, rows, total, offset, limit, provider=None):
         """Ship a conversation page, tagged with each row's warning icons.
 
         unverified_count drives the "Unverified Models" entry in the sidebar
-        filter, which only exists while something is actually flagged.
+        filter, which only exists while something is actually flagged. Model
+        warnings are Claude-only, so they are computed only when the Claude side
+        is being shown (or, for an older client that sends no provider, when the
+        whole dataset is Claude).
         """
         convs = [dict(r) for r in rows]
-        if self._dataset_format(conn) == "claude":
+        claude_side = (provider == "claude") if provider else (self._dataset_format(conn) == "claude")
+        if claude_side:
             flags = _compute_conv_flags(
                 conn, [(c["id"], c.get("create_time"), c.get("update_time")) for c in convs]
             )
@@ -947,6 +1194,12 @@ class Handler(BaseHTTPRequestHandler):
         q      = ((qs.get("q") or [""])[0]).strip()
         view   = ((qs.get("view") or ["recent"])[0]).strip().lower()
         pinned_first = ((qs.get("pinned_first") or ["0"])[0]).strip() in ("1", "true", "yes")
+        # Which side (Claude or ChatGPT) the sidebar toggle is showing. Validated
+        # against a fixed whitelist so it is safe to interpolate as a literal.
+        provider = ((qs.get("provider") or [""])[0]).strip().lower()
+        if provider not in ("claude", "chatgpt"):
+            provider = None
+        prov_sql = f" AND c.provider = '{provider}'" if provider else ""
         conn = open_db(self.db_path)
         try:
             if view == "unverified":
@@ -961,17 +1214,17 @@ class Handler(BaseHTTPRequestHandler):
                     "c.create_time, c.update_time, c.message_count, c.preview "
                     "FROM conversations c "
                     "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
-                    f"WHERE c.id IN ({marks}) AND COALESCE(cm.deleted, 0) = 0 "
+                    f"WHERE c.id IN ({marks}) AND COALESCE(cm.deleted, 0) = 0" + prov_sql + " "
                     "ORDER BY c.update_time DESC, c.create_time DESC LIMIT ? OFFSET ?",
                     (*flagged, limit, offset),
                 ).fetchall()
                 total = conn.execute(
                     "SELECT COUNT(*) FROM conversations c "
                     "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
-                    f"WHERE c.id IN ({marks}) AND COALESCE(cm.deleted, 0) = 0",
+                    f"WHERE c.id IN ({marks}) AND COALESCE(cm.deleted, 0) = 0" + prov_sql,
                     tuple(flagged),
                 ).fetchone()[0]
-                self._send_conv_list(conn, rows, total, offset, limit)
+                self._send_conv_list(conn, rows, total, offset, limit, provider)
                 return
 
             if view == "pinned":
@@ -983,7 +1236,8 @@ class Handler(BaseHTTPRequestHandler):
                     "WHERE COALESCE(cm.deleted, 0) = 0 "
                     # Foldered chats live only in their folder, never the loose
                     # Pinned view.
-                    "AND c.id NOT IN (SELECT conversation_id FROM udb.folder_items) "
+                    "AND c.id NOT IN (SELECT conversation_id FROM udb.folder_items)"
+                    + prov_sql + " "
                     # Ordered newest-first like the other views so the list's
                     # month headers stay chronological. (The pinned view is now
                     # a filter, not the old drag-to-reorder top section.)
@@ -993,11 +1247,13 @@ class Handler(BaseHTTPRequestHandler):
                 ).fetchall()
                 total = conn.execute(
                     "SELECT COUNT(*) FROM pinned_conversations p "
+                    "JOIN conversations c ON c.id = p.conversation_id "
                     "LEFT JOIN conversation_meta cm ON cm.conversation_id = p.conversation_id "
                     "WHERE COALESCE(cm.deleted, 0) = 0 "
                     "AND p.conversation_id NOT IN (SELECT conversation_id FROM udb.folder_items)"
+                    + prov_sql
                 ).fetchone()[0]
-                self._send_conv_list(conn, rows, total, offset, limit)
+                self._send_conv_list(conn, rows, total, offset, limit, provider)
                 return
 
             where_clauses = []
@@ -1024,6 +1280,10 @@ class Handler(BaseHTTPRequestHandler):
             where_clauses.append(
                 "c.id NOT IN (SELECT conversation_id FROM udb.folder_items)"
             )
+            # Restrict to the toggled side (Claude or ChatGPT). `provider` is
+            # whitelisted above, so this literal is safe.
+            if provider:
+                where_clauses.append(f"c.provider = '{provider}'")
             where_sql = " AND ".join(where_clauses)
 
             if q:
@@ -1129,7 +1389,7 @@ class Handler(BaseHTTPRequestHandler):
                     "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                     "WHERE " + where_sql
                 ).fetchone()[0]
-            self._send_conv_list(conn, rows, total, offset, limit)
+            self._send_conv_list(conn, rows, total, offset, limit, provider)
         finally:
             conn.close()
 
@@ -1140,6 +1400,7 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
                 "c.create_time, c.update_time, c.message_count, c.preview, "
                 "COALESCE(c.import_status, 'normal') AS import_status, "
+                "c.provider AS provider, "
                 "COALESCE(cm.deleted, 0) AS deleted "
                 "FROM conversations c LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                 # No deleted filter: soft-deleted means "kept out of the lists",
@@ -1583,14 +1844,69 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    # ── Import New Chats ─────────────────────────────────────────────────────────
+    # Scans the source folder for backup files not yet imported, identifies each
+    # as a Claude or ChatGPT export by its contents, merges it into the database,
+    # and renames the source file to Provider-conversations-YYYY-MM-DD.json.
+
+    def _api_imported_backups(self, qs):
+        """The import-history table. Provider filtering and sorting happen on the
+        client; this returns every recorded backup, newest import first."""
+        provider = ((qs.get("provider") or ["all"])[0]).strip().lower()
+        conn = open_db(self.db_path)
+        try:
+            if provider in ("claude", "chatgpt"):
+                rows = conn.execute(
+                    "SELECT file_name, provider, first_chat, last_chat, total_chats, "
+                    "imported_at, added, updated, unchanged, skipped, errors "
+                    "FROM imported_backups WHERE provider = ? "
+                    "ORDER BY imported_at DESC, id DESC",
+                    (provider,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT file_name, provider, first_chat, last_chat, total_chats, "
+                    "imported_at, added, updated, unchanged, skipped, errors "
+                    "FROM imported_backups ORDER BY imported_at DESC, id DESC"
+                ).fetchall()
+            self.send_json({"backups": [dict(r) for r in rows]})
+        finally:
+            conn.close()
+
+    def _api_import_new(self):
+        source_dir = Path(self.source_dir)
+        if not source_dir.exists():
+            self.send_json({"error": "source folder not found"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            summary = import_new_backups(conn, source_dir)
+            conn.commit()
+        finally:
+            conn.close()
+        # Newly-renamed files change the on-disk set; refresh the attachment
+        # source index so any new attachments resolve without a restart.
+        try:
+            _build_source_index(self.source_dir)
+        except Exception:
+            pass
+        self.send_json(summary)
+
     # ── Folders ────────────────────────────────────────────────────────────────
 
-    def _api_folders_list(self):
-        """Return every folder and the conversations it holds (for the sidebar)."""
+    def _api_folders_list(self, qs=None):
+        """Return the folders and the conversations they hold (for the sidebar),
+        scoped to the toggled side when a provider is given."""
+        qs = qs or {}
+        provider = ((qs.get("provider") or [""])[0]).strip().lower()
+        if provider not in ("claude", "chatgpt"):
+            provider = None
+        prov_folder = f" WHERE provider = '{provider}'" if provider else ""
+        prov_item = f" AND c.provider = '{provider}'" if provider else ""
         conn = open_db(self.db_path)
         try:
             folders = conn.execute(
-                "SELECT id, name, created_at, updated_at FROM udb.folders "
+                "SELECT id, name, created_at, updated_at FROM udb.folders"
+                + prov_folder + " "
                 # Alphabetical by default; a folder that has been used (a chat
                 # moved into it → updated_at set) floats to the top by recency.
                 "ORDER BY (updated_at IS NULL), updated_at DESC, LOWER(name) ASC"
@@ -1603,7 +1919,7 @@ class Handler(BaseHTTPRequestHandler):
                 "FROM udb.folder_items fi "
                 "JOIN conversations c ON c.id = fi.conversation_id "
                 "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
-                "WHERE COALESCE(cm.deleted, 0) = 0 "
+                "WHERE COALESCE(cm.deleted, 0) = 0" + prov_item + " "
                 # Pinned chats float to the top within the folder, then newest.
                 "ORDER BY fi.pinned DESC, c.update_time DESC, c.create_time DESC"
             ).fetchall()
@@ -1633,16 +1949,20 @@ class Handler(BaseHTTPRequestHandler):
         name = (payload.get("name") or "").strip()
         if not name:
             self.send_json({"error": "missing name"}, 400); return
+        # The folder belongs to the side it was created on.
+        provider = (payload.get("provider") or "").strip().lower()
+        if provider not in ("claude", "chatgpt"):
+            provider = "claude"
         fid = uuid.uuid4().hex
         conn = open_db(self.db_path)
         try:
             conn.execute(
-                "INSERT INTO udb.folders (id, name, created_at, updated_at) "
-                "VALUES (?, ?, ?, NULL)",
-                (fid, name, time.time()),
+                "INSERT INTO udb.folders (id, name, created_at, updated_at, provider) "
+                "VALUES (?, ?, ?, NULL, ?)",
+                (fid, name, time.time(), provider),
             )
             conn.commit()
-            self.send_json({"ok": True, "id": fid, "name": name})
+            self.send_json({"ok": True, "id": fid, "name": name, "provider": provider})
         finally:
             conn.close()
 
@@ -2294,8 +2614,9 @@ class Handler(BaseHTTPRequestHandler):
                 # honouring the flag would strand a database written by an
                 # older version with some tabs permanently jumping the queue
                 # and no way to release them.
-                "SELECT id, tab_type, conversation_id, artifact_id, title, pinned, sort_index, last_active_at "
-                "FROM workspace_tabs WHERE closed = 0 ORDER BY sort_index ASC, last_active_at DESC"
+                "SELECT id, tab_type, conversation_id, artifact_id, title, pinned, sort_index, last_active_at, provider "
+                "FROM workspace_tabs WHERE closed = 0 AND compare = 1 "
+                "ORDER BY sort_index ASC, last_active_at DESC"
             ).fetchall()
             self.send_json({"tabs": [dict(r) for r in rows]})
         finally:
@@ -2308,9 +2629,12 @@ class Handler(BaseHTTPRequestHandler):
         conn = open_db(self.db_path)
         try:
             next_idx = conn.execute("SELECT COALESCE(MAX(sort_index), -1) + 1 FROM workspace_tabs WHERE closed = 0").fetchone()[0]
+            provider = (payload.get("provider") or "").strip().lower()
+            if provider not in ("claude", "chatgpt"):
+                provider = None
             conn.execute(
-                "INSERT OR REPLACE INTO workspace_tabs(id, tab_type, conversation_id, artifact_id, title, pinned, sort_index, last_active_at, closed) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                "INSERT OR REPLACE INTO workspace_tabs(id, tab_type, conversation_id, artifact_id, title, pinned, sort_index, last_active_at, closed, provider, compare) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1)",
                 (
                     tab_id,
                     tab_type,
@@ -2320,6 +2644,7 @@ class Handler(BaseHTTPRequestHandler):
                     1 if payload.get("pinned") else 0,
                     int(payload.get("sort_index", next_idx)),
                     float(payload.get("last_active_at", time.time())),
+                    provider,
                 ),
             )
             conn.commit()
@@ -2408,6 +2733,7 @@ class Handler(BaseHTTPRequestHandler):
 def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source")):
     _ensure_runtime_schema(db_path)
     _ensure_userdata_schema(db_path)
+    _backfill_folder_providers(db_path)
     _build_source_index(source_dir)
     Handler.db_path = db_path
     Handler.source_dir = source_dir

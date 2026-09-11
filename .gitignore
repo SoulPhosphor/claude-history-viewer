@@ -12,6 +12,10 @@ __pycache__/
 
 # Private export payloads should stay out of the public starter.
 source/conversations.json
+# Backups imported through the in-app "Import New Chats" screen are renamed to
+# Provider-conversations-YYYY-MM-DD.json — keep those private too.
+source/Claude-conversations-*.json
+source/ChatGPT-conversations-*.json
 source/files/*
 source/projects/*
 source/memories.json

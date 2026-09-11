@@ -41,12 +41,21 @@ If you want to keep the starter completely clean, leave the placeholder `source/
 ## Features
 
 - **Fast, meaningful search** - FTS5 + Porter stemming across conversation text and attachment text, so relevant threads surface quickly.
+- **Import New Chats** (ⓘ menu)
+  - Drop newly-exported Claude or ChatGPT backups into `source/` and click **Import Conversations**
+  - Each file is identified as a Claude or ChatGPT export from its contents (not its filename); only recognized backups are imported
+  - Imported files are renamed to `Provider-conversations-YYYY-MM-DD.json` (the date is the latest message in the backup); identical re-drops are detected by hash and skipped, and same-date collisions get a `-1`, `-2`, … suffix
+  - Conversation identity is the original UUID plus its provider, so overlapping backups reconcile in place instead of duplicating, a deleted conversation is never re-added, and renaming a chat never changes its identity
+  - An import-history table below the button lists every backup with First / Last chat dates, total chats, and import date; filter by provider and sort by any column
+- **ChatGPT / Claude toggle** - A toggle at the top of the sidebar switches the whole view between your ChatGPT and Claude conversations; conversations **and** folders are scoped to the selected side, and the app reopens on the side you last used.
 - **Conversation views that match your workflow** - Recent / Pinned / Archived / Deleted / All, with smooth pagination for large exports.
 - **Pinning with manual ordering** - Keep long-lived threads at the top in the order you choose.
-- **Workspace tabs**
-  - Top tabs are **content tabs only** (conversation + artifact)
-  - Bottom-left quick buttons open **transient views** (they do not create top tabs)
-  - Re-clicking a quick view exits cleanly back to your previous content context
+- **Compare bar** (the top strip)
+  - Holds up to **4 conversations you explicitly add** via the **Compare** action (chat row ⋮ menu or the in-chat ⋮ menu) — opening a chat never adds one
+  - Compare items are a fast pinned-conversation type and are the **one place providers may mix**: a Claude and a ChatGPT chat can sit side by side even though the sidebar, folders and pins are per-side
+  - Each tab is outlined in its provider's colour; the active tab fills with that colour
+  - Bottom-left quick buttons open **transient views** (they do not add to the bar)
+- **Settings** (ⓘ menu) - **Compare Tab Model Identifier**: choose the outline colour for ChatGPT and Claude Compare tabs (defaults: royal blue / green)
 - **Rich message rendering**
   - Markdown: headings, bold/italic, lists, blockquotes, horizontal rules, strikethrough
   - Fenced code blocks with language labels and one-click **copy button**
@@ -180,6 +189,8 @@ GET    /api/search?q=<query>
 GET    /api/search-in-conversation?conv_id=<id>&q=<query>
 GET    /api/gallery
 GET    /api/attachment-report
+GET    /api/imported-backups?provider=all|claude|chatgpt
+POST   /api/import-new
 GET    /api/memories
 GET    /api/projects
 GET    /api/project/<id>

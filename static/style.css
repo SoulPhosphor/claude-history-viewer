@@ -19,6 +19,9 @@
   --text: #1a1817;
   --muted: #7c6f67;
   --accent: #d97757;
+  /* Compare-tab provider colours; overridden at runtime from Settings. */
+  --compare-chatgpt: #4169e1;
+  --compare-claude: #2e7d32;
   --user-label: #b55a2e;
   --code-bg: #eeeae3;
   --user-bubble: #ede9e1;
@@ -57,6 +60,7 @@ body.sidebar-collapsed #sidebar {
   min-width: var(--sidebar-collapsed-w);
 }
 body.sidebar-collapsed #sidebar .sidebar-title,
+body.sidebar-collapsed #sidebar .provider-toggle,
 body.sidebar-collapsed #sidebar .search-wrap,
 body.sidebar-collapsed #sidebar #result-count,
 body.sidebar-collapsed #sidebar .conv-section,
@@ -86,10 +90,48 @@ body.sidebar-collapsed #sidebar-footer {
 }
 
 .sidebar-title-row {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
+  min-height: 28px;
   margin-bottom: 10px;
+}
+
+/* The collapse button sits pinned to the left so the provider toggle can be
+   centered in the full width of the row. */
+.sidebar-title-row #sidebar-toggle {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+/* ── Provider toggle (ChatGPT / Claude) ──────────────────────────────────── */
+.provider-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.provider-seg {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 16px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.provider-seg:hover {
+  color: var(--text);
+}
+.provider-seg.active {
+  background: var(--accent);
+  color: #fff;
 }
 
 .sidebar-title {
@@ -644,10 +686,29 @@ mark.search-term-highlight {
   cursor: pointer;
   white-space: nowrap;
 }
+/* Compare tabs are outlined in their provider's colour (Settings → Compare Tab
+   Model Identifier). An active tab inverts: it fills with that colour and its
+   text turns white, instead of drawing a border rectangle. */
+.top-tab.provider-chatgpt {
+  border-color: var(--compare-chatgpt);
+}
+.top-tab.provider-claude {
+  border-color: var(--compare-claude);
+}
 .top-tab.active {
-  color: var(--text);
+  color: #fff;
+  background: var(--accent);
   border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px rgba(217, 119, 87, 0.2);
+}
+.top-tab.provider-chatgpt.active {
+  background: var(--compare-chatgpt);
+  border-color: var(--compare-chatgpt);
+  color: #fff;
+}
+.top-tab.provider-claude.active {
+  background: var(--compare-claude);
+  border-color: var(--compare-claude);
+  color: #fff;
 }
 .top-tab .tab-close {
   border: 0;
@@ -656,6 +717,12 @@ mark.search-term-highlight {
   cursor: pointer;
   font-size: 12px;
   line-height: 1;
+}
+.compare-note {
+  font-size: 12px;
+  color: var(--muted);
+  padding: 2px 8px;
+  white-space: nowrap;
 }
 
 /* ── Empty state ─────────────────────────────────────────────────────────── */
@@ -2942,4 +3009,310 @@ kbd {
 /* The header keeps its own padding; the bar above supplies the top gap. */
 #thread.header-collapsed .thread-header {
   display: none;
+}
+
+/* ── Import New Chats screen ──────────────────────────────────────────────── */
+
+#import-new-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#import-new-panel[hidden] {
+  display: none;
+}
+
+#import-new-content {
+  flex: 1;
+  padding: 20px 28px 40px;
+  overflow-y: auto;
+}
+
+.import-new-top {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.import-new-action {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+#import-new-btn {
+  font: inherit;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  padding: 8px 18px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#import-new-btn:hover {
+  filter: brightness(1.05);
+}
+#import-new-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.import-new-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.import-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  display: inline-block;
+  animation: import-spin 0.8s linear infinite;
+}
+@keyframes import-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.import-new-hint {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.import-new-summary {
+  margin: 18px 0 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.import-summary-head {
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.import-summary-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.import-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 84px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.import-stat-n {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+.import-stat-label {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.import-stat-error .import-stat-n {
+  color: #b3261e;
+}
+.import-summary-error {
+  color: #b3261e;
+}
+.import-summary-notes {
+  margin: 12px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.import-summary-notes li {
+  margin: 2px 0;
+}
+
+.import-history {
+  margin-top: 26px;
+}
+.import-history-filter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-bottom: 12px;
+  font-size: 0.88rem;
+}
+.import-history-filter-label {
+  font-weight: 600;
+}
+.import-history-filter label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+
+#import-history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+#import-history-table th {
+  text-align: left;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+#import-history-table th:hover {
+  color: var(--text);
+}
+#import-history-table th.sort-asc::after {
+  content: " ▲";
+  font-size: 0.7em;
+}
+#import-history-table th.sort-desc::after {
+  content: " ▼";
+  font-size: 0.7em;
+}
+#import-history-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.import-cell-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.import-cell-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.import-file-name {
+  word-break: break-all;
+}
+.import-provider-tag {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: #fff;
+}
+.import-provider-claude {
+  background: #b8622f;
+}
+.import-provider-chatgpt {
+  background: #10a37f;
+}
+.import-history-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 20px 0;
+}
+
+/* ── Chat-row ⋮ menu button ───────────────────────────────────────────────── */
+.conv-menu-btn {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.conv-menu-btn:hover {
+  border-color: var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+.conv-menu-btn svg {
+  fill: currentColor;
+}
+
+/* Floating chat-row menu reuses the sidebar-menu look but is positioned in JS. */
+.conv-item-menu {
+  min-width: 150px;
+}
+
+/* ── Settings screen ──────────────────────────────────────────────────────── */
+#settings-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#settings-panel[hidden] {
+  display: none;
+}
+#settings-content {
+  flex: 1;
+  padding: 20px 28px 40px;
+  overflow-y: auto;
+}
+.settings-section {
+  max-width: 520px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+}
+.settings-section-title {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+.settings-section-hint {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+.settings-color-label {
+  min-width: 90px;
+  font-weight: 600;
+}
+.settings-row input[type="color"] {
+  width: 44px;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+  padding: 2px;
+}
+.settings-reset-btn {
+  margin-top: 8px;
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+.settings-reset-btn:hover {
+  background: var(--hover);
 }
