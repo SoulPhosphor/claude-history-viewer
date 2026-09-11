@@ -930,7 +930,9 @@ async function apiUpdatePreferences(preferences) {
 }
 
 async function apiPinnedList() {
-  const r = await fetch("/api/pinned");
+  // Scope pins to the toggled side so the loose Pinned list matches the sidebar.
+  const p = new URLSearchParams({ provider: state.providerSide });
+  const r = await fetch(`/api/pinned?${p}`);
   return r.json();
 }
 
@@ -3144,6 +3146,7 @@ async function switchProviderSide(side) {
     updateListSectionTitle();
   }
   state.offset = 0;
+  await refreshPinnedList();
   await loadFolders();
   await loadConversations(false);
   syncUnverifiedOption();
@@ -4260,22 +4263,27 @@ async function apiFolders() {
   const p = new URLSearchParams({ provider: state.providerSide });
   return fetch(`/api/folders?${p}`).then((r) => r.json());
 }
-async function apiCreateFolder(name) {
+async function apiCreateFolder(name, provider) {
   return fetch("/api/folders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // Folders belong to the side they were created on.
-    body: JSON.stringify({ name, provider: state.providerSide }),
+    // Folders belong to a side. Default to the sidebar's, but callers acting on
+    // a specific conversation (e.g. a Compare item from the other provider)
+    // pass that conversation's provider instead.
+    body: JSON.stringify({
+      name,
+      provider: provider || state.providerSide,
+    }),
   }).then((r) => r.json());
 }
 
 // Shared "New folder" dialog flow, used by the sidebar's Add New Folder
 // button, its right-click context menu, and the Move-to menu's own entry.
 // Returns the created folder (with its id) or null if the user cancelled.
-async function promptCreateFolder() {
+async function promptCreateFolder(provider) {
   const name = await openNameModal({ title: "New folder", value: "" });
   if (!name) return null;
-  const res = await apiCreateFolder(name);
+  const res = await apiCreateFolder(name, provider);
   return res && res.id ? res : null;
 }
 
@@ -4568,8 +4576,28 @@ function onThreadMenuOutside(e) {
   closeThreadMenus();
 }
 
-function buildMoveToMenu() {
+async function buildMoveToMenu() {
   const cid = state.activeId;
+  // The open conversation may be a Compare item from the opposite provider.
+  // Folders are provider-scoped, so offer the folders of the conversation's own
+  // provider — placing a chat in another provider's folder would hide it from
+  // both sidebars. Reuse the already-loaded set when the sides match.
+  const convProvider = state.activeProvider || state.providerSide;
+  let folders = state.folders;
+  let folderOf = state.folderOf;
+  if (convProvider !== state.providerSide) {
+    try {
+      const p = new URLSearchParams({ provider: convProvider });
+      const data = await fetch(`/api/folders?${p}`).then((r) => r.json());
+      folders = data.folders || [];
+      folderOf = new Map();
+      for (const f of folders)
+        for (const c of f.conversations || []) folderOf.set(c.id, f.id);
+    } catch {
+      folders = [];
+      folderOf = new Map();
+    }
+  }
   moveToMenu.innerHTML = "";
 
   const addNew = document.createElement("button");
@@ -4577,7 +4605,8 @@ function buildMoveToMenu() {
   addNew.textContent = "Add New Folder";
   addNew.addEventListener("click", async () => {
     closeThreadMenus();
-    const res = await promptCreateFolder();
+    // Create the folder on the conversation's own side, not the sidebar's.
+    const res = await promptCreateFolder(convProvider);
     if (res) {
       await apiMoveToFolder(res.id, cid);
       await afterFolderChange();
@@ -4585,7 +4614,7 @@ function buildMoveToMenu() {
   });
   moveToMenu.appendChild(addNew);
 
-  if (state.folderOf.has(cid)) {
+  if (folderOf.has(cid)) {
     const remove = document.createElement("button");
     remove.className = "thread-dropdown-item";
     remove.textContent = "Remove from Folder";
@@ -4597,15 +4626,15 @@ function buildMoveToMenu() {
     moveToMenu.appendChild(remove);
   }
 
-  if (state.folders.length) {
+  if (folders.length) {
     const sep = document.createElement("div");
     sep.className = "thread-dropdown-sep";
     moveToMenu.appendChild(sep);
   }
-  for (const f of state.folders) {
+  for (const f of folders) {
     const b = document.createElement("button");
     b.className = "thread-dropdown-item";
-    const isCurrent = state.folderOf.get(cid) === f.id;
+    const isCurrent = folderOf.get(cid) === f.id;
     if (isCurrent) b.classList.add("current");
     b.textContent = f.name;
     b.addEventListener("click", async () => {
@@ -4625,9 +4654,10 @@ moveToBtn?.addEventListener("click", (e) => {
   const wasOpen = !moveToMenu.hidden;
   closeThreadMenus();
   if (wasOpen) return;
-  buildMoveToMenu();
-  moveToMenu.hidden = false;
-  document.addEventListener("mousedown", onThreadMenuOutside, true);
+  buildMoveToMenu().then(() => {
+    moveToMenu.hidden = false;
+    document.addEventListener("mousedown", onThreadMenuOutside, true);
+  });
 });
 
 threadMoreBtn?.addEventListener("click", (e) => {
@@ -4638,9 +4668,13 @@ threadMoreBtn?.addEventListener("click", (e) => {
   if (wasOpen) return;
   const compareItem = threadMoreMenu.querySelector('[data-action="compare"]');
   if (compareItem) {
-    compareItem.textContent = compareTabForConv(state.activeId)
-      ? "Remove from Compare"
-      : "Compare";
+    // The menu only ever *adds* to Compare. Removal is exclusively the × on the
+    // Compare tab, so a chat already in Compare shows a disabled, no-op entry
+    // rather than a "Remove from Compare" action.
+    const inCompare = !!compareTabForConv(state.activeId);
+    compareItem.textContent = "Compare";
+    compareItem.classList.toggle("current", inCompare);
+    compareItem.disabled = inCompare;
   }
   const pinItem = threadMoreMenu.querySelector('[data-action="pin"]');
   if (pinItem) {
@@ -4664,14 +4698,14 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
     closeThreadMenus();
     if (!cid) return;
     if (action === "compare") {
-      const existing = compareTabForConv(cid);
-      if (existing) removeFromCompare(existing.id);
-      else
-        addToCompare(
-          cid,
-          threadTitle.textContent || "Conversation",
-          state.activeProvider || state.providerSide,
-        );
+      // Add only — never remove. Removing a Compare item is done with the × on
+      // its tab. A chat already in Compare is a no-op here.
+      if (compareTabForConv(cid)) return;
+      addToCompare(
+        cid,
+        threadTitle.textContent || "Conversation",
+        state.activeProvider || state.providerSide,
+      );
     } else if (action === "rename") {
       const cur = threadTitle.textContent || "";
       const name = await openNameModal({
