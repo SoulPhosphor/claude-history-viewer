@@ -1297,11 +1297,14 @@ def reconcile_backup(conn, records: list, provider: str) -> dict:
 
       • UUID not present            → insert                     (added)
       • present, is_deleted = true  → skip, never resurrect      (skipped)
-      • present, is_deleted = false → reconcile if content moved (updated)
-                                       otherwise leave it alone   (unchanged)
+      • present, other provider     → skip, never overwrite      (skipped)
+      • present, older/equal        → leave it alone              (unchanged)
+      • present, strictly newer     → reconcile in place          (updated)
 
-    A backup that overlaps an older one therefore updates in place and never
-    duplicates a conversation, and a conversation the user deleted stays gone.
+    A backup that overlaps an older one updates in place and never duplicates a
+    conversation; a conversation the user deleted stays gone; and importing an
+    *older* backup after a newer one never rolls the stored history backward
+    (backup overlap rule — import order must not decide which snapshot wins).
     """
     counts = {"added": 0, "updated": 0, "unchanged": 0, "skipped": 0, "errors": 0}
     for r in records:
@@ -1311,12 +1314,22 @@ def reconcile_backup(conn, records: list, provider: str) -> dict:
             msgs = r["msgs"]
             artifacts = r["artifacts"]
             existing = conn.execute(
-                "SELECT title, update_time, message_count FROM conversations WHERE id = ?",
+                "SELECT title, update_time, message_count, provider "
+                "FROM conversations WHERE id = ?",
                 (cid,),
             ).fetchone()
             if existing is None:
                 _insert_conv_rows(conn, meta, msgs, artifacts, provider)
                 counts["added"] += 1
+                continue
+            # Identity is (id, provider). A stored row from a *different* provider
+            # that happens to share this id is a different conversation — never
+            # overwrite it. (Real UUIDs practically never collide across
+            # providers, but silently corrupting one export with another would
+            # be far worse than skipping the rare clash.)
+            existing_provider = existing[3]
+            if existing_provider and provider and existing_provider != provider:
+                counts["skipped"] += 1
                 continue
             delrow = conn.execute(
                 "SELECT deleted FROM conversation_meta WHERE conversation_id = ?",
@@ -1331,6 +1344,20 @@ def reconcile_backup(conn, records: list, provider: str) -> dict:
                 and (existing[2] or 0) == (meta.get("message_count") or 0)
             )
             if same:
+                counts["unchanged"] += 1
+                continue
+            # Content differs. Only replace when the incoming snapshot is
+            # genuinely newer — a later update time, or more recovered messages.
+            # An older overlapping backup imported afterwards must not roll the
+            # stored conversation back to a stale snapshot.
+            existing_ut = existing[1] or 0
+            incoming_ut = meta.get("update_time") or 0
+            existing_mc = existing[2] or 0
+            incoming_mc = meta.get("message_count") or 0
+            incoming_newer = (
+                incoming_ut > existing_ut + 1.0 or incoming_mc > existing_mc
+            )
+            if not incoming_newer:
                 counts["unchanged"] += 1
                 continue
             _delete_conv_rows(conn, cid)

@@ -687,7 +687,11 @@ def import_new_backups(conn, source_dir: Path) -> dict:
     candidates = sorted(p for p in source_dir.glob("*.json") if p.is_file())
     for path in candidates:
         name = path.name
-        if name in ("memories.json", "users.json"):
+        # conversations.json is the seed export the initial build reads and the
+        # documented `rm history.db && python3 app.py` rebuild depends on. Never
+        # scan or rename it, so the seed stays put and rebuilds keep working.
+        # memories/users are export siblings, never conversation backups.
+        if name in ("conversations.json", "memories.json", "users.json"):
             continue
         try:
             raw = path.read_bytes()
@@ -1991,8 +1995,30 @@ class Handler(BaseHTTPRequestHandler):
         now = time.time()
         conn = open_db(self.db_path)
         try:
-            if not conn.execute("SELECT 1 FROM udb.folders WHERE id = ?", (fid,)).fetchone():
+            folder = conn.execute(
+                "SELECT provider FROM udb.folders WHERE id = ?", (fid,)
+            ).fetchone()
+            if not folder:
                 self.send_json({"error": "folder not found"}, 404); return
+            # A folder belongs to one provider; a conversation may only join a
+            # folder of its own provider. Without this guard a cross-provider
+            # Compare chat could be filed into the other side's folder and then
+            # vanish from both folder trees (folders and the main list are
+            # provider-scoped). Reject the mismatch instead.
+            conv_provider = conn.execute(
+                "SELECT provider FROM conversations WHERE id = ?", (cid,)
+            ).fetchone()
+            conv_provider = conv_provider[0] if conv_provider else None
+            folder_provider = folder[0]
+            if (
+                folder_provider
+                and conv_provider
+                and folder_provider != conv_provider
+            ):
+                self.send_json(
+                    {"error": "folder belongs to a different provider"}, 409
+                )
+                return
             conn.execute("DELETE FROM pinned_conversations WHERE conversation_id = ?", (cid,))
             conn.execute(
                 "INSERT OR IGNORE INTO conversation_meta(conversation_id, custom_title, archived, deleted) "

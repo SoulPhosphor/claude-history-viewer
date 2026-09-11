@@ -4256,26 +4256,28 @@ nameModal?.addEventListener("mousedown", (e) => {
 });
 
 // ── Folders ─────────────────────────────────────────────────────────────────
-async function apiFolders() {
-  const p = new URLSearchParams({ provider: state.providerSide });
+async function apiFolders(provider = state.providerSide) {
+  const p = new URLSearchParams({ provider });
   return fetch(`/api/folders?${p}`).then((r) => r.json());
 }
-async function apiCreateFolder(name) {
+async function apiCreateFolder(name, provider = state.providerSide) {
   return fetch("/api/folders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     // Folders belong to the side they were created on.
-    body: JSON.stringify({ name, provider: state.providerSide }),
+    body: JSON.stringify({ name, provider }),
   }).then((r) => r.json());
 }
 
 // Shared "New folder" dialog flow, used by the sidebar's Add New Folder
 // button, its right-click context menu, and the Move-to menu's own entry.
 // Returns the created folder (with its id) or null if the user cancelled.
-async function promptCreateFolder() {
+// `provider` lets the Move-to menu create the folder on a cross-provider
+// chat's own side rather than the sidebar's.
+async function promptCreateFolder(provider = state.providerSide) {
   const name = await openNameModal({ title: "New folder", value: "" });
   if (!name) return null;
-  const res = await apiCreateFolder(name);
+  const res = await apiCreateFolder(name, provider);
   return res && res.id ? res : null;
 }
 
@@ -4568,16 +4570,39 @@ function onThreadMenuOutside(e) {
   closeThreadMenus();
 }
 
-function buildMoveToMenu() {
+async function buildMoveToMenu() {
   const cid = state.activeId;
   moveToMenu.innerHTML = "";
+
+  // Folders are provider-scoped, and a chat may only live in a folder of its
+  // own provider. When a cross-provider Compare chat is open (its provider
+  // differs from the sidebar's side), load that provider's folders here rather
+  // than offering the sidebar side's folders, which it could never belong to.
+  const convProvider = state.activeProvider || state.providerSide;
+  let folders, folderOf;
+  if (convProvider === state.providerSide) {
+    folders = state.folders;
+    folderOf = state.folderOf;
+  } else {
+    let data;
+    try {
+      data = await apiFolders(convProvider);
+    } catch {
+      data = { folders: [] };
+    }
+    folders = data.folders || [];
+    folderOf = new Map();
+    for (const f of folders)
+      for (const c of f.conversations || []) folderOf.set(c.id, f.id);
+  }
 
   const addNew = document.createElement("button");
   addNew.className = "thread-dropdown-item";
   addNew.textContent = "Add New Folder";
   addNew.addEventListener("click", async () => {
     closeThreadMenus();
-    const res = await promptCreateFolder();
+    // Create the folder on the conversation's own side, not the sidebar's.
+    const res = await promptCreateFolder(convProvider);
     if (res) {
       await apiMoveToFolder(res.id, cid);
       await afterFolderChange();
@@ -4585,7 +4610,7 @@ function buildMoveToMenu() {
   });
   moveToMenu.appendChild(addNew);
 
-  if (state.folderOf.has(cid)) {
+  if (folderOf.has(cid)) {
     const remove = document.createElement("button");
     remove.className = "thread-dropdown-item";
     remove.textContent = "Remove from Folder";
@@ -4597,15 +4622,15 @@ function buildMoveToMenu() {
     moveToMenu.appendChild(remove);
   }
 
-  if (state.folders.length) {
+  if (folders.length) {
     const sep = document.createElement("div");
     sep.className = "thread-dropdown-sep";
     moveToMenu.appendChild(sep);
   }
-  for (const f of state.folders) {
+  for (const f of folders) {
     const b = document.createElement("button");
     b.className = "thread-dropdown-item";
-    const isCurrent = state.folderOf.get(cid) === f.id;
+    const isCurrent = folderOf.get(cid) === f.id;
     if (isCurrent) b.classList.add("current");
     b.textContent = f.name;
     b.addEventListener("click", async () => {
@@ -4619,13 +4644,13 @@ function buildMoveToMenu() {
   }
 }
 
-moveToBtn?.addEventListener("click", (e) => {
+moveToBtn?.addEventListener("click", async (e) => {
   e.stopPropagation();
   if (!state.activeId) return;
   const wasOpen = !moveToMenu.hidden;
   closeThreadMenus();
   if (wasOpen) return;
-  buildMoveToMenu();
+  await buildMoveToMenu();
   moveToMenu.hidden = false;
   document.addEventListener("mousedown", onThreadMenuOutside, true);
 });
