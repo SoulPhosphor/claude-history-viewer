@@ -12,7 +12,6 @@ const state = {
     data: null,
     activeSectionKey: "images",
   },
-  specialReturnTabId: null,
   pinnedIds: new Set(),
   folders: [],
   folderOf: new Map(), // conversation_id -> folder_id (for chats inside folders)
@@ -1658,14 +1657,6 @@ async function openMostRecentConversation() {
   } catch {
     return false;
   }
-}
-
-// Clicking a Compare tab just opens its conversation. Compare crosses
-// providers, so this can open a chat from the side the sidebar isn't showing.
-async function activateTab(tabId) {
-  const tab = getTabById(tabId);
-  if (!tab) return;
-  await openConversation(tab.conversation_id, findConvItemEl(tab.conversation_id));
 }
 
 function renderTabs() {
