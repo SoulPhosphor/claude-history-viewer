@@ -19,12 +19,15 @@ PORT    = 5174
 
 
 def main() -> None:
-    if not SOURCE.exists():
-        print(f"Error: {SOURCE} not found.")
-        print("Export your Claude history and place conversations.json in source/")
-        sys.exit(1)
-
+    # conversations.json is only required for the very first build. Once
+    # history.db exists, new backups are brought in through the in-app
+    # "Import New Chats" screen — which renames each imported file away from
+    # conversations.json — so its absence at startup is normal from then on.
     if not DB_PATH.exists():
+        if not SOURCE.exists():
+            print(f"Error: {SOURCE} not found.")
+            print("Export your Claude history and place conversations.json in source/")
+            sys.exit(1)
         print("First run — building search index (may take ~30 s for large exports)…")
         from build_db import build
         build(SOURCE, DB_PATH)

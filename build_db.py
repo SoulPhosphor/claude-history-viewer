@@ -122,6 +122,37 @@ def detect_format(data: list) -> str:
     return "chatgpt"
 
 
+def detect_provider(data) -> str | None:
+    """
+    Identify a backup file *by its contents*, not its filename.
+
+    Returns 'claude', 'chatgpt', or None. None means the payload is not a
+    positively-recognized Claude or ChatGPT conversation export (for example a
+    memories/users/projects file, an empty list, or arbitrary JSON) and must
+    not be imported.
+
+    The structural markers are mutually exclusive in practice:
+      • Claude conversations carry `chat_messages` (and a `uuid` + `name`).
+      • ChatGPT conversations carry a `mapping` tree with a `current_node`.
+    A couple of leading dict entries are sampled so one malformed record does
+    not defeat detection.
+    """
+    if not isinstance(data, list) or not data:
+        return None
+    for conv in data[:5]:
+        if not isinstance(conv, dict):
+            continue
+        if "chat_messages" in conv:
+            return "claude"
+        if "mapping" in conv and "current_node" in conv:
+            return "chatgpt"
+        if "uuid" in conv and "name" in conv and "created_at" in conv:
+            return "claude"
+        if "mapping" in conv and ("title" in conv or "create_time" in conv):
+            return "chatgpt"
+    return None
+
+
 # ── Claude format helpers ─────────────────────────────────────────────────────
 
 # Claude content block types to skip
@@ -775,7 +806,10 @@ CREATE TABLE conversations (
     message_count INTEGER,
     preview       TEXT,
     import_status TEXT DEFAULT 'normal',
-    source_index  INTEGER
+    source_index  INTEGER,
+    -- 'claude' | 'chatgpt'. Conversation identity is (id, provider): the
+    -- original stable UUID plus the tool it came from.
+    provider      TEXT
 );
 
 CREATE TABLE conversation_meta (
@@ -890,6 +924,31 @@ CREATE TABLE import_sources (
 );
 
 CREATE INDEX idx_import_sources_status ON import_sources (import_status);
+
+DROP TABLE IF EXISTS imported_backups;
+
+-- One row per backup file brought in through the "Import New Chats" screen.
+-- Drives the import-history table. `first_chat`/`last_chat` are unix
+-- timestamps spanning every conversation/message in that file; `total_chats`
+-- is how many conversations the file contained; the count columns are what
+-- that one import did to the database.
+CREATE TABLE imported_backups (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_name    TEXT,
+    provider     TEXT,
+    file_hash    TEXT,
+    first_chat   REAL,
+    last_chat    REAL,
+    total_chats  INTEGER,
+    imported_at  REAL,
+    added        INTEGER DEFAULT 0,
+    updated      INTEGER DEFAULT 0,
+    unchanged    INTEGER DEFAULT 0,
+    skipped      INTEGER DEFAULT 0,
+    errors       INTEGER DEFAULT 0
+);
+
+CREATE INDEX idx_imported_backups_provider ON imported_backups (provider);
 """
 
 
@@ -971,6 +1030,8 @@ def build(source: Path, db_path: Path) -> None:
         # Record which top-level object in conversations.json this row came from,
         # so an audit view can trace a DB record back to the exact source entry.
         meta["source_index"] = best["index"]
+        # Every conversation in one build shares the file's detected provider.
+        meta["provider"] = fmt
         conv_rows.append(meta)
         msg_rows.extend(msgs)
         artifact_rows.extend(artifacts)
@@ -982,8 +1043,8 @@ def build(source: Path, db_path: Path) -> None:
 
     db.executemany(
         "INSERT OR REPLACE INTO conversations "
-        "(id, title, create_time, update_time, message_count, preview, import_status, source_index) "
-        "VALUES (:id, :title, :create_time, :update_time, :message_count, :preview, :import_status, :source_index)",
+        "(id, title, create_time, update_time, message_count, preview, import_status, source_index, provider) "
+        "VALUES (:id, :title, :create_time, :update_time, :message_count, :preview, :import_status, :source_index, :provider)",
         conv_rows,
     )
     db.executemany(
@@ -1116,6 +1177,162 @@ def build(source: Path, db_path: Path) -> None:
                   f"error={r['error']}")
 
     print(f"\nDone — {db_total} conversations indexed → {db_path}")
+
+
+# ── Incremental import (the "Import New Chats" screen) ─────────────────────────
+#
+# These reuse the same per-conversation parsers as the full build, but merge one
+# backup file at a time into an existing database instead of rebuilding it.
+
+
+def parse_backup(data: list, provider: str) -> list:
+    """Parse every conversation object in one backup into importer records."""
+    records: list[dict] = []
+    for i, conv in enumerate(data):
+        if not isinstance(conv, dict):
+            continue
+        if provider == "claude":
+            records.append(import_claude_conversation(conv, i))
+        else:
+            records.append(import_chatgpt_conversation(conv, i))
+    return records
+
+
+def dedup_records(records: list) -> list:
+    """Collapse exact-duplicate IDs within a single backup, keeping the record
+    with the most recovered messages (tie → earliest source index) — the same
+    rule the full build uses."""
+    by_id: dict[str, list] = defaultdict(list)
+    for rec in records:
+        by_id[rec["meta"]["id"]].append(rec)
+    out = []
+    for _cid, recs in by_id.items():
+        out.append(sorted(recs, key=lambda r: (-len(r["msgs"]), r["index"]))[0])
+    return out
+
+
+def backup_date_range(records: list) -> tuple[float | None, float | None]:
+    """Earliest and latest timestamp across every conversation and message in a
+    backup. Used for the import-history First/Last columns and for the date in
+    the renamed filename (which is the latest message timestamp)."""
+    times: list[float] = []
+    for r in records:
+        m = r["meta"]
+        for t in (m.get("create_time"), m.get("update_time")):
+            if t:
+                times.append(t)
+        for msg in r["msgs"]:
+            t = msg.get("create_time")
+            if t:
+                times.append(t)
+    if not times:
+        return None, None
+    return min(times), max(times)
+
+
+def _delete_conv_rows(conn, cid: str) -> None:
+    """Remove a conversation's derived rows before re-inserting on update. The
+    conversations row itself is INSERT OR REPLACEd, so it is left in place."""
+    conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
+    conn.execute("DELETE FROM search_index WHERE conversation_id = ?", (cid,))
+    conn.execute("DELETE FROM artifacts WHERE conv_id = ?", (cid,))
+
+
+def _insert_conv_rows(conn, meta: dict, msgs: list, artifacts: list, provider: str) -> None:
+    conn.execute(
+        "INSERT OR REPLACE INTO conversations "
+        "(id, title, create_time, update_time, message_count, preview, import_status, source_index, provider) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            meta["id"], meta["title"], meta.get("create_time"), meta.get("update_time"),
+            meta.get("message_count"), meta.get("preview"),
+            meta.get("import_status", "normal"), meta.get("source_index"), provider,
+        ),
+    )
+    for m in msgs:
+        conn.execute(
+            "INSERT INTO messages "
+            "(conversation_id, role, content, attachments, artifact_ids, siblings, branch_index, create_time, seq) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                m["conversation_id"], m.get("role"), m.get("content"), m.get("attachments"),
+                m.get("artifact_ids"), m.get("siblings"), m.get("branch_index", 1),
+                m.get("create_time"), m.get("seq"),
+            ),
+        )
+    conn.execute(
+        "INSERT INTO search_index (conversation_id, title, body) VALUES (?, ?, ?)",
+        (meta["id"], meta["title"], "\n".join(m["content"] for m in msgs)),
+    )
+    for a in artifacts:
+        conn.execute(
+            "INSERT OR REPLACE INTO artifacts (id, conv_id, msg_seq, title, type, lang, content) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (a["id"], a["conv_id"], a.get("msg_seq"), a.get("title"),
+             a.get("type"), a.get("lang"), a.get("content")),
+        )
+
+
+def _ts_close(a, b) -> bool:
+    """Two conversation timestamps that mean the same instant. Exports round to
+    the second, so anything under a second apart (and two missing values) is
+    treated as equal."""
+    if not a and not b:
+        return True
+    if not a or not b:
+        return False
+    return abs(float(a) - float(b)) < 1.0
+
+
+def reconcile_backup(conn, records: list, provider: str) -> dict:
+    """
+    Merge one backup's records into an existing database, honoring conversation
+    identity (id + provider) and the deletion flag.
+
+      • UUID not present            → insert                     (added)
+      • present, is_deleted = true  → skip, never resurrect      (skipped)
+      • present, is_deleted = false → reconcile if content moved (updated)
+                                       otherwise leave it alone   (unchanged)
+
+    A backup that overlaps an older one therefore updates in place and never
+    duplicates a conversation, and a conversation the user deleted stays gone.
+    """
+    counts = {"added": 0, "updated": 0, "unchanged": 0, "skipped": 0, "errors": 0}
+    for r in records:
+        try:
+            meta = r["meta"]
+            cid = meta["id"]
+            msgs = r["msgs"]
+            artifacts = r["artifacts"]
+            existing = conn.execute(
+                "SELECT title, update_time, message_count FROM conversations WHERE id = ?",
+                (cid,),
+            ).fetchone()
+            if existing is None:
+                _insert_conv_rows(conn, meta, msgs, artifacts, provider)
+                counts["added"] += 1
+                continue
+            delrow = conn.execute(
+                "SELECT deleted FROM conversation_meta WHERE conversation_id = ?",
+                (cid,),
+            ).fetchone()
+            if delrow is not None and delrow[0]:
+                counts["skipped"] += 1
+                continue
+            same = (
+                (existing[0] or "") == (meta["title"] or "")
+                and _ts_close(existing[1], meta.get("update_time"))
+                and (existing[2] or 0) == (meta.get("message_count") or 0)
+            )
+            if same:
+                counts["unchanged"] += 1
+                continue
+            _delete_conv_rows(conn, cid)
+            _insert_conv_rows(conn, meta, msgs, artifacts, provider)
+            counts["updated"] += 1
+        except Exception:  # noqa: BLE001 — one bad record must not abort the merge
+            counts["errors"] += 1
+    return counts
 
 
 if __name__ == "__main__":

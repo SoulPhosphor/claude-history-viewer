@@ -41,6 +41,12 @@ If you want to keep the starter completely clean, leave the placeholder `source/
 ## Features
 
 - **Fast, meaningful search** - FTS5 + Porter stemming across conversation text and attachment text, so relevant threads surface quickly.
+- **Import New Chats** (ⓘ menu)
+  - Drop newly-exported Claude or ChatGPT backups into `source/` and click **Import Conversations**
+  - Each file is identified as a Claude or ChatGPT export from its contents (not its filename); only recognized backups are imported
+  - Imported files are renamed to `Provider-conversations-YYYY-MM-DD.json` (the date is the latest message in the backup); identical re-drops are detected by hash and skipped, and same-date collisions get a `-1`, `-2`, … suffix
+  - Conversation identity is the original UUID plus its provider, so overlapping backups reconcile in place instead of duplicating, a deleted conversation is never re-added, and renaming a chat never changes its identity
+  - An import-history table below the button lists every backup with First / Last chat dates, total chats, and import date; filter by provider and sort by any column
 - **Conversation views that match your workflow** - Recent / Pinned / Archived / Deleted / All, with smooth pagination for large exports.
 - **Pinning with manual ordering** - Keep long-lived threads at the top in the order you choose.
 - **Workspace tabs**
@@ -180,6 +186,8 @@ GET    /api/search?q=<query>
 GET    /api/search-in-conversation?conv_id=<id>&q=<query>
 GET    /api/gallery
 GET    /api/attachment-report
+GET    /api/imported-backups?provider=all|claude|chatgpt
+POST   /api/import-new
 GET    /api/memories
 GET    /api/projects
 GET    /api/project/<id>

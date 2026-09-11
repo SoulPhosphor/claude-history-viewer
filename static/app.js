@@ -33,6 +33,13 @@ const state = {
   unverifiedCount: 0,
   tags: [], // tags on the open conversation
   allTagsCache: null, // every tag in use, for the add-tag autocomplete
+  importNew: {
+    backups: [], // rows for the import-history table
+    provider: "all", // filter radio
+    sortKey: "imported_at", // default: newest import first
+    sortDir: "desc",
+    busy: false,
+  },
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -87,6 +94,7 @@ const modelAddForm = $("model-add-form");
 const modelAddError = $("model-add-error");
 const modelReloadBtn = $("model-reload-btn");
 const importAuditContent = $("import-audit-content");
+const importNewPanel = $("import-new-panel");
 const artifactPanel = $("artifact-panel");
 const artifactPanelTitle = $("artifact-panel-title");
 const artifactPanelBody = $("artifact-panel-body");
@@ -1673,6 +1681,7 @@ async function activateActiveTab() {
       return openClaudeModels();
     if (state.activeSpecialView === "import_audit")
       return openImportAudit(false);
+    if (state.activeSpecialView === "import_new") return openImportNew();
     hideAllPanels();
     emptyState.hidden = false;
     return;
@@ -1749,6 +1758,7 @@ function hideAllPanels() {
   projectsPanel.hidden = true;
   attReportPanel.hidden = true;
   importAuditPanel.hidden = true;
+  importNewPanel.hidden = true;
   claudeModelsPanel.hidden = true;
   closeArtifactPanel();
   closeFilePanel();
@@ -3385,6 +3395,237 @@ document.addEventListener("keydown", (e) => {
   if (!coverageModal.hidden) coverageModal.hidden = true;
 });
 
+// ── Import New Chats screen ──────────────────────────────────────────────────
+// Scans the source folder for backup files not yet imported, identifies each as
+// a Claude or ChatGPT export, merges it in, and renames the source file. Below
+// the import area is the history of every backup already brought in.
+
+const importNewBtn = $("import-new-btn");
+const importNewStatus = $("import-new-status");
+const importNewSummary = $("import-new-summary");
+const importHistoryBody = $("import-history-body");
+const importHistoryTable = $("import-history-table");
+
+async function openImportNew() {
+  rememberReturnTab();
+  state.activeSpecialView = "import_new";
+  state.activeTabId = null;
+  document
+    .querySelectorAll(".conv-item.active")
+    .forEach((el) => el.classList.remove("active"));
+  state.activeId = null;
+  await ensureSpecialTab("import_new", "Import New Chats");
+  hideAllPanels();
+  importNewPanel.hidden = false;
+  await loadImportHistory();
+}
+
+async function loadImportHistory() {
+  importHistoryBody.innerHTML =
+    '<tr><td colspan="5" class="import-history-empty">Loading…</td></tr>';
+  try {
+    const resp = await fetch("/api/imported-backups");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    state.importNew.backups = data.backups || [];
+  } catch (e) {
+    importHistoryBody.innerHTML = `<tr><td colspan="5" class="import-history-empty">Could not load import history: ${escHtml(
+      e.message,
+    )}.</td></tr>`;
+    return;
+  }
+  renderImportHistory();
+}
+
+// A short absolute date for the table cells (the relative formatDate used in the
+// sidebar is not what you want when scanning a list of backups).
+function fmtImportDate(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts * 1000);
+  if (isNaN(d)) return "—";
+  return d.toLocaleDateString([], {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function renderImportHistory() {
+  const { provider, sortKey, sortDir } = state.importNew;
+  let rows = state.importNew.backups.slice();
+  if (provider === "claude" || provider === "chatgpt") {
+    rows = rows.filter((r) => r.provider === provider);
+  }
+
+  const numeric = sortKey !== "file_name";
+  rows.sort((a, b) => {
+    let av = a[sortKey];
+    let bv = b[sortKey];
+    let cmp;
+    if (numeric) {
+      cmp = (Number(av) || 0) - (Number(bv) || 0);
+    } else {
+      cmp = String(av || "").localeCompare(String(bv || ""), undefined, {
+        sensitivity: "base",
+        numeric: true,
+      });
+    }
+    return sortDir === "asc" ? cmp : -cmp;
+  });
+
+  // Reflect the active sort in the header cells.
+  importHistoryTable.querySelectorAll("th[data-sort]").forEach((th) => {
+    th.classList.remove("sort-asc", "sort-desc");
+    if (th.dataset.sort === sortKey) {
+      th.classList.add(sortDir === "asc" ? "sort-asc" : "sort-desc");
+    }
+  });
+
+  if (!rows.length) {
+    importHistoryBody.innerHTML =
+      '<tr><td colspan="5" class="import-history-empty">No backups imported yet.</td></tr>';
+    return;
+  }
+
+  importHistoryBody.innerHTML = "";
+  for (const r of rows) {
+    const tr = document.createElement("tr");
+    const label = r.provider === "chatgpt" ? "ChatGPT" : "Claude";
+    tr.innerHTML = `
+      <td class="import-cell-name">
+        <span class="import-provider-tag import-provider-${escHtml(
+          r.provider,
+        )}">${escHtml(label)}</span>
+        <span class="import-file-name">${escHtml(r.file_name || "")}</span>
+      </td>
+      <td>${escHtml(fmtImportDate(r.first_chat))}</td>
+      <td>${escHtml(fmtImportDate(r.last_chat))}</td>
+      <td class="import-cell-num">${(r.total_chats || 0).toLocaleString()}</td>
+      <td>${escHtml(fmtImportDate(r.imported_at))}</td>`;
+    importHistoryBody.appendChild(tr);
+  }
+}
+
+// Column-heading sort: first click sorts by that column, clicking the same
+// column again reverses direction.
+importHistoryTable?.querySelectorAll("th[data-sort]").forEach((th) => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    const s = state.importNew;
+    if (s.sortKey === key) {
+      s.sortDir = s.sortDir === "asc" ? "desc" : "asc";
+    } else {
+      s.sortKey = key;
+      // Text defaults to A→Z; dates/numbers default to newest/largest first.
+      s.sortDir = key === "file_name" ? "asc" : "desc";
+    }
+    renderImportHistory();
+  });
+});
+
+document
+  .querySelectorAll('input[name="import-provider-filter"]')
+  .forEach((radio) => {
+    radio.addEventListener("change", () => {
+      if (radio.checked) {
+        state.importNew.provider = radio.value;
+        renderImportHistory();
+      }
+    });
+  });
+
+async function runImportNew() {
+  if (state.importNew.busy) return;
+  state.importNew.busy = true;
+  importNewBtn.disabled = true;
+  importNewSummary.hidden = true;
+  importNewStatus.innerHTML =
+    '<span class="import-spinner" aria-hidden="true"></span><span>Importing, Please Wait</span>';
+
+  let data;
+  try {
+    const resp = await fetch("/api/import-new", { method: "POST" });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (e) {
+    importNewStatus.innerHTML = "";
+    importNewSummary.hidden = false;
+    importNewSummary.innerHTML = `<div class="import-summary-error">Import failed: ${escHtml(
+      e.message,
+    )}.</div>`;
+    state.importNew.busy = false;
+    importNewBtn.disabled = false;
+    return;
+  }
+
+  importNewStatus.innerHTML = "";
+  renderImportSummary(data);
+  await loadImportHistory();
+  // New conversations should show up in the sidebar without a reload.
+  try {
+    await loadConversations(false);
+  } catch (_) {}
+
+  state.importNew.busy = false;
+  importNewBtn.disabled = false;
+}
+
+function renderImportSummary(data) {
+  if (data.error) {
+    importNewSummary.hidden = false;
+    importNewSummary.innerHTML = `<div class="import-summary-error">${escHtml(
+      data.error,
+    )}</div>`;
+    return;
+  }
+  const stats = [
+    { label: "Added", n: data.added || 0 },
+    { label: "Updated", n: data.updated || 0 },
+    { label: "Unchanged", n: data.unchanged || 0 },
+    { label: "Skipped", n: data.skipped || 0 },
+    { label: "Errors", n: data.errors || 0, err: (data.errors || 0) > 0 },
+  ];
+  const nFiles = (data.files || []).length;
+  const totalConvs = stats.reduce((a, s) => a + s.n, 0);
+
+  let html = '<div class="import-summary-head">';
+  if (nFiles === 0 && !(data.notes || []).length) {
+    html += "No new backup files found in the source folder.";
+  } else if (nFiles === 0) {
+    html += "No new conversations were imported.";
+  } else {
+    html += `Imported ${nFiles} backup file${
+      nFiles !== 1 ? "s" : ""
+    } (${totalConvs.toLocaleString()} conversation${
+      totalConvs !== 1 ? "s" : ""
+    } processed).`;
+  }
+  html += "</div>";
+
+  html += '<div class="import-summary-stats">';
+  for (const s of stats) {
+    html += `<div class="import-stat${
+      s.err ? " import-stat-error" : ""
+    }"><span class="import-stat-n">${s.n.toLocaleString()}</span><span class="import-stat-label">${escHtml(
+      s.label,
+    )}</span></div>`;
+  }
+  html += "</div>";
+
+  if ((data.notes || []).length) {
+    html += '<ul class="import-summary-notes">';
+    for (const note of data.notes) {
+      html += `<li>${escHtml(note)}</li>`;
+    }
+    html += "</ul>";
+  }
+
+  importNewSummary.hidden = false;
+  importNewSummary.innerHTML = html;
+}
+
+importNewBtn?.addEventListener("click", runImportNew);
+
 // ── Add Claude Models screen ─────────────────────────────────────────────────
 
 async function openClaudeModels() {
@@ -3650,6 +3891,7 @@ sidebarMenu.querySelectorAll(".sidebar-menu-item").forEach((item) => {
     closeSidebarMenu();
     if (action === "attachment-report") openAttReport(false);
     else if (action === "import-audit") openImportAudit(false);
+    else if (action === "import-new") openImportNew();
     else if (action === "claude-models") openClaudeModels();
   });
 });
