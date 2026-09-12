@@ -1009,6 +1009,11 @@
     </div>
 
     <script src="/static/app.js"></script>
+    <!-- Labeling feature modules: loaded after app.js, whose shared state and
+         helpers they rely on. Order among these three does not matter. -->
+    <script src="/static/labels_screen.js"></script>
+    <script src="/static/bulk_labels.js"></script>
+    <script src="/static/snapshots.js"></script>
     <script
       src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
       crossorigin="anonymous"
