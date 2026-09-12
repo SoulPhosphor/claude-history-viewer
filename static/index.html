@@ -274,6 +274,14 @@
           <span class="sidebar-menu-item-icon" aria-hidden="true">🗓️</span>
           <span class="sidebar-menu-item-label">Add Claude Models</span>
         </button>
+        <button
+          class="sidebar-menu-item"
+          role="menuitem"
+          data-action="labels"
+        >
+          <span class="sidebar-menu-item-icon" aria-hidden="true">🏷️</span>
+          <span class="sidebar-menu-item-label">Labels</span>
+        </button>
       </div>
 
       <!-- Right-click menu for the Folders section, positioned at the click. -->
@@ -366,7 +374,10 @@
           </div>
           <div class="thread-header" id="thread-header">
             <div class="thread-header-main">
-              <h2 id="thread-title"></h2>
+              <div class="thread-title-row">
+                <span id="thread-title-square"></span>
+                <h2 id="thread-title"></h2>
+              </div>
               <div id="thread-meta"></div>
               <div id="thread-tags"></div>
             </div>
@@ -696,6 +707,223 @@
           </div>
           <div id="att-report-content"></div>
         </div>
+
+        <div id="labels-panel" hidden>
+          <div class="thread-header">
+            <h2>Labels</h2>
+            <div id="labels-meta">
+              Configurable labels for staging groups of conversations. Names
+              carry no built-in meaning — you choose them.
+            </div>
+          </div>
+          <div id="labels-content">
+            <!-- A. Label feature settings ─────────────────────────────── -->
+            <section class="labels-section">
+              <h3 class="labels-section-title">Label settings</h3>
+              <p class="labels-section-hint">
+                Turn labels on to show them on conversations. Turning them off
+                hides every label control but keeps your label data intact.
+              </p>
+              <div class="labels-setting-row">
+                <label class="labels-switch">
+                  <input type="checkbox" id="labels-enabled-toggle" />
+                  <span>Enable Conversation Labels</span>
+                </label>
+              </div>
+              <div class="labels-setting-row">
+                <label class="labels-setting-label" for="labels-display-select"
+                  >Label Display</label
+                >
+                <select id="labels-display-select">
+                  <option value="square">Square only</option>
+                  <option value="square_label">Square + label</option>
+                </select>
+              </div>
+            </section>
+
+            <!-- B. Label definitions ──────────────────────────────────── -->
+            <section class="labels-section">
+              <h3 class="labels-section-title">Label definitions</h3>
+              <p class="labels-section-hint">
+                Add, rename, recolour, reorder, or delete labels. The order here
+                is the order clicking a conversation's square cycles through.
+              </p>
+              <form id="label-add-form" autocomplete="off">
+                <input
+                  type="color"
+                  id="label-add-color"
+                  value="#4169e1"
+                  aria-label="New label colour"
+                />
+                <input
+                  id="label-add-name"
+                  type="text"
+                  placeholder="New label name"
+                  required
+                  spellcheck="false"
+                  maxlength="60"
+                />
+                <button type="submit" id="label-add-btn">Add Label</button>
+              </form>
+              <div id="label-add-error" class="labels-form-error" hidden></div>
+              <ul id="label-list" class="label-list"></ul>
+            </section>
+
+            <!-- C. Bulk Label Conversations ───────────────────────────── -->
+            <section class="labels-section">
+              <h3 class="labels-section-title">Bulk Label Conversations</h3>
+              <p class="labels-section-hint">
+                Select conversations by criteria — all populated criteria are
+                combined with AND — then set one label on the batch. The only
+                action is Set Label To; nothing here deletes, archives, or moves.
+              </p>
+              <div class="bulk-form">
+                <div class="bulk-row">
+                  <label for="bulk-provider">Provider</label>
+                  <select id="bulk-provider">
+                    <option value="all">All</option>
+                    <option value="claude">Claude</option>
+                    <option value="chatgpt">ChatGPT</option>
+                  </select>
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-started-op">Started</label>
+                  <select id="bulk-started-op" class="bulk-date-op">
+                    <option value="any">Any</option>
+                    <option value="before">Before</option>
+                    <option value="after">After</option>
+                    <option value="between">Between</option>
+                  </select>
+                  <input type="date" id="bulk-started-date" hidden />
+                  <span id="bulk-started-and" class="bulk-and" hidden>and</span>
+                  <input type="date" id="bulk-started-date2" hidden />
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-ended-op">Last updated</label>
+                  <select id="bulk-ended-op" class="bulk-date-op">
+                    <option value="any">Any</option>
+                    <option value="before">Before</option>
+                    <option value="after">After</option>
+                    <option value="between">Between</option>
+                  </select>
+                  <input type="date" id="bulk-ended-date" hidden />
+                  <span id="bulk-ended-and" class="bulk-and" hidden>and</span>
+                  <input type="date" id="bulk-ended-date2" hidden />
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-label">Current label</label>
+                  <select id="bulk-label">
+                    <option value="any">Any</option>
+                    <option value="blank">Blank</option>
+                  </select>
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-folder">Folder</label>
+                  <select id="bulk-folder">
+                    <option value="any">Any</option>
+                    <option value="none">No folder</option>
+                  </select>
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-tag">Tag</label>
+                  <select id="bulk-tag"><option value="">Any</option></select>
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-keyword">Keyword</label>
+                  <input
+                    type="text"
+                    id="bulk-keyword"
+                    placeholder="Optional — same search as the sidebar"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-order">Order</label>
+                  <select id="bulk-order">
+                    <option value="started_asc">Started: oldest first</option>
+                    <option value="started_desc">Started: newest first</option>
+                    <option value="updated_asc">Last updated: oldest first</option>
+                    <option value="updated_desc">Last updated: newest first</option>
+                  </select>
+                </div>
+                <div class="bulk-row">
+                  <label>Limit</label>
+                  <label class="bulk-inline">
+                    <input type="radio" name="bulk-limit" value="all" checked />
+                    All matching
+                  </label>
+                  <label class="bulk-inline">
+                    <input type="radio" name="bulk-limit" value="first" />
+                    First
+                  </label>
+                  <input type="number" id="bulk-limit-n" min="1" value="50" disabled />
+                </div>
+                <div class="bulk-row bulk-row-action">
+                  <label for="bulk-target">Set label to</label>
+                  <select id="bulk-target"><option value="blank">Blank</option></select>
+                </div>
+                <div class="bulk-buttons">
+                  <button type="button" id="bulk-preview-btn">Preview</button>
+                  <button type="button" id="bulk-apply-btn" disabled>Apply</button>
+                </div>
+                <div id="bulk-result" class="bulk-result" hidden></div>
+                <div id="bulk-error" class="labels-form-error" hidden></div>
+              </div>
+            </section>
+
+            <!-- D. Safety Snapshots / Recent Bulk Changes ─────────────── -->
+            <section class="labels-section">
+              <h3 class="labels-section-title">Safety Snapshots</h3>
+              <p class="labels-section-hint">
+                Manually capture a recoverable snapshot of your labels, folders,
+                tags, titles, pins, and archived/deleted state (never message
+                content). Snapshots are only ever made when you press the button
+                below. Up to 10 are kept.
+              </p>
+              <div class="snapshot-create-row">
+                <input
+                  type="text"
+                  id="snapshot-name"
+                  placeholder="Optional name (a timestamp is used if blank)"
+                  spellcheck="false"
+                  maxlength="120"
+                />
+                <button type="button" id="snapshot-create-btn">Create Snapshot</button>
+              </div>
+              <div id="snapshot-error" class="labels-form-error" hidden></div>
+              <div id="snapshot-table-wrap">
+                <table id="snapshot-table">
+                  <thead>
+                    <tr>
+                      <th>Snapshot</th>
+                      <th>Created</th>
+                      <th>Contents</th>
+                      <th>Size</th>
+                      <th aria-label="Actions"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="snapshot-table-body"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="labels-section">
+              <h3 class="labels-section-title">Recent Bulk Changes</h3>
+              <p class="labels-section-hint">
+                Your recent bulk-label operations. Use Again loads a change's
+                criteria back into the tool above (you still Preview and Apply).
+                This is a reminder of what you did, not an undo — recovery is
+                what Safety Snapshots are for.
+              </p>
+              <div class="bulk-retention-row">
+                <label for="bulk-retention">Keep the last</label>
+                <input type="number" id="bulk-retention" min="0" max="50" value="5" />
+                <span>changes</span>
+              </div>
+              <ul id="bulk-history-list" class="bulk-history-list"></ul>
+            </section>
+          </div>
+        </div>
       </main>
     </div>
 
@@ -726,6 +954,24 @@
           <button id="confirm-modal-cancel" class="modal-btn">Cancel</button>
           <button id="confirm-modal-ok" class="modal-btn modal-btn-danger">
             Delete
+          </button>
+        </div>
+      </div>
+    </div>
+    <!-- Snapshot restore: choose which metadata categories to restore. -->
+    <div id="snapshot-restore-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-title">Restore snapshot</div>
+        <div class="modal-text">
+          Choose which metadata categories to restore. Only the selected
+          categories are returned to their recorded state — this can reverse
+          changes made since the snapshot. Conversation content is never touched.
+        </div>
+        <div id="snapshot-restore-cats" class="snapshot-cats"></div>
+        <div class="modal-buttons">
+          <button id="snapshot-restore-cancel" class="modal-btn">Cancel</button>
+          <button id="snapshot-restore-ok" class="modal-btn modal-btn-primary">
+            Restore
           </button>
         </div>
       </div>

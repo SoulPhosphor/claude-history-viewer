@@ -325,12 +325,88 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 deleted_at      REAL,
                 PRIMARY KEY (conversation_id, provider)
             );
+
+            -- User-configurable conversation labels. A label is a definition
+            -- (name/colour/order) here; a conversation's assignment lives in
+            -- conversation_labels below. Names carry no hard-coded meaning —
+            -- the user chooses them — and the stable id means renaming or
+            -- recolouring a label never disturbs which conversations use it.
+            CREATE TABLE IF NOT EXISTS labels (
+                id         TEXT PRIMARY KEY,
+                name       TEXT NOT NULL,
+                color      TEXT,
+                -- Position in the click-cycle / display order (0-based).
+                sort_index INTEGER NOT NULL DEFAULT 0,
+                created_at REAL,
+                updated_at REAL
+            );
+
+            -- Which label a conversation has. A conversation has at most one
+            -- label; the blank state is simply the absence of a row (no fake
+            -- "Blank" label). Keyed on conversation_id alone, matching the
+            -- existing tags/folders/model tables — conversation ids are stable
+            -- across rebuilds, so assignments survive a history.db rebuild.
+            CREATE TABLE IF NOT EXISTS conversation_labels (
+                conversation_id TEXT PRIMARY KEY,
+                label_id        TEXT NOT NULL,
+                assigned_at     REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_conv_labels_label
+                ON conversation_labels (label_id);
+
+            -- A short, durable log of each successful conditional bulk-label
+            -- operation. Not an undo journal — it holds no conversation bodies
+            -- and no per-conversation before/after state, only enough to remind
+            -- the user what they did and to let them reuse a prior selection.
+            -- Recovery from a bad change is the job of snapshots, not this.
+            CREATE TABLE IF NOT EXISTS label_bulk_history (
+                id                TEXT PRIMARY KEY,
+                created_at        REAL,
+                -- The selection criteria, serialized, so it can be reloaded.
+                criteria_json     TEXT,
+                -- A human-readable summary captured at execution time.
+                description       TEXT,
+                -- The label applied; NULL means "cleared to blank".
+                target_label_id   TEXT,
+                -- The label's name at the time, kept even if it is later renamed
+                -- or deleted so old history stays readable.
+                target_label_name TEXT,
+                limit_used        INTEGER,
+                -- Sorting/order settings used to pick which matches the limit hit.
+                order_json        TEXT,
+                eligible_count    INTEGER,
+                changed_count     INTEGER
+            );
+
+            -- Manual safety snapshots of user-owned metadata (never message
+            -- content or imported source text). Capped at 10 rows; creation is
+            -- blocked at the cap until the user deletes one (nothing is ever
+            -- deleted silently). The payload is versioned JSON so new categories
+            -- can be added later without invalidating old snapshots.
+            CREATE TABLE IF NOT EXISTS snapshots (
+                id             TEXT PRIMARY KEY,
+                name           TEXT,
+                created_at     REAL,
+                schema_version INTEGER,
+                payload        TEXT,
+                -- Optional display metadata computed at capture time.
+                item_count     INTEGER,
+                payload_size   INTEGER,
+                -- Per-category counts (JSON) for the list's Contents column, so
+                -- listing never has to parse the full payload.
+                summary        TEXT
+            );
             """
         )
         # Add the folders.provider column on databases created before folders
         # were scoped by provider. ADD COLUMN errors if it already exists.
         try:
             conn.execute("ALTER TABLE folders ADD COLUMN provider TEXT")
+        except sqlite3.Error:
+            pass
+        # summary column for snapshots created before it existed.
+        try:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN summary TEXT")
         except sqlite3.Error:
             pass
         conn.commit()
@@ -970,6 +1046,10 @@ def _purge_conversation(conn, cid: str) -> bool:
         "DELETE FROM udb.conversation_tags WHERE conversation_id = ?",
         "DELETE FROM udb.conversation_models WHERE conversation_id = ?",
         "DELETE FROM udb.conversation_model_flags WHERE conversation_id = ?",
+        # The label assignment is viewer metadata too: drop it so a purged
+        # conversation can't keep inflating label counts or silently regain its
+        # old label if the same stable ID is re-imported later.
+        "DELETE FROM udb.conversation_labels WHERE conversation_id = ?",
     ):
         try:
             conn.execute(stmt, (cid,))
@@ -1037,6 +1117,23 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_model_dismiss()
         elif path == "/api/tags":
             self._api_tag_add()
+        elif path == "/api/labels":
+            self._api_label_create()
+        elif path == "/api/labels/reorder":
+            self._api_labels_reorder()
+        elif path == "/api/conversation-labels":
+            self._api_conversation_label_set()
+        elif path == "/api/labels/bulk-preview":
+            self._api_bulk_preview()
+        elif path == "/api/labels/bulk-apply":
+            self._api_bulk_apply()
+        elif path == "/api/labels/bulk-history/retention":
+            self._api_bulk_retention_set()
+        elif path == "/api/snapshots":
+            self._api_snapshot_create()
+        elif path.startswith("/api/snapshots/") and path.endswith("/restore"):
+            inner = path[len("/api/snapshots/"):-len("/restore")]
+            self._api_snapshot_restore(urllib.parse.unquote(inner))
         elif path == "/api/import-new":
             self._api_import_new()
         elif path == "/api/recycle-bin/restore":
@@ -1062,6 +1159,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_update(urllib.parse.unquote(path[len("/api/conversation/"):]))
         elif path.startswith("/api/claude-models/"):
             self._api_claude_model_update(urllib.parse.unquote(path[len("/api/claude-models/"):]))
+        elif path.startswith("/api/labels/"):
+            self._api_label_update(urllib.parse.unquote(path[len("/api/labels/"):]))
         else:
             self.send_error(404)
 
@@ -1087,6 +1186,10 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) != 2:
                 self.send_error(404); return
             self._api_tag_remove(parts[0], parts[1])
+        elif path.startswith("/api/labels/"):
+            self._api_label_delete(urllib.parse.unquote(path[len("/api/labels/"):]))
+        elif path.startswith("/api/snapshots/"):
+            self._api_snapshot_delete(urllib.parse.unquote(path[len("/api/snapshots/"):]))
         else:
             self.send_error(404)
 
@@ -1167,6 +1270,9 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_file(static_dir / "style.css")
         elif path == "/api/conversations":
             self._api_conversations(qs)
+        elif path.startswith("/api/conversation-labels/"):
+            self._api_conversation_label_get(
+                urllib.parse.unquote(path[len("/api/conversation-labels/"):]))
         elif path.startswith("/api/conversation/"):
             self._api_detail(urllib.parse.unquote(path[len("/api/conversation/"):]))
         elif path == "/api/search":
@@ -1197,6 +1303,12 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_models(qs)
         elif path == "/api/tags":
             self._api_tags_all()
+        elif path == "/api/labels":
+            self._api_labels_list()
+        elif path == "/api/labels/bulk-history":
+            self._api_bulk_history()
+        elif path == "/api/snapshots":
+            self._api_snapshot_list()
         elif path == "/api/preferences":
             self._api_preferences()
         elif path == "/api/pinned":
@@ -1401,6 +1513,22 @@ class Handler(BaseHTTPRequestHandler):
         whole dataset is Claude).
         """
         convs = [dict(r) for r in rows]
+        # Attach each row's label in one batched query so the sidebar can draw
+        # its square without a request per conversation (no N+1).
+        ids = [c["id"] for c in convs]
+        if ids:
+            marks = ",".join("?" * len(ids))
+            labels_by_conv = {}
+            for r in conn.execute(
+                "SELECT cl.conversation_id AS cid, l.id AS id, l.name AS name, l.color AS color "
+                "FROM udb.conversation_labels cl "
+                "JOIN udb.labels l ON l.id = cl.label_id "
+                f"WHERE cl.conversation_id IN ({marks})",
+                tuple(ids),
+            ).fetchall():
+                labels_by_conv[r["cid"]] = {"id": r["id"], "name": r["name"], "color": r["color"]}
+            for c in convs:
+                c["label"] = labels_by_conv.get(c["id"])
         claude_side = (provider == "claude") if provider else (self._dataset_format(conn) == "claude")
         if claude_side:
             flags = _compute_conv_flags(
@@ -1428,6 +1556,14 @@ class Handler(BaseHTTPRequestHandler):
         if provider not in ("claude", "chatgpt"):
             provider = None
         prov_sql = f" AND c.provider = '{provider}'" if provider else ""
+        # A "label:<id>" (or "label:__unlabeled__") view filters by conversation
+        # label. It behaves like the "all" view for the deleted/archived/folder
+        # gating, then adds the label constraint — so a labelled chat still shows
+        # even when archived or inside a folder.
+        label_filter = None
+        if view.startswith("label:"):
+            label_filter = view[len("label:"):]
+            view = "labelview"
         conn = open_db(self.db_path)
         try:
             if view == "unverified":
@@ -1492,9 +1628,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if view == "archived":
                 where_clauses.append("COALESCE(cm.archived, 0) = 1")
-            elif view == "all":
-                pass
-            elif view == "deleted":
+            elif view in ("all", "deleted", "labelview"):
                 pass
             else:
                 where_clauses.append("COALESCE(cm.archived, 0) = 0")
@@ -1509,7 +1643,9 @@ class Handler(BaseHTTPRequestHandler):
             # deleted = 0), so the Recycle Bin is the only place it can be seen
             # and restored; excluding it here would strand it. Its folder
             # membership is preserved so restoring returns it to that folder.
-            if view != "deleted":
+            # A label view searches across folders too, so a labelled chat that
+            # lives in a folder still appears under its label filter.
+            if view not in ("deleted", "labelview"):
                 where_clauses.append(
                     "c.id NOT IN (SELECT conversation_id FROM udb.folder_items)"
                 )
@@ -1517,6 +1653,21 @@ class Handler(BaseHTTPRequestHandler):
             # whitelisted above, so this literal is safe.
             if provider:
                 where_clauses.append(f"c.provider = '{provider}'")
+            # The label constraint. label_id is a uuid4 hex, validated before it
+            # is interpolated (like `provider`); an unrecognised value yields no
+            # rows rather than an error.
+            if label_filter is not None:
+                if label_filter == "__unlabeled__":
+                    where_clauses.append(
+                        "c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels)"
+                    )
+                elif re.fullmatch(r"[0-9a-f]{32}", label_filter):
+                    where_clauses.append(
+                        "c.id IN (SELECT conversation_id FROM udb.conversation_labels "
+                        f"WHERE label_id = '{label_filter}')"
+                    )
+                else:
+                    where_clauses.append("0")
             where_sql = " AND ".join(where_clauses)
 
             if q:
@@ -1678,7 +1829,11 @@ class Handler(BaseHTTPRequestHandler):
             # where the whole feature is absent.
             models = (self._conv_model_state(conn, conv_id)
                       if self._dataset_format(conn) == "claude" else None)
-            self.send_json({"conversation": dict(conv),
+            conv_dict = dict(conv)
+            # The current label rides along so opening a conversation stays one
+            # request; the header square reads it directly.
+            conv_dict["label"] = self._conv_label(conn, conv_id)
+            self.send_json({"conversation": conv_dict,
                             "messages": [parse_msg(m) for m in msgs],
                             "artifacts": artifacts_meta,
                             "models": models,
@@ -2166,10 +2321,15 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT fi.folder_id AS folder_id, fi.pinned AS pinned, "
                 "c.id AS id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
                 "c.create_time AS create_time, c.update_time AS update_time, "
-                "c.message_count AS message_count "
+                "c.message_count AS message_count, "
+                # The label rides along so folder rows can draw their square
+                # without a request per conversation (no N+1).
+                "ll.id AS label_id, ll.name AS label_name, ll.color AS label_color "
                 "FROM udb.folder_items fi "
                 "JOIN conversations c ON c.id = fi.conversation_id "
                 "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                "LEFT JOIN udb.conversation_labels cl ON cl.conversation_id = c.id "
+                "LEFT JOIN udb.labels ll ON ll.id = cl.label_id "
                 "WHERE COALESCE(cm.deleted, 0) = 0" + prov_item + " "
                 # Pinned chats float to the top within the folder, then newest.
                 "ORDER BY fi.pinned DESC, c.update_time DESC, c.create_time DESC"
@@ -2183,6 +2343,8 @@ class Handler(BaseHTTPRequestHandler):
                     "update_time":   r["update_time"],
                     "message_count": r["message_count"],
                     "pinned":        bool(r["pinned"]),
+                    "label": ({"id": r["label_id"], "name": r["label_name"],
+                               "color": r["label_color"]} if r["label_id"] else None),
                 })
             out = [{
                 "id":            f["id"],
@@ -2779,6 +2941,913 @@ class Handler(BaseHTTPRequestHandler):
             )
             conn.commit()
             self.send_json({"tags": self._conv_tags(conn, conv_id)})
+        finally:
+            conn.close()
+
+    # ── Conversation labels ──────────────────────────────────────────────────
+    # User-configurable labels stored in the persistent user-data DB (see
+    # `labels` / `conversation_labels` in _ensure_userdata_schema). A label is a
+    # definition here; a conversation has at most one, and the blank state is
+    # the absence of an assignment. Names have no built-in meaning — the user
+    # picks them — and stable ids mean a rename or recolour never moves any
+    # conversation off its label.
+
+    # Colours are stored as #rgb / #rrggbb and validated before write, so the
+    # value can be dropped straight into an inline style on the client.
+    _LABEL_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+    def _norm_label_color(self, value, default="#888888"):
+        s = str(value or "").strip()
+        return s if self._LABEL_COLOR_RE.match(s) else default
+
+    def _labels_with_counts(self, conn):
+        """Every label in cycle order, each with how many conversations use it."""
+        rows = conn.execute(
+            "SELECT l.id, l.name, l.color, l.sort_index, l.created_at, l.updated_at, "
+            "       COUNT(cl.conversation_id) AS count "
+            "FROM udb.labels l "
+            "LEFT JOIN udb.conversation_labels cl ON cl.label_id = l.id "
+            "GROUP BY l.id "
+            "ORDER BY l.sort_index ASC, LOWER(l.name) ASC"
+        ).fetchall()
+        return [{
+            "id":         r["id"],
+            "name":       r["name"],
+            "color":      r["color"],
+            "sort_index": r["sort_index"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+            "count":      r["count"],
+        } for r in rows]
+
+    def _api_labels_list(self):
+        conn = open_db(self.db_path)
+        try:
+            self.send_json({"labels": self._labels_with_counts(conn)})
+        finally:
+            conn.close()
+
+    def _api_label_create(self):
+        payload = self._read_json_body()
+        name = " ".join(str(payload.get("name") or "").split())[:60]
+        if not name:
+            self.send_json({"error": "name is required"}, 400); return
+        color = self._norm_label_color(payload.get("color"))
+        now = time.time()
+        conn = open_db(self.db_path)
+        try:
+            # New labels append to the end of the cycle order.
+            row = conn.execute(
+                "SELECT COALESCE(MAX(sort_index), -1) + 1 AS next FROM udb.labels"
+            ).fetchone()
+            sort_index = row["next"] if row else 0
+            lid = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO udb.labels(id, name, color, sort_index, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (lid, name, color, sort_index, now, now),
+            )
+            conn.commit()
+            self.send_json({"labels": self._labels_with_counts(conn), "id": lid})
+        finally:
+            conn.close()
+
+    def _api_label_update(self, lid):
+        lid = (lid or "").strip()
+        payload = self._read_json_body()
+        sets, params = [], []
+        if "name" in payload:
+            name = " ".join(str(payload.get("name") or "").split())[:60]
+            if not name:
+                self.send_json({"error": "name cannot be empty"}, 400); return
+            sets.append("name = ?"); params.append(name)
+        if "color" in payload:
+            sets.append("color = ?"); params.append(self._norm_label_color(payload.get("color")))
+        if not sets:
+            self.send_json({"error": "nothing to update"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            if not conn.execute("SELECT 1 FROM udb.labels WHERE id = ?", (lid,)).fetchone():
+                self.send_json({"error": "Unknown label"}, 404); return
+            sets.append("updated_at = ?"); params.append(time.time())
+            params.append(lid)
+            conn.execute(f"UPDATE udb.labels SET {', '.join(sets)} WHERE id = ?", params)
+            conn.commit()
+            self.send_json({"labels": self._labels_with_counts(conn)})
+        finally:
+            conn.close()
+
+    def _api_label_delete(self, lid):
+        """Delete a label. Any conversation carrying it falls back to blank
+        (its assignment row is removed) — never silently reassigned to another
+        label."""
+        lid = (lid or "").strip()
+        conn = open_db(self.db_path)
+        try:
+            if not conn.execute("SELECT 1 FROM udb.labels WHERE id = ?", (lid,)).fetchone():
+                self.send_json({"error": "Unknown label"}, 404); return
+            cur = conn.execute(
+                "DELETE FROM udb.conversation_labels WHERE label_id = ?", (lid,)
+            )
+            cleared = cur.rowcount if cur.rowcount is not None else 0
+            conn.execute("DELETE FROM udb.labels WHERE id = ?", (lid,))
+            conn.commit()
+            self.send_json({"labels": self._labels_with_counts(conn), "cleared": cleared})
+        finally:
+            conn.close()
+
+    def _api_labels_reorder(self):
+        """Set the cycle order from a full list of label ids. Ids not present
+        keep their existing order after the ones given."""
+        payload = self._read_json_body()
+        order = payload.get("order")
+        if not isinstance(order, list):
+            self.send_json({"error": "order must be a list of label ids"}, 400); return
+        now = time.time()
+        conn = open_db(self.db_path)
+        try:
+            known = {r["id"] for r in conn.execute("SELECT id FROM udb.labels").fetchall()}
+            idx = 0
+            for lid in order:
+                lid = str(lid)
+                if lid not in known:
+                    continue
+                conn.execute(
+                    "UPDATE udb.labels SET sort_index = ?, updated_at = ? WHERE id = ?",
+                    (idx, now, lid),
+                )
+                idx += 1
+            conn.commit()
+            self.send_json({"labels": self._labels_with_counts(conn)})
+        finally:
+            conn.close()
+
+    def _conv_label(self, conn, conv_id):
+        """The label a conversation currently carries, or None (the blank
+        state). Shape matches what the sidebar/header square renders."""
+        row = conn.execute(
+            "SELECT l.id, l.name, l.color FROM udb.conversation_labels cl "
+            "JOIN udb.labels l ON l.id = cl.label_id "
+            "WHERE cl.conversation_id = ?",
+            (conv_id,),
+        ).fetchone()
+        return ({"id": row["id"], "name": row["name"], "color": row["color"]}
+                if row else None)
+
+    def _api_conversation_label_get(self, conv_id):
+        """The conversation's current label (or null). Lets the header re-read a
+        single conversation's assignment after a bulk/restore without refetching
+        its whole message list."""
+        conv_id = (conv_id or "").strip()
+        conn = open_db(self.db_path)
+        try:
+            self.send_json({"conv_id": conv_id, "label": self._conv_label(conn, conv_id)})
+        finally:
+            conn.close()
+
+    def _api_conversation_label_set(self):
+        """Set (or clear) a conversation's single label. A falsy label_id
+        clears it back to blank — the assignment row is removed, never swapped
+        for a placeholder label."""
+        payload = self._read_json_body()
+        conv_id = str(payload.get("conv_id") or "").strip()
+        raw = payload.get("label_id")
+        label_id = str(raw).strip() if raw else ""
+        if not conv_id:
+            self.send_json({"error": "conv_id is required"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            if not conn.execute(
+                "SELECT 1 FROM conversations WHERE id = ?", (conv_id,)
+            ).fetchone():
+                self.send_json({"error": "Unknown conversation"}, 404); return
+            if label_id:
+                if not conn.execute(
+                    "SELECT 1 FROM udb.labels WHERE id = ?", (label_id,)
+                ).fetchone():
+                    self.send_json({"error": "Unknown label"}, 404); return
+                conn.execute(
+                    "INSERT INTO udb.conversation_labels(conversation_id, label_id, assigned_at) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(conversation_id) DO UPDATE SET "
+                    "  label_id = excluded.label_id, assigned_at = excluded.assigned_at",
+                    (conv_id, label_id, time.time()),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM udb.conversation_labels WHERE conversation_id = ?",
+                    (conv_id,),
+                )
+            conn.commit()
+            self.send_json({"conv_id": conv_id, "label": self._conv_label(conn, conv_id)})
+        finally:
+            conn.close()
+
+    # ── Conditional bulk labeling ────────────────────────────────────────────
+    # A deliberately narrow selection tool: it can only Set Label To (a label,
+    # or Blank). It never deletes, archives, moves, or renames. All populated
+    # criteria are combined with AND. Batches are deterministic — a stable id
+    # tie-breaker is always appended to the ordering.
+
+    def _bulk_epoch_day(self, s):
+        """Local-midnight epoch for a YYYY-MM-DD string, else None. Dates are
+        interpreted in local time to match the dates the UI shows."""
+        s = str(s or "").strip()
+        if not _DATE_RE.match(s):
+            return None
+        try:
+            y, m, d = (int(x) for x in s.split("-"))
+            return datetime.datetime(y, m, d).timestamp()
+        except Exception:
+            return None
+
+    def _bulk_epoch_next_day(self, s):
+        """Local-midnight epoch of the day AFTER the given date, for building
+        half-open [start, end) day ranges."""
+        base = self._bulk_epoch_day(s)
+        if base is None:
+            return None
+        try:
+            y, m, d = (int(x) for x in str(s).split("-"))
+            nxt = datetime.date(y, m, d) + datetime.timedelta(days=1)
+            return datetime.datetime(nxt.year, nxt.month, nxt.day).timestamp()
+        except Exception:
+            return None
+
+    def _bulk_date_clause(self, where, params, col, spec):
+        """Append a date filter on `col` (create_time / update_time). Missing
+        timestamps (0/NULL) never match a date filter."""
+        if not isinstance(spec, dict):
+            return
+        op = str(spec.get("op") or "any").lower()
+        if op == "before":
+            e = self._bulk_epoch_day(spec.get("date"))
+            if e is not None:
+                where.append(f"({col} > 0 AND {col} < ?)"); params.append(e)
+        elif op == "after":
+            e = self._bulk_epoch_next_day(spec.get("date"))
+            if e is not None:
+                where.append(f"({col} > 0 AND {col} >= ?)"); params.append(e)
+        elif op == "between":
+            a = self._bulk_epoch_day(spec.get("date"))
+            an = self._bulk_epoch_next_day(spec.get("date"))
+            b = self._bulk_epoch_day(spec.get("date2"))
+            bn = self._bulk_epoch_next_day(spec.get("date2"))
+            if a is not None and b is not None:
+                start, end = min(a, b), max(an, bn)
+                where.append(f"({col} > 0 AND {col} >= ? AND {col} < ?)")
+                params += [start, end]
+
+    def _build_bulk_query(self, crit, use_fts=True, noop_target="__none__"):
+        """Turn a criteria dict into (where_sql, params, order_sql, limit_n).
+        Every criterion is optional; populated ones are ANDed together.
+
+        `noop_target` adds the skip-no-op condition so the limit applies only to
+        conversations the operation would actually change:
+          • "__none__"  — no condition (count of everything matching).
+          • a label id  — exclude conversations already carrying that label.
+          • None (Blank) — keep only conversations that currently carry a label
+                           (clearing to blank is a no-op on already-blank ones).
+        Applying the limit after this exclusion is what makes a repeated rule
+        pick up the *next* batch instead of rewriting the same rows."""
+        where = ["COALESCE(cm.deleted, 0) = 0"]
+        params = []
+
+        prov = str(crit.get("provider") or "all").lower()
+        if prov in ("claude", "chatgpt"):
+            where.append("c.provider = ?"); params.append(prov)
+
+        self._bulk_date_clause(where, params, "c.create_time", crit.get("started"))
+        self._bulk_date_clause(where, params, "c.update_time", crit.get("ended"))
+
+        label = str(crit.get("label") or "any")
+        if label == "blank":
+            where.append("c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels)")
+        elif label != "any":
+            if re.fullmatch(r"[0-9a-f]{32}", label):
+                where.append("c.id IN (SELECT conversation_id FROM udb.conversation_labels "
+                             "WHERE label_id = ?)"); params.append(label)
+            else:
+                where.append("0")
+
+        folder = str(crit.get("folder") or "any")
+        if folder == "none":
+            where.append("c.id NOT IN (SELECT conversation_id FROM udb.folder_items)")
+        elif folder != "any":
+            if re.fullmatch(r"[0-9a-f]{32}", folder):
+                where.append("c.id IN (SELECT conversation_id FROM udb.folder_items "
+                             "WHERE folder_id = ?)"); params.append(folder)
+            else:
+                where.append("0")
+
+        tag = str(crit.get("tag") or "").strip()
+        if tag:
+            where.append("c.id IN (SELECT conversation_id FROM udb.conversation_tags "
+                         "WHERE tag = ?)"); params.append(tag)
+
+        # Keyword reuses the same FTS-then-LIKE behaviour as the main search so
+        # there is only one search implementation. len<3 or an FTS parse error
+        # falls back to a title/tag LIKE (see _bulk_run's retry).
+        q = str(crit.get("keyword") or "").strip()
+        if q:
+            like = f"%{q}%"
+            if use_fts and len(q) >= 3:
+                where.append(
+                    "c.id IN ("
+                    "SELECT conversation_id FROM search_index WHERE search_index MATCH ? "
+                    "UNION SELECT c2.id FROM conversations c2 "
+                    "  LEFT JOIN conversation_meta cm2 ON cm2.conversation_id = c2.id "
+                    "  WHERE COALESCE(cm2.deleted,0)=0 "
+                    "    AND COALESCE(NULLIF(cm2.custom_title,''), c2.title) LIKE ? "
+                    "UNION SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?)"
+                )
+                params += [q, like, like]
+            else:
+                where.append(
+                    "(COALESCE(NULLIF(cm.custom_title,''), c.title) LIKE ? "
+                    "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?))"
+                )
+                params += [like, like]
+
+        # Skip-no-op: narrow to rows the target would actually change.
+        if noop_target != "__none__":
+            if noop_target is None:
+                where.append(
+                    "c.id IN (SELECT conversation_id FROM udb.conversation_labels)"
+                )
+            else:
+                where.append(
+                    "c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels "
+                    "WHERE label_id = ?)"
+                )
+                params.append(noop_target)
+
+        col, direction = {
+            "started_asc":  ("c.create_time", "ASC"),
+            "started_desc": ("c.create_time", "DESC"),
+            "updated_asc":  ("c.update_time", "ASC"),
+            "updated_desc": ("c.update_time", "DESC"),
+        }.get(str(crit.get("order") or "started_asc"), ("c.create_time", "ASC"))
+        # Stable id tie-breaker makes batches deterministic when timestamps tie.
+        order_sql = f"ORDER BY {col} {direction}, c.id ASC"
+
+        limit_n = None
+        lim = crit.get("limit") or {}
+        if isinstance(lim, dict) and lim.get("mode") == "first":
+            try:
+                n = int(lim.get("n"))
+                if n > 0:
+                    limit_n = n
+            except Exception:
+                pass
+        return " AND ".join(where), params, order_sql, limit_n
+
+    def _bulk_select(self, conn, crit, target_label_id):
+        """Resolve the criteria against the target into:
+          eligible    — conversations matching the conditions (ignores target),
+          not_already  — of those, how many aren't already at the target,
+          batch_ids    — the first-N (or all) of `not_already`, in order,
+          limit_n      — the first-N limit, or None for "all".
+        These are exactly the rows Apply will change. Retries once without FTS if
+        the keyword makes SQLite's MATCH raise."""
+        FROM = ("FROM conversations c "
+                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id WHERE ")
+        last_err = None
+        for use_fts in (True, False):
+            try:
+                # Everything matching the conditions (no target exclusion).
+                w0, p0, _order0, _lim0 = self._build_bulk_query(crit, use_fts)
+                eligible = conn.execute("SELECT COUNT(*) " + FROM + w0, p0).fetchone()[0]
+                # Matching AND not already at the target — the changeable set.
+                w1, p1, order_sql, limit_n = self._build_bulk_query(
+                    crit, use_fts, noop_target=target_label_id
+                )
+                not_already = conn.execute(
+                    "SELECT COUNT(*) " + FROM + w1, p1
+                ).fetchone()[0]
+                sql = "SELECT c.id " + FROM + w1 + " " + order_sql
+                p2 = list(p1)
+                if limit_n is not None:
+                    sql += " LIMIT ?"; p2.append(limit_n)
+                batch_ids = [r[0] for r in conn.execute(sql, p2).fetchall()]
+                return {
+                    "eligible": eligible, "not_already": not_already,
+                    "batch_ids": batch_ids, "limit_n": limit_n,
+                }
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if use_fts:
+                    continue
+                raise
+        raise last_err
+
+    def _bulk_target(self, conn, crit):
+        """(label_id|None, name|None) for the Set-Label-To target; None if the
+        target names a label that does not exist. Blank clears the label."""
+        t = str(crit.get("target") or "blank")
+        if t in ("blank", "", "none"):
+            return (None, None)
+        if not re.fullmatch(r"[0-9a-f]{32}", t):
+            return None
+        row = conn.execute("SELECT name FROM udb.labels WHERE id = ?", (t,)).fetchone()
+        if not row:
+            return None
+        return (t, row["name"])
+
+    def _bulk_write(self, conn, ids, target_label_id):
+        """Apply the target to `ids` — every id is a genuine change because the
+        no-op rows were already excluded by _bulk_select. IN clauses / executemany
+        are chunked to stay under SQLite's variable limit. The caller owns the
+        transaction (commit / rollback)."""
+        if not ids:
+            return
+        CH = 400
+        if target_label_id:
+            now = time.time()
+            for i in range(0, len(ids), CH):
+                conn.executemany(
+                    "INSERT INTO udb.conversation_labels(conversation_id, label_id, assigned_at) "
+                    "VALUES (?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET "
+                    "label_id = excluded.label_id, assigned_at = excluded.assigned_at",
+                    [(cid, target_label_id, now) for cid in ids[i:i + CH]],
+                )
+        else:
+            for i in range(0, len(ids), CH):
+                chunk = ids[i:i + CH]
+                marks = ",".join("?" * len(chunk))
+                conn.execute(
+                    f"DELETE FROM udb.conversation_labels WHERE conversation_id IN ({marks})",
+                    tuple(chunk),
+                )
+
+    @staticmethod
+    def _bulk_fmt_day(s):
+        """YYYY-MM-DD → 'Apr 1' for the readable history summary."""
+        try:
+            y, m, d = (int(x) for x in str(s).split("-"))
+            return f"{datetime.date(y, m, d):%b} {d}"
+        except Exception:
+            return str(s)
+
+    def _bulk_describe(self, conn, crit):
+        """The execution-time, human-readable filter+order summary stored with a
+        bulk operation. Resolves label/folder ids to their *current* names and
+        stores the text, so the history row stays readable even if a label is
+        later renamed or deleted (it is never re-rendered from live ids)."""
+        parts = []
+        prov = str(crit.get("provider") or "all").lower()
+        parts.append({"claude": "Claude", "chatgpt": "ChatGPT"}.get(prov, "All providers"))
+
+        def dpart(spec, name):
+            if not isinstance(spec, dict):
+                return None
+            op = str(spec.get("op") or "any").lower()
+            if op == "before" and spec.get("date"):
+                return f"{name} before {self._bulk_fmt_day(spec['date'])}"
+            if op == "after" and spec.get("date"):
+                return f"{name} after {self._bulk_fmt_day(spec['date'])}"
+            if op == "between" and spec.get("date") and spec.get("date2"):
+                return (f"{name} {self._bulk_fmt_day(spec['date'])}"
+                        f"–{self._bulk_fmt_day(spec['date2'])}")
+            return None
+
+        for p in (dpart(crit.get("started"), "Started"), dpart(crit.get("ended"), "Updated")):
+            if p:
+                parts.append(p)
+
+        label = str(crit.get("label") or "any")
+        if label == "blank":
+            parts.append("Blank")
+        elif label != "any":
+            r = conn.execute("SELECT name FROM udb.labels WHERE id = ?", (label,)).fetchone()
+            parts.append(f"Label: {r['name'] if r else 'unknown'}")
+
+        folder = str(crit.get("folder") or "any")
+        if folder == "none":
+            parts.append("No folder")
+        elif folder != "any":
+            r = conn.execute("SELECT name FROM udb.folders WHERE id = ?", (folder,)).fetchone()
+            parts.append(f"Folder: {r['name'] if r else 'unknown'}")
+
+        tag = str(crit.get("tag") or "").strip()
+        if tag:
+            parts.append(f"Tag: {tag}")
+        kw = str(crit.get("keyword") or "").strip()
+        if kw:
+            parts.append(f"“{kw}”")
+
+        parts.append({
+            "started_asc": "Started oldest first", "started_desc": "Started newest first",
+            "updated_asc": "Updated oldest first", "updated_desc": "Updated newest first",
+        }.get(str(crit.get("order") or "started_asc"), "Started oldest first"))
+        return " · ".join(parts)
+
+    # Recent Bulk Changes: how many rows to keep/show. Default 5, user-adjustable.
+    _BULK_HISTORY_DEFAULT = 5
+
+    def _bulk_retention(self, conn):
+        """The Recent-Bulk-Changes retention count (clamped 0..50)."""
+        n = self._BULK_HISTORY_DEFAULT
+        try:
+            row = conn.execute(
+                "SELECT pref_value FROM ui_preferences WHERE pref_key = 'bulkHistoryRetention'"
+            ).fetchone()
+            if row and row[0] is not None:
+                try:
+                    n = int(json.loads(row[0]))
+                except Exception:
+                    n = int(row[0])
+        except (sqlite3.Error, ValueError, TypeError):
+            n = self._BULK_HISTORY_DEFAULT
+        return max(0, min(50, n))
+
+    def _prune_bulk_history(self, conn, n):
+        """Keep only the newest `n` history rows, dropping the oldest excess."""
+        conn.execute(
+            "DELETE FROM udb.label_bulk_history WHERE id NOT IN ("
+            "SELECT id FROM udb.label_bulk_history "
+            "ORDER BY created_at DESC, id DESC LIMIT ?)",
+            (max(0, int(n)),),
+        )
+
+    def _bulk_history_rows(self, conn, n):
+        rows = conn.execute(
+            "SELECT id, created_at, criteria_json, description, target_label_id, "
+            "target_label_name, limit_used, order_json, eligible_count, changed_count "
+            "FROM udb.label_bulk_history ORDER BY created_at DESC, id DESC LIMIT ?",
+            (max(0, int(n)),),
+        ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                crit = json.loads(r["criteria_json"] or "{}")
+            except Exception:
+                crit = {}
+            out.append({
+                "id": r["id"], "created_at": r["created_at"],
+                "description": r["description"],
+                "target_label_id": r["target_label_id"],
+                "target_label_name": r["target_label_name"],
+                "limit_used": r["limit_used"],
+                "eligible_count": r["eligible_count"],
+                "changed_count": r["changed_count"],
+                "criteria": crit,
+            })
+        return out
+
+    def _api_bulk_preview(self):
+        """Count only — never mutates. Reports the three numbers the UI shows:
+        matching, not-already-at-target, and how many this run would change."""
+        crit = self._read_json_body()
+        conn = open_db(self.db_path)
+        try:
+            target = self._bulk_target(conn, crit)
+            if target is None:
+                self.send_json({"error": "Unknown target label"}, 404); return
+            target_label_id, target_name = target
+            try:
+                sel = self._bulk_select(conn, crit, target_label_id)
+            except sqlite3.Error:
+                self.send_json({"error": "Could not evaluate the criteria"}, 400); return
+            self.send_json({
+                "eligible": sel["eligible"],
+                "not_already": sel["not_already"],
+                "will_change": len(sel["batch_ids"]),
+                "limit_n": sel["limit_n"],
+                "target_label_id": target_label_id,
+                "target_label_name": target_name,
+                "target_blank": target_label_id is None,
+            })
+        finally:
+            conn.close()
+
+    def _api_bulk_apply(self):
+        """Mutate only here, transactionally: the whole batch writes or nothing
+        does. Records one Recent-Bulk-Changes entry and prunes to retention."""
+        crit = self._read_json_body()
+        conn = open_db(self.db_path)
+        try:
+            target = self._bulk_target(conn, crit)
+            if target is None:
+                self.send_json({"error": "Unknown target label"}, 404); return
+            target_label_id, target_name = target
+            try:
+                sel = self._bulk_select(conn, crit, target_label_id)
+            except sqlite3.Error:
+                self.send_json({"error": "Could not evaluate the criteria"}, 400); return
+            ids = sel["batch_ids"]
+            changed = len(ids)
+            desc = self._bulk_describe(conn, crit)
+            hid = uuid.uuid4().hex
+            try:
+                self._bulk_write(conn, ids, target_label_id)
+                conn.execute(
+                    "INSERT INTO udb.label_bulk_history(id, created_at, criteria_json, description, "
+                    "target_label_id, target_label_name, limit_used, order_json, "
+                    "eligible_count, changed_count) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (hid, time.time(), json.dumps(crit, ensure_ascii=False), desc,
+                     target_label_id, target_name, sel["limit_n"],
+                     json.dumps(crit.get("order") or "started_asc"),
+                     sel["eligible"], changed),
+                )
+                self._prune_bulk_history(conn, self._bulk_retention(conn))
+                conn.commit()
+            except sqlite3.Error:
+                conn.rollback()
+                self.send_json({"error": "The operation failed and was rolled back"}, 500)
+                return
+            self.send_json({
+                "eligible": sel["eligible"], "not_already": sel["not_already"],
+                "changed": changed, "history_id": hid, "description": desc,
+            })
+        finally:
+            conn.close()
+
+    def _api_bulk_history(self):
+        conn = open_db(self.db_path)
+        try:
+            n = self._bulk_retention(conn)
+            self.send_json({"history": self._bulk_history_rows(conn, n), "retention": n})
+        finally:
+            conn.close()
+
+    def _api_bulk_retention_set(self):
+        """Set the retention count and prune immediately (reducing it drops the
+        oldest excess rows). Returns the updated history + retention."""
+        payload = self._read_json_body()
+        try:
+            n = int(payload.get("retention"))
+        except (TypeError, ValueError):
+            self.send_json({"error": "retention must be an integer"}, 400); return
+        n = max(0, min(50, n))
+        conn = open_db(self.db_path)
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO ui_preferences(pref_key, pref_value) "
+                "VALUES ('bulkHistoryRetention', ?)",
+                (json.dumps(n),),
+            )
+            self._prune_bulk_history(conn, n)
+            conn.commit()
+            self.send_json({"history": self._bulk_history_rows(conn, n), "retention": n})
+        finally:
+            conn.close()
+
+    # ── Manual safety snapshots ──────────────────────────────────────────────
+    # A snapshot captures only user-owned mutable metadata (labels, folders,
+    # tags, titles, archive/delete state, pins) — never message content. They
+    # are created only by an explicit button press (never automatically), capped
+    # at 10, and deleted only by the user. Restore is transactional and skips —
+    # rather than inventing — conversations a snapshot references that no longer
+    # resolve. The payload is versioned so future categories can be added.
+
+    SNAPSHOT_SCHEMA_VERSION = 1
+    SNAPSHOT_MAX = 10
+    # The restorable categories, in display order, with human-readable names.
+    SNAPSHOT_CATEGORIES = [
+        ("labels", "Labels"),
+        ("folders", "Folders"),
+        ("tags", "Tags"),
+        ("titles", "Titles"),
+        ("meta_state", "Archive/Delete state"),
+        ("pins", "Pins"),
+    ]
+
+    def _capture_snapshot(self, conn):
+        """Gather the mutable-metadata payload and a per-category count map."""
+        def rows(sql):
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+        label_defs = rows("SELECT id, name, color, sort_index, created_at, updated_at FROM udb.labels")
+        label_asg = rows("SELECT conversation_id, label_id, assigned_at FROM udb.conversation_labels")
+        folder_defs = rows("SELECT id, name, created_at, updated_at, provider FROM udb.folders")
+        folder_mem = rows("SELECT conversation_id, folder_id, added_at, pinned FROM udb.folder_items")
+        tags = rows("SELECT conversation_id, tag, added_at FROM udb.conversation_tags")
+        titles = rows("SELECT conversation_id, custom_title FROM conversation_meta "
+                      "WHERE custom_title IS NOT NULL AND custom_title <> ''")
+        meta_state = rows("SELECT conversation_id, archived, deleted FROM conversation_meta "
+                          "WHERE COALESCE(archived,0)=1 OR COALESCE(deleted,0)=1")
+        pins = rows("SELECT conversation_id, pinned_at, order_index FROM pinned_conversations")
+        data = {
+            "labels": {"definitions": label_defs, "assignments": label_asg},
+            "folders": {"definitions": folder_defs, "memberships": folder_mem},
+            "tags": tags,
+            "titles": titles,
+            "meta_state": meta_state,
+            "pins": pins,
+        }
+        counts = {
+            "labels": len(label_defs), "label_assignments": len(label_asg),
+            "folders": len(folder_defs), "folder_items": len(folder_mem),
+            "tags": len(tags), "titles": len(titles),
+            "meta_state": len(meta_state), "pins": len(pins),
+        }
+        return data, counts
+
+    def _snapshot_list(self, conn):
+        rows = conn.execute(
+            "SELECT id, name, created_at, schema_version, item_count, payload_size, summary "
+            "FROM udb.snapshots ORDER BY created_at DESC, id DESC"
+        ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                summary = json.loads(r["summary"] or "{}")
+            except Exception:
+                summary = {}
+            out.append({
+                "id": r["id"], "name": r["name"], "created_at": r["created_at"],
+                "schema_version": r["schema_version"], "item_count": r["item_count"],
+                "payload_size": r["payload_size"], "summary": summary,
+            })
+        return out
+
+    def _api_snapshot_list(self):
+        conn = open_db(self.db_path)
+        try:
+            self.send_json({"snapshots": self._snapshot_list(conn), "max": self.SNAPSHOT_MAX})
+        finally:
+            conn.close()
+
+    def _api_snapshot_create(self):
+        payload_in = self._read_json_body()
+        name = str(payload_in.get("name") or "").strip()[:120]
+        conn = open_db(self.db_path)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM udb.snapshots").fetchone()[0]
+            if count >= self.SNAPSHOT_MAX:
+                # Never auto-delete the oldest; the user must make room.
+                self.send_json({
+                    "error": f"Maximum of {self.SNAPSHOT_MAX} snapshots reached. "
+                             "Delete a snapshot before creating another.",
+                }, 409)
+                return
+            data, counts = self._capture_snapshot(conn)
+            blob = json.dumps(
+                {"version": self.SNAPSHOT_SCHEMA_VERSION, "categories": counts, "data": data},
+                ensure_ascii=False,
+            )
+            if not name:
+                name = "Snapshot " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            sid = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO udb.snapshots(id, name, created_at, schema_version, payload, "
+                "item_count, payload_size, summary) VALUES (?,?,?,?,?,?,?,?)",
+                (sid, name, time.time(), self.SNAPSHOT_SCHEMA_VERSION, blob,
+                 sum(counts.values()), len(blob.encode("utf-8")),
+                 json.dumps(counts, ensure_ascii=False)),
+            )
+            conn.commit()
+            self.send_json({"snapshots": self._snapshot_list(conn), "max": self.SNAPSHOT_MAX})
+        finally:
+            conn.close()
+
+    def _api_snapshot_delete(self, sid):
+        sid = (sid or "").strip()
+        conn = open_db(self.db_path)
+        try:
+            conn.execute("DELETE FROM udb.snapshots WHERE id = ?", (sid,))
+            conn.commit()
+            self.send_json({"snapshots": self._snapshot_list(conn), "max": self.SNAPSHOT_MAX})
+        finally:
+            conn.close()
+
+    def _restore_categories(self, conn, data, selected):
+        """Return each selected category to its recorded state. A conversation
+        the snapshot references that no longer exists is skipped (counted), never
+        recreated. Caller owns the transaction."""
+        valid = {r[0] for r in conn.execute("SELECT id FROM conversations").fetchall()}
+        skipped = 0
+
+        if "labels" in selected:
+            conn.execute("DELETE FROM udb.conversation_labels")
+            conn.execute("DELETE FROM udb.labels")
+            def_ids = set()
+            for d in (data.get("labels") or {}).get("definitions") or []:
+                conn.execute(
+                    "INSERT INTO udb.labels(id, name, color, sort_index, created_at, updated_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (d.get("id"), d.get("name"), d.get("color"), d.get("sort_index") or 0,
+                     d.get("created_at"), d.get("updated_at")),
+                )
+                def_ids.add(d.get("id"))
+            for a in (data.get("labels") or {}).get("assignments") or []:
+                if a.get("conversation_id") not in valid or a.get("label_id") not in def_ids:
+                    skipped += 1; continue
+                conn.execute(
+                    "INSERT OR REPLACE INTO udb.conversation_labels(conversation_id, label_id, assigned_at) "
+                    "VALUES (?,?,?)",
+                    (a["conversation_id"], a["label_id"], a.get("assigned_at")),
+                )
+
+        if "folders" in selected:
+            conn.execute("DELETE FROM udb.folder_items")
+            conn.execute("DELETE FROM udb.folders")
+            fids = set()
+            for f in (data.get("folders") or {}).get("definitions") or []:
+                conn.execute(
+                    "INSERT INTO udb.folders(id, name, created_at, updated_at, provider) "
+                    "VALUES (?,?,?,?,?)",
+                    (f.get("id"), f.get("name"), f.get("created_at"), f.get("updated_at"),
+                     f.get("provider")),
+                )
+                fids.add(f.get("id"))
+            for m in (data.get("folders") or {}).get("memberships") or []:
+                if m.get("conversation_id") not in valid or m.get("folder_id") not in fids:
+                    skipped += 1; continue
+                conn.execute(
+                    "INSERT OR REPLACE INTO udb.folder_items(conversation_id, folder_id, added_at, pinned) "
+                    "VALUES (?,?,?,?)",
+                    (m["conversation_id"], m["folder_id"], m.get("added_at"), m.get("pinned") or 0),
+                )
+
+        if "tags" in selected:
+            conn.execute("DELETE FROM udb.conversation_tags")
+            for t in data.get("tags") or []:
+                if t.get("conversation_id") not in valid:
+                    skipped += 1; continue
+                conn.execute(
+                    "INSERT OR REPLACE INTO udb.conversation_tags(conversation_id, tag, added_at) "
+                    "VALUES (?,?,?)",
+                    (t["conversation_id"], t["tag"], t.get("added_at")),
+                )
+
+        if "titles" in selected:
+            # Reset every custom title, then reapply the recorded ones — so titles
+            # set after the snapshot are reverted too. Touches only custom_title.
+            conn.execute("UPDATE conversation_meta SET custom_title = NULL")
+            for ti in data.get("titles") or []:
+                cid = ti.get("conversation_id")
+                if cid not in valid:
+                    skipped += 1; continue
+                conn.execute(
+                    "INSERT INTO conversation_meta(conversation_id, custom_title, archived, deleted) "
+                    "VALUES (?,?,0,0) ON CONFLICT(conversation_id) DO UPDATE SET "
+                    "custom_title = excluded.custom_title",
+                    (cid, ti.get("custom_title")),
+                )
+
+        if "meta_state" in selected:
+            # Reset archive/delete everywhere, then reapply recorded flags. Touches
+            # only archived/deleted, never custom_title.
+            conn.execute("UPDATE conversation_meta SET archived = 0, deleted = 0")
+            for ms in data.get("meta_state") or []:
+                cid = ms.get("conversation_id")
+                if cid not in valid:
+                    skipped += 1; continue
+                conn.execute(
+                    "INSERT INTO conversation_meta(conversation_id, custom_title, archived, deleted) "
+                    "VALUES (?, NULL, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET "
+                    "archived = excluded.archived, deleted = excluded.deleted",
+                    (cid, int(bool(ms.get("archived"))), int(bool(ms.get("deleted")))),
+                )
+
+        if "pins" in selected:
+            conn.execute("DELETE FROM pinned_conversations")
+            for p in data.get("pins") or []:
+                cid = p.get("conversation_id")
+                if cid not in valid:
+                    skipped += 1; continue
+                conn.execute(
+                    "INSERT OR REPLACE INTO pinned_conversations(conversation_id, pinned_at, order_index) "
+                    "VALUES (?,?,?)",
+                    (cid, p.get("pinned_at"), p.get("order_index")),
+                )
+
+        return skipped
+
+    def _api_snapshot_restore(self, sid):
+        sid = (sid or "").strip()
+        body = self._read_json_body()
+        valid_cats = {k for k, _ in self.SNAPSHOT_CATEGORIES}
+        req = body.get("categories")
+        if isinstance(req, list):
+            selected = [c for c in req if c in valid_cats]
+        else:
+            selected = list(valid_cats)  # default: all supported categories
+        if not selected:
+            self.send_json({"error": "Select at least one category to restore."}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT payload, schema_version FROM udb.snapshots WHERE id = ?", (sid,)
+            ).fetchone()
+            if not row:
+                self.send_json({"error": "Unknown snapshot"}, 404); return
+            try:
+                parsed = json.loads(row["payload"] or "{}")
+            except Exception:
+                self.send_json({"error": "Snapshot payload is corrupt"}, 400); return
+            if int(parsed.get("version") or row["schema_version"] or 0) != self.SNAPSHOT_SCHEMA_VERSION:
+                self.send_json({"error": "Snapshot schema version is not supported"}, 400); return
+            data = parsed.get("data") or {}
+            try:
+                skipped = self._restore_categories(conn, data, selected)
+                conn.commit()
+            except sqlite3.Error:
+                conn.rollback()
+                self.send_json({"error": "The restore failed and was rolled back"}, 500)
+                return
+            self.send_json({"ok": True, "skipped": skipped, "restored": selected})
         finally:
             conn.close()
 

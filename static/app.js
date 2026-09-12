@@ -29,7 +29,13 @@ const state = {
     sidebarWidth: 300,
     conversationView: "recent",
     searchHistory: [],
+    // Conversation labels feature. Off by default; when off no label control
+    // renders anywhere, but the underlying label data is left untouched.
+    labelsEnabled: false,
+    labelDisplay: "square", // "square" | "square_label"
   },
+  labelRows: [], // label definitions (shared by the Labels screen and squares)
+  activeLabel: null, // the open conversation's current label ({id,name,color}|null)
   scrollByConversation: {},
   // Which side the sidebar toggle shows: "claude" or "chatgpt". Persisted so
   // reopening the app returns to the side last viewed.
@@ -117,6 +123,7 @@ const modelReloadBtn = $("model-reload-btn");
 const importAuditContent = $("import-audit-content");
 const importNewPanel = $("import-new-panel");
 const settingsPanel = $("settings-panel");
+const labelsPanel = $("labels-panel");
 const artifactPanel = $("artifact-panel");
 const artifactPanelTitle = $("artifact-panel-title");
 const artifactPanelBody = $("artifact-panel-body");
@@ -1285,6 +1292,18 @@ function openConvItemMenu(c, anchorBtn) {
     menu.appendChild(b);
   }
 
+  // Direct label selection (Blank + configured labels) so someone with several
+  // labels need not click-cycle repeatedly. Only when the feature is on.
+  if (labelsFeatureOn()) {
+    appendSetLabelToMenu(
+      menu,
+      c.id,
+      c.label ? c.label.id : null,
+      "sidebar-menu-item",
+      () => closeConvItemMenu(),
+    );
+  }
+
   document.body.appendChild(menu);
   _convMenuEl = menu;
   // Position under the button, right-aligned, kept on screen.
@@ -1341,6 +1360,12 @@ function appendListItems(convs, targetEl = convList) {
     const top = document.createElement("div");
     top.className = "conv-top-row";
     top.innerHTML = `<div class="conv-title">${warningIconsHtml(c)}${escHtml(c.title)}</div>`;
+    // Compact label square, immediately before the title. Only when the feature
+    // is on; it rides on the title's text line so the row keeps its height.
+    if (labelsFeatureOn()) {
+      const titleEl = top.querySelector(".conv-title");
+      titleEl.insertBefore(labelIndicatorEl(c.id, c.label || null), titleEl.firstChild);
+    }
     // Recycle Bin rows carry an always-visible checkbox beside the title. Its
     // presence depends only on the view, never on which action is selected.
     if (state.view === "deleted") {
@@ -1516,7 +1541,7 @@ function updateListSectionTitle() {
   if (!listSectionTitle) return;
   listSectionTitle.textContent = state.q
     ? "Search results"
-    : VIEW_LABELS[state.view] || "Recent";
+    : labelViewTitle(state.view) || VIEW_LABELS[state.view] || "Recent";
 }
 
 // The conversation-count row. In the Recycle Bin it also shows the current
@@ -1566,6 +1591,9 @@ async function loadUiPreferences() {
   state.preferences.searchHistory = Array.isArray(p.searchHistory)
     ? p.searchHistory.slice(0, 20)
     : [];
+  state.preferences.labelsEnabled = Boolean(p.labelsEnabled);
+  state.preferences.labelDisplay =
+    p.labelDisplay === "square_label" ? "square_label" : "square";
   state.scrollByConversation =
     p.scrollByConversation && typeof p.scrollByConversation === "object"
       ? p.scrollByConversation
@@ -1895,6 +1923,7 @@ async function activateActiveTab() {
   if (state.activeSpecialView === "attachment_report")
     return openAttReport(false, false);
   if (state.activeSpecialView === "claude_models") return openClaudeModels();
+  if (state.activeSpecialView === "labels") return openLabels();
   if (state.activeSpecialView === "import_audit") return openImportAudit(false);
   if (state.activeSpecialView === "import_new") return openImportNew();
   if (state.activeSpecialView === "settings") return openSettings();
@@ -1959,6 +1988,7 @@ function hideAllPanels() {
   importNewPanel.hidden = true;
   settingsPanel.hidden = true;
   claudeModelsPanel.hidden = true;
+  labelsPanel.hidden = true;
   closeArtifactPanel();
   closeFilePanel();
   clearSearchNav();
@@ -2107,6 +2137,8 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   thread.hidden = false;
   messagesEl.innerHTML = '<div class="loading">Loading…</div>';
   setThreadTitle("");
+  renderHeaderLabel(null, null);
+  state.activeLabel = null;
   threadMeta.textContent = "";
   threadTags.innerHTML = "";
 
@@ -2126,6 +2158,8 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   state.activeFolderPinned = !!conv.folder_pinned;
 
   setThreadTitle(conv.title);
+  state.activeLabel = conv.label || null;
+  renderHeaderLabel(conv.id, state.activeLabel);
   const ts = formatDate(conv.update_time || conv.create_time);
   threadMeta.textContent = "";
   const metaText = document.createElement("span");
@@ -2429,7 +2463,10 @@ viewFilterEl?.addEventListener("change", () => {
   syncPinnedSectionVisibility();
   syncRecycleControls();
   updateListSectionTitle();
-  saveUiPreferences({ conversationView: state.view });
+  // Label views are session-scoped; only base views are remembered across reloads.
+  if (!String(state.view).startsWith("label:")) {
+    saveUiPreferences({ conversationView: state.view });
+  }
   loadConversations(false);
 });
 
@@ -3731,6 +3768,1192 @@ $("compare-color-reset")?.addEventListener("click", () => {
   saveCompareColors();
 });
 
+// ── Labels screen ─────────────────────────────────────────────────────────────
+// Configure user-defined conversation labels: the on/off + display settings,
+// and the label definitions (add / rename / recolour / reorder / delete). Label
+// assignment on conversations and the bulk/snapshot tools arrive in later phases.
+
+const labelsEnabledToggle = $("labels-enabled-toggle");
+const labelsDisplaySelect = $("labels-display-select");
+const labelAddForm = $("label-add-form");
+const labelAddName = $("label-add-name");
+const labelAddColor = $("label-add-color");
+const labelAddError = $("label-add-error");
+const labelListEl = $("label-list");
+const bulkResultEl = $("bulk-result");
+const bulkErrorEl = $("bulk-error");
+const bulkPreviewBtn = $("bulk-preview-btn");
+const bulkApplyBtn = $("bulk-apply-btn");
+const bulkHistoryList = $("bulk-history-list");
+const bulkRetentionInput = $("bulk-retention");
+const snapshotNameInput = $("snapshot-name");
+const snapshotCreateBtn = $("snapshot-create-btn");
+const snapshotErrorEl = $("snapshot-error");
+const snapshotTableBody = $("snapshot-table-body");
+
+async function openLabels() {
+  rememberReturnTab();
+  state.activeSpecialView = "labels";
+  state.activeTabId = null;
+  document
+    .querySelectorAll(".conv-item.active")
+    .forEach((el) => el.classList.remove("active"));
+  state.activeId = null;
+  await ensureSpecialTab("labels", "Labels");
+  hideAllPanels();
+  labelsPanel.hidden = false;
+  // Reflect the current feature settings into the controls.
+  if (labelsEnabledToggle)
+    labelsEnabledToggle.checked = Boolean(state.preferences.labelsEnabled);
+  if (labelsDisplaySelect)
+    labelsDisplaySelect.value =
+      state.preferences.labelDisplay === "square_label"
+        ? "square_label"
+        : "square";
+  await refreshLabelList();
+  await populateBulkForm();
+  loadBulkHistory();
+  loadSnapshots();
+}
+
+function showLabelError(msg) {
+  if (!labelAddError) return;
+  labelAddError.textContent = msg || "";
+  labelAddError.hidden = !msg;
+}
+
+async function refreshLabelList() {
+  try {
+    const data = await apiModelState("/api/labels");
+    state.labelRows = data.labels || [];
+  } catch {
+    labelListEl.innerHTML =
+      '<li class="label-list-empty">Could not load labels.</li>';
+    return;
+  }
+  renderLabelList();
+}
+
+function renderLabelList() {
+  labelListEl.innerHTML = "";
+  if (!state.labelRows.length) {
+    labelListEl.innerHTML =
+      '<li class="label-list-empty">No labels yet. Add one above.</li>';
+    return;
+  }
+  state.labelRows.forEach((label, i) => {
+    const li = document.createElement("li");
+    li.className = "label-row";
+    li.dataset.id = label.id;
+
+    const color = document.createElement("input");
+    color.type = "color";
+    color.className = "label-row-color";
+    color.value = _validHexColor(label.color) ? label.color : "#888888";
+    color.title = "Change colour";
+    color.setAttribute("aria-label", `Colour for ${label.name}`);
+    color.addEventListener("change", () =>
+      saveLabel(label, { color: color.value }, color),
+    );
+
+    const name = document.createElement("input");
+    name.type = "text";
+    name.className = "label-row-name";
+    name.value = label.name;
+    name.spellcheck = false;
+    name.maxLength = 60;
+    name.setAttribute("aria-label", "Label name");
+    const commitName = () => {
+      const next = name.value.trim();
+      if (next === label.name) return;
+      if (!next) {
+        name.value = label.name;
+        return;
+      }
+      saveLabel(label, { name: next }, name);
+    };
+    name.addEventListener("blur", commitName);
+    name.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") name.blur();
+      else if (e.key === "Escape") {
+        name.value = label.name;
+        name.blur();
+      }
+    });
+
+    const count = document.createElement("span");
+    count.className = "label-row-count";
+    count.textContent = `${label.count} conv${label.count === 1 ? "" : "s"}`;
+
+    const up = document.createElement("button");
+    up.type = "button";
+    up.className = "label-row-btn";
+    up.textContent = "↑";
+    up.title = "Move up";
+    up.setAttribute("aria-label", `Move ${label.name} up`);
+    up.disabled = i === 0;
+    up.addEventListener("click", () => moveLabel(i, -1));
+
+    const down = document.createElement("button");
+    down.type = "button";
+    down.className = "label-row-btn";
+    down.textContent = "↓";
+    down.title = "Move down";
+    down.setAttribute("aria-label", `Move ${label.name} down`);
+    down.disabled = i === state.labelRows.length - 1;
+    down.addEventListener("click", () => moveLabel(i, 1));
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "label-row-btn label-row-delete";
+    del.textContent = "✕";
+    del.title = `Delete ${label.name}`;
+    del.setAttribute("aria-label", `Delete ${label.name}`);
+    del.addEventListener("click", () => deleteLabel(label));
+
+    li.append(color, name, count, up, down, del);
+    labelListEl.appendChild(li);
+  });
+}
+
+async function saveLabel(label, patch, inputEl) {
+  showLabelError("");
+  try {
+    const data = await apiModelState(`/api/labels/${encodeURIComponent(label.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    state.labelRows = data.labels || [];
+    renderLabelList();
+    onLabelDefsChanged();
+  } catch (e) {
+    // Put the rejected value back.
+    if (inputEl && "name" in patch) inputEl.value = label.name;
+    if (inputEl && "color" in patch)
+      inputEl.value = _validHexColor(label.color) ? label.color : "#888888";
+    showLabelError(e.message);
+  }
+}
+
+async function moveLabel(index, delta) {
+  const target = index + delta;
+  if (target < 0 || target >= state.labelRows.length) return;
+  const ids = state.labelRows.map((l) => l.id);
+  [ids[index], ids[target]] = [ids[target], ids[index]];
+  showLabelError("");
+  try {
+    const data = await apiModelState("/api/labels/reorder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order: ids }),
+    });
+    state.labelRows = data.labels || [];
+    renderLabelList();
+    onLabelDefsChanged();
+  } catch (e) {
+    showLabelError(e.message);
+  }
+}
+
+async function deleteLabel(label) {
+  const used = label.count > 0;
+  const msg = used
+    ? `Delete the label “${label.name}”? ${label.count} conversation${
+        label.count === 1 ? "" : "s"
+      } currently use it and will be cleared back to blank.`
+    : `Delete the label “${label.name}”?`;
+  const ok = await openConfirm({
+    title: "Delete label?",
+    text: msg,
+    okLabel: "Delete label",
+  });
+  if (!ok) return;
+  showLabelError("");
+  try {
+    const data = await apiModelState(`/api/labels/${encodeURIComponent(label.id)}`, {
+      method: "DELETE",
+    });
+    state.labelRows = data.labels || [];
+    renderLabelList();
+    onLabelDefsChanged();
+  } catch (e) {
+    showLabelError(e.message);
+  }
+}
+
+labelAddForm?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  showLabelError("");
+  const name = labelAddName.value.trim();
+  if (!name) {
+    showLabelError("Enter a name for the label.");
+    return;
+  }
+  try {
+    const data = await apiModelState("/api/labels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, color: labelAddColor.value }),
+    });
+    state.labelRows = data.labels || [];
+    renderLabelList();
+    onLabelDefsChanged();
+    labelAddName.value = "";
+    labelAddName.focus();
+  } catch (err) {
+    showLabelError(err.message);
+  }
+});
+
+labelsEnabledToggle?.addEventListener("change", async () => {
+  await saveUiPreferences({ labelsEnabled: labelsEnabledToggle.checked });
+  // Make sure the definitions are loaded, then bring the whole UI in line:
+  // filter options, sidebar squares, and the open conversation's header.
+  await loadLabelDefs();
+  syncLabelFilterOptions();
+  loadConversations(false);
+  loadFolders(); // show/hide squares in the folder tree too
+  if (state.activeId) renderHeaderLabel(state.activeId, state.activeLabel);
+});
+
+labelsDisplaySelect?.addEventListener("change", () => {
+  const val =
+    labelsDisplaySelect.value === "square_label" ? "square_label" : "square";
+  saveUiPreferences({ labelDisplay: val });
+  // The display mode changes how every square renders.
+  if (labelsFeatureOn()) {
+    loadConversations(false);
+    if (state.activeId) renderHeaderLabel(state.activeId, state.activeLabel);
+  }
+});
+
+// ── Label indicators + assignment (runtime) ──────────────────────────────────
+// The compact square shown before each conversation title. Rendering and every
+// interaction here are gated on the feature being enabled; when it is off no
+// square, menu entry, or label view appears, and the stored data is untouched.
+
+function labelsFeatureOn() {
+  return !!state.preferences.labelsEnabled;
+}
+
+// Labels in their user-configured cycle order. The server already returns them
+// ordered by sort_index, but sort defensively so cycling never depends on it.
+function orderedLabels() {
+  return [...state.labelRows].sort(
+    (a, b) => (a.sort_index || 0) - (b.sort_index || 0),
+  );
+}
+
+function labelById(id) {
+  return state.labelRows.find((l) => l.id === id) || null;
+}
+
+// Load the label definitions once (and after any change) so squares and cycling
+// work without opening the Labels screen. Shared with refreshLabelList's data.
+async function loadLabelDefs() {
+  try {
+    const data = await apiModelState("/api/labels");
+    state.labelRows = data.labels || [];
+  } catch {
+    state.labelRows = [];
+  }
+  return state.labelRows;
+}
+
+// Build the indicator element for one conversation. In "square" mode it is just
+// the square (name only in tooltip/aria); in "square_label" mode a compact name
+// rides beside it. Always keyboard-focusable and clickable.
+function labelIndicatorEl(convId, label) {
+  const wrap = document.createElement("span");
+  wrap.className = "label-indicator";
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "label-square" + (label ? "" : " label-square-blank");
+  if (label) {
+    btn.style.background = _validHexColor(label.color) ? label.color : "#888888";
+    btn.title = label.name;
+    btn.setAttribute("aria-label", `Label: ${label.name}. Activate to change.`);
+  } else {
+    btn.title = "No label";
+    btn.setAttribute("aria-label", "No label. Activate to set one.");
+  }
+  // Primary click cycles; it must never also open/select the conversation.
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    cycleConvLabel(convId, label);
+  });
+  // A right-click offers direct selection without repeated cycling.
+  btn.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openSetLabelPopover(convId, label ? label.id : null, btn);
+  });
+  wrap.appendChild(btn);
+
+  if (label && state.preferences.labelDisplay === "square_label") {
+    const txt = document.createElement("span");
+    txt.className = "label-text";
+    txt.textContent = label.name;
+    wrap.appendChild(txt);
+  }
+  return wrap;
+}
+
+// Blank → label[0] → label[1] → … → last → Blank, in configured order.
+async function cycleConvLabel(convId, currentLabel) {
+  const order = orderedLabels();
+  if (!order.length) return; // no labels configured — nothing to cycle to
+  let nextId;
+  if (!currentLabel) {
+    nextId = order[0].id;
+  } else {
+    const idx = order.findIndex((l) => l.id === currentLabel.id);
+    if (idx === -1) nextId = order[0].id;
+    else if (idx >= order.length - 1) nextId = null; // wrap back to blank
+    else nextId = order[idx + 1].id;
+  }
+  await setConvLabel(convId, nextId);
+}
+
+async function setConvLabel(convId, labelId) {
+  try {
+    const data = await apiModelState("/api/conversation-labels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conv_id: convId, label_id: labelId || null }),
+    });
+    applyConvLabelResult(convId, data.label || null);
+  } catch (_) {
+    /* leave the current square as-is on failure */
+  }
+}
+
+// Reflect a just-applied label into the UI without a full reload where possible.
+function applyConvLabelResult(convId, label) {
+  // In a label view the row may now belong (or no longer belong) to the filter,
+  // so reload the filtered list rather than leaving a stale row behind.
+  if (String(state.view).startsWith("label:")) {
+    loadConversations(false);
+  } else {
+    refreshRowLabel(convId, label);
+  }
+  // A foldered conversation's only sidebar row is in the folder tree.
+  refreshFolderRowLabel(convId, label);
+  if (convId === state.activeId) {
+    state.activeLabel = label;
+    renderHeaderLabel(convId, label);
+  }
+  // Keep the Labels screen's usage counts fresh if it happens to be open.
+  if (state.activeSpecialView === "labels") {
+    loadLabelDefs().then(() => {
+      renderLabelList();
+    });
+  }
+}
+
+// Replace (or insert) the indicator on a sidebar row in place.
+function refreshRowLabel(convId, label) {
+  const item = findConvItemEl(convId);
+  const title = item?.querySelector(".conv-title");
+  if (!title) return;
+  const fresh = labelsFeatureOn() ? labelIndicatorEl(convId, label) : null;
+  const old = title.querySelector(":scope > .label-indicator");
+  if (fresh) {
+    if (old) title.replaceChild(fresh, old);
+    else title.insertBefore(fresh, title.firstChild);
+  } else if (old) {
+    old.remove();
+  }
+}
+
+// Update a conversation's square in the folder tree in place, and keep
+// state.folders in step so a later renderFolders() shows the same label.
+function refreshFolderRowLabel(convId, label) {
+  for (const f of state.folders || []) {
+    for (const c of f.conversations || []) {
+      if (c.id === convId) c.label = label;
+    }
+  }
+  const item = foldersTree?.querySelector(
+    `.folder-conv-item[data-id="${CSS.escape(convId)}"]`,
+  );
+  const title = item?.querySelector(".folder-conv-title");
+  if (!title) return;
+  const old = title.querySelector(":scope > .label-indicator");
+  const fresh = labelsFeatureOn() ? labelIndicatorEl(convId, label) : null;
+  if (fresh) {
+    if (old) title.replaceChild(fresh, old);
+    else title.insertBefore(fresh, title.firstChild);
+  } else if (old) {
+    old.remove();
+  }
+}
+
+// The square shown next to the open conversation's title in the header.
+function renderHeaderLabel(convId, label) {
+  const holder = $("thread-title-square");
+  if (!holder) return;
+  holder.innerHTML = "";
+  if (!labelsFeatureOn() || !convId) return;
+  holder.appendChild(labelIndicatorEl(convId, label));
+}
+
+// Re-read the open conversation's actual label assignment from the server and
+// update the header. Needed after an operation that can change a conversation's
+// assignment other than through its own square — a bulk apply or a snapshot
+// restore — where the assignment itself may have changed, not just the label's
+// definition. (onLabelDefsChanged's definition-based update is right for a
+// rename/recolour/delete, but it can't see an assignment change.)
+async function refreshActiveHeaderLabel() {
+  if (!state.activeId) return;
+  if (!labelsFeatureOn()) {
+    renderHeaderLabel(null, null);
+    return;
+  }
+  try {
+    const d = await apiModelState(
+      `/api/conversation-labels/${encodeURIComponent(state.activeId)}`,
+    );
+    state.activeLabel = d.label || null;
+  } catch (_) {
+    /* leave the current header as-is on failure */
+  }
+  renderHeaderLabel(state.activeId, state.activeLabel);
+}
+
+// ── Direct label selection (⋮ menus + right-click popover) ────────────────────
+
+// Add a "Set label" group (Blank + each configured label) to an open menu.
+// itemClass matches the menu's own button class so styling stays consistent.
+function appendSetLabelToMenu(menu, convId, currentLabelId, itemClass, onSelect) {
+  const cap = document.createElement("div");
+  cap.className = "menu-section-caption";
+  cap.textContent = "Set label";
+  menu.appendChild(cap);
+
+  const options = [{ id: null, name: "Blank", color: null }, ...orderedLabels()];
+  for (const opt of options) {
+    const b = document.createElement("button");
+    b.className = `${itemClass} set-label-item`;
+    b.setAttribute("role", "menuitem");
+
+    const dot = document.createElement("span");
+    dot.className = "menu-label-dot" + (opt.id ? "" : " menu-label-dot-blank");
+    if (opt.id) dot.style.background = _validHexColor(opt.color) ? opt.color : "#888888";
+
+    const name = document.createElement("span");
+    name.className = "sidebar-menu-item-label";
+    name.textContent = opt.name;
+
+    b.append(dot, name);
+    if ((opt.id || null) === (currentLabelId || null)) {
+      const check = document.createElement("span");
+      check.className = "menu-check";
+      check.textContent = "✓";
+      b.appendChild(check);
+    }
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (onSelect) onSelect();
+      setConvLabel(convId, opt.id);
+    });
+    menu.appendChild(b);
+  }
+}
+
+let _setLabelPopover = null;
+function closeSetLabelPopover() {
+  if (_setLabelPopover) {
+    _setLabelPopover.remove();
+    _setLabelPopover = null;
+    document.removeEventListener("mousedown", _onSetLabelOutside, true);
+    window.removeEventListener("scroll", closeSetLabelPopover, true);
+  }
+}
+function _onSetLabelOutside(e) {
+  if (_setLabelPopover && !_setLabelPopover.contains(e.target)) {
+    closeSetLabelPopover();
+  }
+}
+// A small standalone menu anchored to a square, for right-click direct-select.
+function openSetLabelPopover(convId, currentLabelId, anchorEl) {
+  closeSetLabelPopover();
+  if (!labelsFeatureOn()) return;
+  const menu = document.createElement("div");
+  menu.className = "sidebar-menu conv-item-menu";
+  menu.setAttribute("role", "menu");
+  appendSetLabelToMenu(menu, convId, currentLabelId, "sidebar-menu-item", () =>
+    closeSetLabelPopover(),
+  );
+  document.body.appendChild(menu);
+  _setLabelPopover = menu;
+  const r = anchorEl.getBoundingClientRect();
+  const mw = menu.offsetWidth;
+  let left = r.left;
+  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+  if (left < 8) left = 8;
+  let top = r.bottom + 4;
+  if (top + menu.offsetHeight > window.innerHeight - 8) {
+    top = r.top - menu.offsetHeight - 4;
+  }
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  document.addEventListener("mousedown", _onSetLabelOutside, true);
+  window.addEventListener("scroll", closeSetLabelPopover, true);
+}
+
+// ── Label filter views in the existing view/filter control ────────────────────
+
+function labelViewTitle(view) {
+  if (!view || !String(view).startsWith("label:")) return null;
+  const sel = String(view).slice("label:".length);
+  if (sel === "__unlabeled__") return "Unlabeled";
+  const l = labelById(sel);
+  return l ? l.name : "Label";
+}
+
+// Rebuild the label options in the filter dropdown to match the current
+// definitions and enabled state. Provider selection is unaffected — the server
+// applies the provider filter alongside the label filter.
+function syncLabelFilterOptions() {
+  if (!viewFilterEl) return;
+  viewFilterEl
+    .querySelectorAll("option.label-view-option")
+    .forEach((o) => o.remove());
+  if (!labelsFeatureOn()) {
+    if (String(state.view).startsWith("label:")) {
+      state.view = "recent";
+      viewFilterEl.value = "recent";
+      updateListSectionTitle();
+    }
+    return;
+  }
+  const mk = (val, text) => {
+    const o = document.createElement("option");
+    o.value = val;
+    o.textContent = text;
+    o.className = "label-view-option";
+    return o;
+  };
+  const frag = document.createDocumentFragment();
+  frag.appendChild(mk("label:__unlabeled__", "Unlabeled"));
+  for (const l of orderedLabels()) frag.appendChild(mk("label:" + l.id, l.name));
+  viewFilterEl.appendChild(frag);
+  // Keep the current selection valid; if its label was deleted, fall back.
+  if (String(state.view).startsWith("label:")) {
+    viewFilterEl.value = state.view;
+    if (viewFilterEl.value !== state.view) {
+      state.view = "recent";
+      viewFilterEl.value = "recent";
+    }
+    updateListSectionTitle();
+  }
+}
+
+// Called after label definitions change (add/rename/recolour/reorder/delete):
+// refresh the filter options and any visible squares.
+function onLabelDefsChanged() {
+  syncLabelFilterOptions();
+  // Keep the bulk tool's label/target dropdowns in step while it's on screen.
+  if (state.activeSpecialView === "labels") refreshBulkLabelSelects();
+  if (labelsFeatureOn()) {
+    loadConversations(false);
+    // Folder-tree rows carry squares too; re-fetch so their colours/names and
+    // any cleared-by-deletion labels update.
+    loadFolders();
+    if (state.activeId) {
+      // The open conversation's label object may have been recoloured/renamed
+      // or cleared (its label deleted); re-read it from the label defs.
+      if (state.activeLabel) {
+        const fresh = labelById(state.activeLabel.id);
+        state.activeLabel = fresh
+          ? { id: fresh.id, name: fresh.name, color: fresh.color }
+          : null;
+      }
+      renderHeaderLabel(state.activeId, state.activeLabel);
+    }
+  } else {
+    // Feature just turned off → drop squares from the folder tree too.
+    loadFolders();
+  }
+}
+
+// ── Conditional bulk labeling (Labels screen · sections C & D) ────────────────
+// A narrow tool: pick conversations by criteria (all ANDed) and Set Label To a
+// label or Blank. It never deletes/archives/moves. Preview before Apply; every
+// applied change is logged to Recent Bulk Changes for reuse (not undo).
+
+let _bulkPreviewed = null; // {crit, data} captured on a successful preview
+
+function showBulkError(msg) {
+  if (!bulkErrorEl) return;
+  bulkErrorEl.textContent = msg || "";
+  bulkErrorEl.hidden = !msg;
+}
+
+function invalidateBulkPreview() {
+  _bulkPreviewed = null;
+  if (bulkApplyBtn) bulkApplyBtn.disabled = true;
+  if (bulkResultEl) bulkResultEl.hidden = true;
+}
+
+// Fill the label/target/folder/tag selects from current data, preserving any
+// selection that is still valid.
+// Rebuild only the label-derived selects (no network) — used when definitions
+// change while the screen is open.
+function refreshBulkLabelSelects() {
+  const fillLabels = (sel, first) => {
+    if (!sel) return;
+    const cur = sel.value;
+    sel.innerHTML = first;
+    for (const l of orderedLabels()) {
+      const o = document.createElement("option");
+      o.value = l.id;
+      o.textContent = l.name;
+      sel.appendChild(o);
+    }
+    if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+  };
+  fillLabels($("bulk-label"), '<option value="any">Any</option><option value="blank">Blank</option>');
+  fillLabels($("bulk-target"), '<option value="blank">Blank</option>');
+}
+
+async function populateBulkForm() {
+  refreshBulkLabelSelects();
+
+  const folderSel = $("bulk-folder");
+  if (folderSel) {
+    let folders = [];
+    try {
+      const d = await (await fetch("/api/folders")).json();
+      folders = d.folders || [];
+    } catch (_) {}
+    const cur = folderSel.value;
+    folderSel.innerHTML =
+      '<option value="any">Any</option><option value="none">No folder</option>';
+    for (const f of folders) {
+      const o = document.createElement("option");
+      o.value = f.id;
+      o.textContent = f.name;
+      folderSel.appendChild(o);
+    }
+    if ([...folderSel.options].some((o) => o.value === cur)) folderSel.value = cur;
+  }
+
+  const tagSel = $("bulk-tag");
+  if (tagSel) {
+    let tags = [];
+    try {
+      const d = await (await fetch("/api/tags")).json();
+      tags = d.tags || [];
+    } catch (_) {}
+    const cur = tagSel.value;
+    tagSel.innerHTML = '<option value="">Any</option>';
+    for (const t of tags) {
+      const o = document.createElement("option");
+      o.value = t;
+      o.textContent = t;
+      tagSel.appendChild(o);
+    }
+    if ([...tagSel.options].some((o) => o.value === cur)) tagSel.value = cur;
+  }
+}
+
+// Show/hide the date input(s) for one date criterion based on its operator.
+function syncBulkDateOp(prefix) {
+  const op = $(prefix + "-op")?.value || "any";
+  const d1 = $(prefix + "-date");
+  const and = $(prefix + "-and");
+  const d2 = $(prefix + "-date2");
+  const showFirst = op === "before" || op === "after" || op === "between";
+  if (d1) d1.hidden = !showFirst;
+  if (and) and.hidden = op !== "between";
+  if (d2) d2.hidden = op !== "between";
+}
+
+function readBulkCriteria() {
+  const dateSpec = (prefix) => {
+    const op = $(prefix + "-op")?.value || "any";
+    const spec = { op };
+    if (op === "before" || op === "after") spec.date = $(prefix + "-date")?.value || "";
+    if (op === "between") {
+      spec.date = $(prefix + "-date")?.value || "";
+      spec.date2 = $(prefix + "-date2")?.value || "";
+    }
+    return spec;
+  };
+  const limitMode =
+    document.querySelector('input[name="bulk-limit"]:checked')?.value || "all";
+  return {
+    provider: $("bulk-provider")?.value || "all",
+    started: dateSpec("bulk-started"),
+    ended: dateSpec("bulk-ended"),
+    label: $("bulk-label")?.value || "any",
+    folder: $("bulk-folder")?.value || "any",
+    tag: $("bulk-tag")?.value || "",
+    keyword: ($("bulk-keyword")?.value || "").trim(),
+    order: $("bulk-order")?.value || "started_asc",
+    limit:
+      limitMode === "first"
+        ? { mode: "first", n: Math.max(1, parseInt($("bulk-limit-n")?.value, 10) || 1) }
+        : { mode: "all" },
+    target: $("bulk-target")?.value || "blank",
+  };
+}
+
+function validateBulkCriteria(crit) {
+  for (const [spec, name] of [
+    [crit.started, "Started"],
+    [crit.ended, "Last updated"],
+  ]) {
+    if ((spec.op === "before" || spec.op === "after") && !spec.date)
+      return `${name}: choose a date.`;
+    if (spec.op === "between" && (!spec.date || !spec.date2))
+      return `${name}: choose both dates.`;
+  }
+  if (crit.limit.mode === "first" && (!crit.limit.n || crit.limit.n < 1))
+    return "Limit: enter a positive number.";
+  return null;
+}
+
+async function bulkPreview() {
+  const crit = readBulkCriteria();
+  const err = validateBulkCriteria(crit);
+  if (err) {
+    showBulkError(err);
+    invalidateBulkPreview();
+    return;
+  }
+  showBulkError("");
+  let data;
+  try {
+    data = await apiModelState("/api/labels/bulk-preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(crit),
+    });
+  } catch (e) {
+    showBulkError(e.message);
+    invalidateBulkPreview();
+    return;
+  }
+  const target = data.target_label_name || "Blank";
+  const notAlready = data.target_blank
+    ? `<strong>${data.not_already.toLocaleString()}</strong> are not already blank.`
+    : `<strong>${data.not_already.toLocaleString()}</strong> are not already set to “${escHtml(target)}”.`;
+  // "the first N" only when a first-N limit actually caps the changeable set.
+  const capped = data.limit_n != null && data.will_change < data.not_already;
+  const willChange = capped
+    ? `This operation will change the first <strong>${data.will_change.toLocaleString()}</strong>.`
+    : `This operation will change <strong>${data.will_change.toLocaleString()}</strong>.`;
+  bulkResultEl.innerHTML =
+    `<div>${data.eligible.toLocaleString()} conversation${data.eligible === 1 ? "" : "s"} match these conditions.</div>` +
+    `<div>${notAlready}</div>` +
+    `<div>${willChange}</div>`;
+  bulkResultEl.hidden = false;
+  _bulkPreviewed = { crit, data };
+  bulkApplyBtn.disabled = data.will_change === 0;
+}
+
+async function bulkApply() {
+  if (!_bulkPreviewed) return;
+  const { crit, data } = _bulkPreviewed;
+  const target = data.target_label_name || "Blank";
+  const ok = await openConfirm({
+    title: "Apply label to batch?",
+    text:
+      `Set label to “${target}” on ${data.will_change.toLocaleString()} conversation` +
+      `${data.will_change === 1 ? "" : "s"} (${data.eligible.toLocaleString()} matched). ` +
+      "This is not undoable — make a Safety Snapshot first if you want a recovery point.",
+    okLabel: "Apply label",
+  });
+  if (!ok) return;
+  let res;
+  try {
+    res = await apiModelState("/api/labels/bulk-apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(crit),
+    });
+  } catch (e) {
+    showBulkError(e.message);
+    return;
+  }
+  bulkResultEl.innerHTML =
+    `Applied: <strong>${res.changed.toLocaleString()}</strong> changed ` +
+    `(${res.eligible.toLocaleString()} matched).`;
+  bulkResultEl.hidden = false;
+  invalidateBulkPreview();
+  // Refresh label counts, sidebar squares, the filter, and the history list.
+  await loadLabelDefs();
+  renderLabelList();
+  onLabelDefsChanged();
+  // The open conversation may have been in the batch — re-read its assignment.
+  refreshActiveHeaderLabel();
+  loadBulkHistory();
+}
+
+async function loadBulkHistory() {
+  if (!bulkHistoryList) return;
+  let hist = [];
+  try {
+    const d = await apiModelState("/api/labels/bulk-history");
+    hist = d.history || [];
+    if (d.retention != null && bulkRetentionInput)
+      bulkRetentionInput.value = d.retention;
+  } catch (_) {}
+  bulkHistoryList.innerHTML = "";
+  if (!hist.length) {
+    bulkHistoryList.innerHTML =
+      '<li class="bulk-history-empty">No bulk changes yet.</li>';
+    return;
+  }
+  for (const h of hist) {
+    const li = document.createElement("li");
+    li.className = "bulk-history-row";
+    const main = document.createElement("div");
+    main.className = "bulk-history-main";
+
+    // Line 1 — when.
+    const when = document.createElement("div");
+    when.className = "bulk-history-when";
+    when.textContent = h.created_at
+      ? new Date(h.created_at * 1000).toLocaleString([], {
+          month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+        })
+      : "";
+    // Line 2 — the stored execution-time filter/order summary.
+    const crit = document.createElement("div");
+    crit.className = "bulk-history-crit";
+    crit.textContent = h.description || "(bulk change)";
+    // Line 3 — limit → target (using the execution-time target name).
+    const action = document.createElement("div");
+    action.className = "bulk-history-action";
+    const limitText = h.limit_used ? `First ${h.limit_used}` : "All matching";
+    action.textContent = `${limitText} → ${h.target_label_name || "Blank"}`;
+    // Line 4 — how many actually changed.
+    const changed = document.createElement("div");
+    changed.className = "bulk-history-changed";
+    changed.textContent = `${(h.changed_count ?? 0).toLocaleString()} changed`;
+
+    main.append(when, crit, action, changed);
+
+    const reuse = document.createElement("button");
+    reuse.type = "button";
+    reuse.className = "bulk-history-reuse";
+    reuse.textContent = "Use Again";
+    reuse.title = "Load this selection into the tool above (you still Preview and Apply)";
+    reuse.addEventListener("click", () => reuseBulkCriteria(h.criteria || {}));
+    li.append(main, reuse);
+    bulkHistoryList.appendChild(li);
+  }
+}
+
+async function saveBulkRetention() {
+  if (!bulkRetentionInput) return;
+  let n = parseInt(bulkRetentionInput.value, 10);
+  if (!Number.isFinite(n)) n = 5;
+  n = Math.max(0, Math.min(50, n));
+  bulkRetentionInput.value = n;
+  try {
+    const d = await apiModelState("/api/labels/bulk-history/retention", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ retention: n }),
+    });
+    if (d.retention != null) bulkRetentionInput.value = d.retention;
+    loadBulkHistory();
+  } catch (_) {}
+}
+
+// Load a past operation's criteria back into the form. Ids that no longer exist
+// (a deleted label/folder) fall back to Any/Blank rather than an empty select.
+function reuseBulkCriteria(crit) {
+  const setSel = (id, val, fallback) => {
+    const el = $(id);
+    if (!el) return;
+    el.value = val;
+    if (el.value !== val) el.value = fallback;
+  };
+  setSel("bulk-provider", crit.provider || "all", "all");
+  const applyDate = (prefix, spec) => {
+    spec = spec || { op: "any" };
+    if ($(prefix + "-op")) $(prefix + "-op").value = spec.op || "any";
+    if ($(prefix + "-date")) $(prefix + "-date").value = spec.date || "";
+    if ($(prefix + "-date2")) $(prefix + "-date2").value = spec.date2 || "";
+    syncBulkDateOp(prefix);
+  };
+  applyDate("bulk-started", crit.started);
+  applyDate("bulk-ended", crit.ended);
+  setSel("bulk-label", crit.label || "any", "any");
+  setSel("bulk-folder", crit.folder || "any", "any");
+  setSel("bulk-tag", crit.tag || "", "");
+  if ($("bulk-keyword")) $("bulk-keyword").value = crit.keyword || "";
+  setSel("bulk-order", crit.order || "started_asc", "started_asc");
+  const lim = crit.limit || { mode: "all" };
+  const mode = lim.mode === "first" ? "first" : "all";
+  document
+    .querySelectorAll('input[name="bulk-limit"]')
+    .forEach((r) => (r.checked = r.value === mode));
+  if ($("bulk-limit-n")) {
+    $("bulk-limit-n").disabled = mode !== "first";
+    if (mode === "first" && lim.n) $("bulk-limit-n").value = lim.n;
+  }
+  setSel("bulk-target", crit.target || "blank", "blank");
+  invalidateBulkPreview();
+  showBulkError("");
+  $("bulk-provider")?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+// ── Bulk-tool event wiring ────────────────────────────────────────────────────
+["bulk-started", "bulk-ended"].forEach((prefix) => {
+  $(prefix + "-op")?.addEventListener("change", () => syncBulkDateOp(prefix));
+});
+document.querySelectorAll('input[name="bulk-limit"]').forEach((r) => {
+  r.addEventListener("change", () => {
+    const first = r.value === "first" && r.checked;
+    const n = $("bulk-limit-n");
+    if (n) n.disabled = !first;
+  });
+});
+// Any criteria change invalidates a standing preview so Apply can't act on stale
+// numbers. (Buttons emit no input/change events, so Preview/Apply are unaffected.)
+document.querySelector(".bulk-form")?.addEventListener("input", invalidateBulkPreview);
+document.querySelector(".bulk-form")?.addEventListener("change", invalidateBulkPreview);
+bulkPreviewBtn?.addEventListener("click", bulkPreview);
+bulkApplyBtn?.addEventListener("click", bulkApply);
+bulkRetentionInput?.addEventListener("change", saveBulkRetention);
+
+// ── Manual safety snapshots (Labels screen · section D) ───────────────────────
+// Snapshots capture user-owned metadata only and are made solely by pressing
+// Create Snapshot. Restore is category-selectable and reversible; there is a
+// hard cap of 10 (the user deletes one to make room — never auto-removed).
+
+// Category keys ↔ labels, in the order the restore dialog shows them.
+const SNAPSHOT_CATS = [
+  ["labels", "Labels"],
+  ["folders", "Folders"],
+  ["tags", "Tags"],
+  ["titles", "Titles"],
+  ["meta_state", "Archive/Delete state"],
+  ["pins", "Pins"],
+];
+// Map the per-category counts in a snapshot's summary to a readable Contents cell.
+const SNAPSHOT_CONTENT_PARTS = [
+  ["labels", "label", "labels"],
+  ["label_assignments", "assignment", "assignments"],
+  ["folders", "folder", "folders"],
+  ["folder_items", "folder item", "folder items"],
+  ["tags", "tag", "tags"],
+  ["titles", "title", "titles"],
+  ["meta_state", "archive/delete", "archive/delete"],
+  ["pins", "pin", "pins"],
+];
+let _snapshotMax = 10;
+
+function showSnapshotError(msg) {
+  if (!snapshotErrorEl) return;
+  snapshotErrorEl.textContent = msg || "";
+  snapshotErrorEl.hidden = !msg;
+}
+
+function formatBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function snapshotContents(summary) {
+  const parts = [];
+  for (const [key, one, many] of SNAPSHOT_CONTENT_PARTS) {
+    const c = Number(summary?.[key]) || 0;
+    if (c > 0) parts.push(`${c} ${c === 1 ? one : many}`);
+  }
+  return parts.length ? parts.join(", ") : "Nothing captured";
+}
+
+async function loadSnapshots() {
+  if (!snapshotTableBody) return;
+  let data = { snapshots: [], max: 10 };
+  try {
+    data = await apiModelState("/api/snapshots");
+  } catch (_) {}
+  _snapshotMax = data.max || 10;
+  const snaps = data.snapshots || [];
+  // At the cap, explain why Create is disabled (we never auto-delete the oldest).
+  const atMax = snaps.length >= _snapshotMax;
+  if (snapshotCreateBtn) snapshotCreateBtn.disabled = atMax;
+  showSnapshotError(
+    atMax
+      ? `Maximum of ${_snapshotMax} snapshots reached. Delete a snapshot before creating another.`
+      : "",
+  );
+  snapshotTableBody.innerHTML = "";
+  if (!snaps.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = '<td colspan="5" class="no-results">No snapshots yet.</td>';
+    snapshotTableBody.appendChild(tr);
+    return;
+  }
+  for (const s of snaps) {
+    const tr = document.createElement("tr");
+    const name = document.createElement("td");
+    name.className = "snapshot-name-cell";
+    name.textContent = s.name || "(unnamed)";
+    const created = document.createElement("td");
+    created.textContent = s.created_at
+      ? new Date(s.created_at * 1000).toLocaleString([], {
+          month: "short", day: "numeric", year: "numeric",
+          hour: "numeric", minute: "2-digit",
+        })
+      : "";
+    const contents = document.createElement("td");
+    contents.className = "snapshot-contents-cell";
+    contents.textContent = snapshotContents(s.summary);
+    const size = document.createElement("td");
+    size.textContent = `${(s.item_count ?? 0).toLocaleString()} · ${formatBytes(s.payload_size)}`;
+    const actions = document.createElement("td");
+    actions.className = "snapshot-actions";
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.className = "snapshot-btn";
+    restore.textContent = "Restore";
+    restore.addEventListener("click", () => openRestoreDialog(s));
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "snapshot-btn snapshot-btn-danger";
+    del.textContent = "Delete";
+    del.addEventListener("click", () => deleteSnapshot(s));
+    actions.append(restore, del);
+    tr.append(name, created, contents, size, actions);
+    snapshotTableBody.appendChild(tr);
+  }
+}
+
+async function createSnapshot() {
+  showSnapshotError("");
+  const name = (snapshotNameInput?.value || "").trim();
+  try {
+    await apiModelState("/api/snapshots", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (snapshotNameInput) snapshotNameInput.value = "";
+  } catch (e) {
+    showSnapshotError(e.message);
+  }
+  loadSnapshots();
+}
+
+async function deleteSnapshot(s) {
+  const ok = await openConfirm({
+    title: "Delete snapshot?",
+    text: `Delete the snapshot “${s.name || "(unnamed)"}”? This cannot be undone.`,
+    okLabel: "Delete snapshot",
+  });
+  if (!ok) return;
+  try {
+    await apiModelState(`/api/snapshots/${encodeURIComponent(s.id)}`, { method: "DELETE" });
+  } catch (e) {
+    showSnapshotError(e.message);
+  }
+  loadSnapshots();
+}
+
+// ── Restore category dialog ───────────────────────────────────────────────────
+const snapshotRestoreModal = $("snapshot-restore-modal");
+const snapshotRestoreCats = $("snapshot-restore-cats");
+const snapshotRestoreOk = $("snapshot-restore-ok");
+const snapshotRestoreCancel = $("snapshot-restore-cancel");
+let _restoreTarget = null;
+
+function openRestoreDialog(s) {
+  _restoreTarget = s;
+  if (!snapshotRestoreModal || !snapshotRestoreCats) return;
+  snapshotRestoreCats.innerHTML = "";
+  for (const [key, label] of SNAPSHOT_CATS) {
+    const row = document.createElement("label");
+    row.className = "snapshot-cat";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = key;
+    cb.checked = true; // default: all supported categories checked
+    const span = document.createElement("span");
+    span.textContent = label;
+    row.append(cb, span);
+    snapshotRestoreCats.appendChild(row);
+  }
+  snapshotRestoreModal.hidden = false;
+}
+
+function closeRestoreDialog() {
+  if (snapshotRestoreModal) snapshotRestoreModal.hidden = true;
+  _restoreTarget = null;
+}
+
+async function confirmRestore() {
+  if (!_restoreTarget) return;
+  const s = _restoreTarget;
+  const selected = [...snapshotRestoreCats.querySelectorAll("input:checked")].map(
+    (c) => c.value,
+  );
+  if (!selected.length) {
+    showSnapshotError("Select at least one category to restore.");
+    return;
+  }
+  closeRestoreDialog();
+  showSnapshotError("");
+  let res;
+  try {
+    res = await apiModelState(`/api/snapshots/${encodeURIComponent(s.id)}/restore`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ categories: selected }),
+    });
+  } catch (e) {
+    showSnapshotError(e.message);
+    return;
+  }
+  const skippedNote =
+    res.skipped > 0
+      ? ` ${res.skipped} record${res.skipped === 1 ? "" : "s"} skipped (conversation no longer present).`
+      : "";
+  showSnapshotError(""); // clear any cap message; show a transient success below
+  if (snapshotErrorEl) {
+    snapshotErrorEl.textContent = `Restored ${selected.length} categor${selected.length === 1 ? "y" : "ies"} from “${s.name}”.${skippedNote}`;
+    snapshotErrorEl.hidden = false;
+    snapshotErrorEl.classList.add("snapshot-ok");
+    setTimeout(() => {
+      if (snapshotErrorEl) {
+        snapshotErrorEl.classList.remove("snapshot-ok");
+        snapshotErrorEl.hidden = true;
+      }
+    }, 6000);
+  }
+  // A restore can change everything the sidebar shows — reload it all.
+  await loadLabelDefs();
+  renderLabelList();
+  onLabelDefsChanged();
+  await refreshPinnedList();
+  loadBulkHistory();
+  loadSnapshots();
+  // A restore can change the open conversation's assignment outright — re-read
+  // it from the server rather than guessing from the label definitions.
+  refreshActiveHeaderLabel();
+}
+
+snapshotCreateBtn?.addEventListener("click", createSnapshot);
+snapshotRestoreCancel?.addEventListener("click", closeRestoreDialog);
+snapshotRestoreOk?.addEventListener("click", confirmRestore);
+snapshotRestoreModal?.addEventListener("mousedown", (e) => {
+  if (e.target === snapshotRestoreModal) closeRestoreDialog();
+});
+
 // ── Import New Chats screen ──────────────────────────────────────────────────
 // Scans the source folder for backup files not yet imported, identifies each as
 // a Claude or ChatGPT export, merges it in, and renames the source file. Below
@@ -4376,6 +5599,7 @@ sidebarMenu.querySelectorAll(".sidebar-menu-item").forEach((item) => {
     else if (action === "import-new") openImportNew();
     else if (action === "settings") openSettings();
     else if (action === "claude-models") openClaudeModels();
+    else if (action === "labels") openLabels();
   });
 });
 
@@ -4786,6 +6010,14 @@ function renderFolders() {
         item.innerHTML =
           (c.pinned ? '<span class="folder-pin-dot" title="Pinned">★</span>' : "") +
           `<span class="folder-conv-title">${escHtml(c.title || "Untitled")}</span>`;
+        // Compact label square before the title, same as the main list.
+        if (labelsFeatureOn()) {
+          const titleEl = item.querySelector(".folder-conv-title");
+          titleEl.insertBefore(
+            labelIndicatorEl(c.id, c.label || null),
+            titleEl.firstChild,
+          );
+        }
         item.addEventListener("click", () => openConversation(c.id, item));
         item.addEventListener("dragstart", (e) => {
           e.dataTransfer.effectAllowed = "move";
@@ -5042,6 +6274,25 @@ threadMoreBtn?.addEventListener("click", (e) => {
       pinItem.textContent = state.activePinned ? "Unpin" : "Pin";
     }
   }
+  // Rebuild the direct label-selection group each open so it reflects the
+  // current definitions and the open conversation's label.
+  threadMoreMenu
+    .querySelectorAll(".label-menu-injected")
+    .forEach((n) => n.remove());
+  if (labelsFeatureOn()) {
+    const before = threadMoreMenu.childElementCount;
+    appendSetLabelToMenu(
+      threadMoreMenu,
+      state.activeId,
+      state.activeLabel ? state.activeLabel.id : null,
+      "thread-dropdown-item",
+      () => closeThreadMenus(),
+    );
+    // Tag the just-added nodes so they can be cleared on the next open.
+    Array.from(threadMoreMenu.children)
+      .slice(before)
+      .forEach((n) => n.classList.add("label-menu-injected"));
+  }
   threadMoreMenu.hidden = false;
   document.addEventListener("mousedown", onThreadMenuOutside, true);
 });
@@ -5121,6 +6372,8 @@ async function initApp() {
   applyThreadHeaderCollapsed();
   await loadDatasetFormat();
   await loadUiPreferences();
+  await loadLabelDefs();
+  syncLabelFilterOptions();
   renderSearchHistory();
   await refreshPinnedList();
   await loadFolders();
@@ -5150,7 +6403,10 @@ messagesEl?.addEventListener("scroll", () => {
 window.addEventListener("beforeunload", () => {
   apiUpdatePreferences({
     ...state.preferences,
-    conversationView: state.view,
+    // Don't persist a transient label view as the remembered base view.
+    conversationView: String(state.view).startsWith("label:")
+      ? state.preferences.conversationView || "recent"
+      : state.view,
     scrollByConversation: state.scrollByConversation,
     lastConversationId: state.lastConversationId,
   });
