@@ -1111,6 +1111,10 @@ class Handler(BaseHTTPRequestHandler):
             self._api_labels_reorder()
         elif path == "/api/conversation-labels":
             self._api_conversation_label_set()
+        elif path == "/api/labels/bulk-preview":
+            self._api_bulk_preview()
+        elif path == "/api/labels/bulk-apply":
+            self._api_bulk_apply()
         elif path == "/api/import-new":
             self._api_import_new()
         elif path == "/api/recycle-bin/restore":
@@ -1277,6 +1281,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_tags_all()
         elif path == "/api/labels":
             self._api_labels_list()
+        elif path == "/api/labels/bulk-history":
+            self._api_bulk_history()
         elif path == "/api/preferences":
             self._api_preferences()
         elif path == "/api/pinned":
@@ -3090,6 +3096,366 @@ class Handler(BaseHTTPRequestHandler):
                 )
             conn.commit()
             self.send_json({"conv_id": conv_id, "label": self._conv_label(conn, conv_id)})
+        finally:
+            conn.close()
+
+    # ── Conditional bulk labeling ────────────────────────────────────────────
+    # A deliberately narrow selection tool: it can only Set Label To (a label,
+    # or Blank). It never deletes, archives, moves, or renames. All populated
+    # criteria are combined with AND. Batches are deterministic — a stable id
+    # tie-breaker is always appended to the ordering.
+
+    def _bulk_epoch_day(self, s):
+        """Local-midnight epoch for a YYYY-MM-DD string, else None. Dates are
+        interpreted in local time to match the dates the UI shows."""
+        s = str(s or "").strip()
+        if not _DATE_RE.match(s):
+            return None
+        try:
+            y, m, d = (int(x) for x in s.split("-"))
+            return datetime.datetime(y, m, d).timestamp()
+        except Exception:
+            return None
+
+    def _bulk_epoch_next_day(self, s):
+        """Local-midnight epoch of the day AFTER the given date, for building
+        half-open [start, end) day ranges."""
+        base = self._bulk_epoch_day(s)
+        if base is None:
+            return None
+        try:
+            y, m, d = (int(x) for x in str(s).split("-"))
+            nxt = datetime.date(y, m, d) + datetime.timedelta(days=1)
+            return datetime.datetime(nxt.year, nxt.month, nxt.day).timestamp()
+        except Exception:
+            return None
+
+    def _bulk_date_clause(self, where, params, col, spec):
+        """Append a date filter on `col` (create_time / update_time). Missing
+        timestamps (0/NULL) never match a date filter."""
+        if not isinstance(spec, dict):
+            return
+        op = str(spec.get("op") or "any").lower()
+        if op == "before":
+            e = self._bulk_epoch_day(spec.get("date"))
+            if e is not None:
+                where.append(f"({col} > 0 AND {col} < ?)"); params.append(e)
+        elif op == "after":
+            e = self._bulk_epoch_next_day(spec.get("date"))
+            if e is not None:
+                where.append(f"({col} > 0 AND {col} >= ?)"); params.append(e)
+        elif op == "between":
+            a = self._bulk_epoch_day(spec.get("date"))
+            an = self._bulk_epoch_next_day(spec.get("date"))
+            b = self._bulk_epoch_day(spec.get("date2"))
+            bn = self._bulk_epoch_next_day(spec.get("date2"))
+            if a is not None and b is not None:
+                start, end = min(a, b), max(an, bn)
+                where.append(f"({col} > 0 AND {col} >= ? AND {col} < ?)")
+                params += [start, end]
+
+    def _build_bulk_query(self, crit, use_fts=True):
+        """Turn a criteria dict into (where_sql, params, order_sql, limit_n).
+        Every criterion is optional; populated ones are ANDed together."""
+        where = ["COALESCE(cm.deleted, 0) = 0"]
+        params = []
+
+        prov = str(crit.get("provider") or "all").lower()
+        if prov in ("claude", "chatgpt"):
+            where.append("c.provider = ?"); params.append(prov)
+
+        self._bulk_date_clause(where, params, "c.create_time", crit.get("started"))
+        self._bulk_date_clause(where, params, "c.update_time", crit.get("ended"))
+
+        label = str(crit.get("label") or "any")
+        if label == "blank":
+            where.append("c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels)")
+        elif label != "any":
+            if re.fullmatch(r"[0-9a-f]{32}", label):
+                where.append("c.id IN (SELECT conversation_id FROM udb.conversation_labels "
+                             "WHERE label_id = ?)"); params.append(label)
+            else:
+                where.append("0")
+
+        folder = str(crit.get("folder") or "any")
+        if folder == "none":
+            where.append("c.id NOT IN (SELECT conversation_id FROM udb.folder_items)")
+        elif folder != "any":
+            if re.fullmatch(r"[0-9a-f]{32}", folder):
+                where.append("c.id IN (SELECT conversation_id FROM udb.folder_items "
+                             "WHERE folder_id = ?)"); params.append(folder)
+            else:
+                where.append("0")
+
+        tag = str(crit.get("tag") or "").strip()
+        if tag:
+            where.append("c.id IN (SELECT conversation_id FROM udb.conversation_tags "
+                         "WHERE tag = ?)"); params.append(tag)
+
+        # Keyword reuses the same FTS-then-LIKE behaviour as the main search so
+        # there is only one search implementation. len<3 or an FTS parse error
+        # falls back to a title/tag LIKE (see _bulk_run's retry).
+        q = str(crit.get("keyword") or "").strip()
+        if q:
+            like = f"%{q}%"
+            if use_fts and len(q) >= 3:
+                where.append(
+                    "c.id IN ("
+                    "SELECT conversation_id FROM search_index WHERE search_index MATCH ? "
+                    "UNION SELECT c2.id FROM conversations c2 "
+                    "  LEFT JOIN conversation_meta cm2 ON cm2.conversation_id = c2.id "
+                    "  WHERE COALESCE(cm2.deleted,0)=0 "
+                    "    AND COALESCE(NULLIF(cm2.custom_title,''), c2.title) LIKE ? "
+                    "UNION SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?)"
+                )
+                params += [q, like, like]
+            else:
+                where.append(
+                    "(COALESCE(NULLIF(cm.custom_title,''), c.title) LIKE ? "
+                    "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?))"
+                )
+                params += [like, like]
+
+        col, direction = {
+            "started_asc":  ("c.create_time", "ASC"),
+            "started_desc": ("c.create_time", "DESC"),
+            "updated_asc":  ("c.update_time", "ASC"),
+            "updated_desc": ("c.update_time", "DESC"),
+        }.get(str(crit.get("order") or "started_asc"), ("c.create_time", "ASC"))
+        # Stable id tie-breaker makes batches deterministic when timestamps tie.
+        order_sql = f"ORDER BY {col} {direction}, c.id ASC"
+
+        limit_n = None
+        lim = crit.get("limit") or {}
+        if isinstance(lim, dict) and lim.get("mode") == "first":
+            try:
+                n = int(lim.get("n"))
+                if n > 0:
+                    limit_n = n
+            except Exception:
+                pass
+        return " AND ".join(where), params, order_sql, limit_n
+
+    def _bulk_run(self, conn, crit):
+        """(eligible_count, batch_ids, limit_n). Retries once without FTS if the
+        keyword makes SQLite's MATCH raise."""
+        last_err = None
+        for use_fts in (True, False):
+            try:
+                where_sql, params, order_sql, limit_n = self._build_bulk_query(crit, use_fts)
+                base = ("FROM conversations c "
+                        "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                        "WHERE " + where_sql)
+                eligible = conn.execute("SELECT COUNT(*) " + base, params).fetchone()[0]
+                sql = "SELECT c.id " + base + " " + order_sql
+                p2 = list(params)
+                if limit_n is not None:
+                    sql += " LIMIT ?"; p2.append(limit_n)
+                ids = [r[0] for r in conn.execute(sql, p2).fetchall()]
+                return eligible, ids, limit_n
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if use_fts:
+                    continue
+                raise
+        raise last_err
+
+    def _bulk_target(self, conn, crit):
+        """(label_id|None, name|None) for the Set-Label-To target; None if the
+        target names a label that does not exist. Blank clears the label."""
+        t = str(crit.get("target") or "blank")
+        if t in ("blank", "", "none"):
+            return (None, None)
+        if not re.fullmatch(r"[0-9a-f]{32}", t):
+            return None
+        row = conn.execute("SELECT name FROM udb.labels WHERE id = ?", (t,)).fetchone()
+        if not row:
+            return None
+        return (t, row["name"])
+
+    def _bulk_changed_and_apply(self, conn, ids, target_label_id, write):
+        """How many of `ids` the target would change (label differs), optionally
+        writing the change. IN clauses are chunked to stay under SQLite's
+        variable limit."""
+        if not ids:
+            return 0
+        CH = 400
+        if target_label_id:
+            already = set()
+            for i in range(0, len(ids), CH):
+                chunk = ids[i:i + CH]
+                marks = ",".join("?" * len(chunk))
+                for r in conn.execute(
+                    f"SELECT conversation_id FROM udb.conversation_labels "
+                    f"WHERE label_id = ? AND conversation_id IN ({marks})",
+                    (target_label_id, *chunk),
+                ):
+                    already.add(r[0])
+            changed = len(ids) - len(already)
+            if write:
+                now = time.time()
+                conn.executemany(
+                    "INSERT INTO udb.conversation_labels(conversation_id, label_id, assigned_at) "
+                    "VALUES (?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET "
+                    "label_id = excluded.label_id, assigned_at = excluded.assigned_at",
+                    [(cid, target_label_id, now) for cid in ids],
+                )
+            return changed
+        # Clear to blank: only rows that actually exist count as changed.
+        have = set()
+        for i in range(0, len(ids), CH):
+            chunk = ids[i:i + CH]
+            marks = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                f"SELECT conversation_id FROM udb.conversation_labels "
+                f"WHERE conversation_id IN ({marks})",
+                tuple(chunk),
+            ):
+                have.add(r[0])
+        changed = len(have)
+        if write and have:
+            hv = list(have)
+            for i in range(0, len(hv), CH):
+                chunk = hv[i:i + CH]
+                marks = ",".join("?" * len(chunk))
+                conn.execute(
+                    f"DELETE FROM udb.conversation_labels WHERE conversation_id IN ({marks})",
+                    tuple(chunk),
+                )
+        return changed
+
+    def _bulk_describe(self, conn, crit, target_name, target_label_id,
+                       eligible, batch, changed):
+        """A human-readable one-line summary captured at execution time."""
+        parts = []
+        prov = str(crit.get("provider") or "all").lower()
+        parts.append({"claude": "Claude", "chatgpt": "ChatGPT"}.get(prov, "All providers"))
+
+        def dpart(spec, name):
+            if not isinstance(spec, dict):
+                return None
+            op = str(spec.get("op") or "any").lower()
+            if op == "before" and spec.get("date"):
+                return f"{name} before {spec['date']}"
+            if op == "after" and spec.get("date"):
+                return f"{name} after {spec['date']}"
+            if op == "between" and spec.get("date") and spec.get("date2"):
+                return f"{name} {spec['date']}…{spec['date2']}"
+            return None
+
+        for p in (dpart(crit.get("started"), "started"), dpart(crit.get("ended"), "updated")):
+            if p:
+                parts.append(p)
+
+        label = str(crit.get("label") or "any")
+        if label == "blank":
+            parts.append("current label blank")
+        elif label != "any":
+            r = conn.execute("SELECT name FROM udb.labels WHERE id = ?", (label,)).fetchone()
+            parts.append(f"current label {r['name'] if r else 'unknown'}")
+
+        folder = str(crit.get("folder") or "any")
+        if folder == "none":
+            parts.append("no folder")
+        elif folder != "any":
+            r = conn.execute("SELECT name FROM udb.folders WHERE id = ?", (folder,)).fetchone()
+            parts.append(f"folder {r['name'] if r else 'unknown'}")
+
+        tag = str(crit.get("tag") or "").strip()
+        if tag:
+            parts.append(f"tag “{tag}”")
+        kw = str(crit.get("keyword") or "").strip()
+        if kw:
+            parts.append(f"matching “{kw}”")
+
+        lim = crit.get("limit") or {}
+        limtxt = (f"first {lim.get('n')}" if isinstance(lim, dict)
+                  and lim.get("mode") == "first" else "all matching")
+        order_txt = {
+            "started_asc": "started oldest first", "started_desc": "started newest first",
+            "updated_asc": "updated oldest first", "updated_desc": "updated newest first",
+        }.get(str(crit.get("order") or "started_asc"), "")
+        target_txt = target_name if target_label_id else "Blank"
+        return (f"Set label to {target_txt} · {changed} changed of {batch} in batch "
+                f"({eligible} matched) · {limtxt}, {order_txt} · " + " · ".join(parts))
+
+    def _api_bulk_preview(self):
+        crit = self._read_json_body()
+        conn = open_db(self.db_path)
+        try:
+            target = self._bulk_target(conn, crit)
+            if target is None:
+                self.send_json({"error": "Unknown target label"}, 404); return
+            target_label_id, target_name = target
+            try:
+                eligible, ids, _ = self._bulk_run(conn, crit)
+            except sqlite3.Error:
+                self.send_json({"error": "Could not evaluate the criteria"}, 400); return
+            changed = self._bulk_changed_and_apply(conn, ids, target_label_id, write=False)
+            self.send_json({
+                "eligible": eligible, "batch_size": len(ids), "changed": changed,
+                "target_label_id": target_label_id, "target_label_name": target_name,
+            })
+        finally:
+            conn.close()
+
+    def _api_bulk_apply(self):
+        crit = self._read_json_body()
+        conn = open_db(self.db_path)
+        try:
+            target = self._bulk_target(conn, crit)
+            if target is None:
+                self.send_json({"error": "Unknown target label"}, 404); return
+            target_label_id, target_name = target
+            try:
+                eligible, ids, limit_n = self._bulk_run(conn, crit)
+            except sqlite3.Error:
+                self.send_json({"error": "Could not evaluate the criteria"}, 400); return
+            changed = self._bulk_changed_and_apply(conn, ids, target_label_id, write=True)
+            desc = self._bulk_describe(conn, crit, target_name, target_label_id,
+                                       eligible, len(ids), changed)
+            hid = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO udb.label_bulk_history(id, created_at, criteria_json, description, "
+                "target_label_id, target_label_name, limit_used, order_json, "
+                "eligible_count, changed_count) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (hid, time.time(), json.dumps(crit, ensure_ascii=False), desc,
+                 target_label_id, target_name, limit_n,
+                 json.dumps(crit.get("order") or "started_asc"), eligible, changed),
+            )
+            conn.commit()
+            self.send_json({
+                "eligible": eligible, "batch_size": len(ids), "changed": changed,
+                "history_id": hid, "description": desc,
+            })
+        finally:
+            conn.close()
+
+    def _api_bulk_history(self):
+        conn = open_db(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT id, created_at, criteria_json, description, target_label_id, "
+                "target_label_name, limit_used, order_json, eligible_count, changed_count "
+                "FROM udb.label_bulk_history ORDER BY created_at DESC LIMIT 50"
+            ).fetchall()
+            out = []
+            for r in rows:
+                try:
+                    crit = json.loads(r["criteria_json"] or "{}")
+                except Exception:
+                    crit = {}
+                out.append({
+                    "id": r["id"], "created_at": r["created_at"],
+                    "description": r["description"],
+                    "target_label_id": r["target_label_id"],
+                    "target_label_name": r["target_label_name"],
+                    "limit_used": r["limit_used"],
+                    "eligible_count": r["eligible_count"],
+                    "changed_count": r["changed_count"],
+                    "criteria": crit,
+                })
+            self.send_json({"history": out})
         finally:
             conn.close()
 

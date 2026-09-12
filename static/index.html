@@ -773,10 +773,102 @@
             <section class="labels-section">
               <h3 class="labels-section-title">Bulk Label Conversations</h3>
               <p class="labels-section-hint">
-                Select conversations by criteria and apply a label to all of
-                them at once. This tool arrives in a later phase.
+                Select conversations by criteria — all populated criteria are
+                combined with AND — then set one label on the batch. The only
+                action is Set Label To; nothing here deletes, archives, or moves.
               </p>
-              <div class="labels-placeholder">Coming soon.</div>
+              <div class="bulk-form">
+                <div class="bulk-row">
+                  <label for="bulk-provider">Provider</label>
+                  <select id="bulk-provider">
+                    <option value="all">All</option>
+                    <option value="claude">Claude</option>
+                    <option value="chatgpt">ChatGPT</option>
+                  </select>
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-started-op">Started</label>
+                  <select id="bulk-started-op" class="bulk-date-op">
+                    <option value="any">Any</option>
+                    <option value="before">Before</option>
+                    <option value="after">After</option>
+                    <option value="between">Between</option>
+                  </select>
+                  <input type="date" id="bulk-started-date" hidden />
+                  <span id="bulk-started-and" class="bulk-and" hidden>and</span>
+                  <input type="date" id="bulk-started-date2" hidden />
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-ended-op">Last updated</label>
+                  <select id="bulk-ended-op" class="bulk-date-op">
+                    <option value="any">Any</option>
+                    <option value="before">Before</option>
+                    <option value="after">After</option>
+                    <option value="between">Between</option>
+                  </select>
+                  <input type="date" id="bulk-ended-date" hidden />
+                  <span id="bulk-ended-and" class="bulk-and" hidden>and</span>
+                  <input type="date" id="bulk-ended-date2" hidden />
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-label">Current label</label>
+                  <select id="bulk-label">
+                    <option value="any">Any</option>
+                    <option value="blank">Blank</option>
+                  </select>
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-folder">Folder</label>
+                  <select id="bulk-folder">
+                    <option value="any">Any</option>
+                    <option value="none">No folder</option>
+                  </select>
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-tag">Tag</label>
+                  <select id="bulk-tag"><option value="">Any</option></select>
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-keyword">Keyword</label>
+                  <input
+                    type="text"
+                    id="bulk-keyword"
+                    placeholder="Optional — same search as the sidebar"
+                    spellcheck="false"
+                  />
+                </div>
+                <div class="bulk-row">
+                  <label for="bulk-order">Order</label>
+                  <select id="bulk-order">
+                    <option value="started_asc">Started: oldest first</option>
+                    <option value="started_desc">Started: newest first</option>
+                    <option value="updated_asc">Last updated: oldest first</option>
+                    <option value="updated_desc">Last updated: newest first</option>
+                  </select>
+                </div>
+                <div class="bulk-row">
+                  <label>Limit</label>
+                  <label class="bulk-inline">
+                    <input type="radio" name="bulk-limit" value="all" checked />
+                    All matching
+                  </label>
+                  <label class="bulk-inline">
+                    <input type="radio" name="bulk-limit" value="first" />
+                    First
+                  </label>
+                  <input type="number" id="bulk-limit-n" min="1" value="50" disabled />
+                </div>
+                <div class="bulk-row bulk-row-action">
+                  <label for="bulk-target">Set label to</label>
+                  <select id="bulk-target"><option value="blank">Blank</option></select>
+                </div>
+                <div class="bulk-buttons">
+                  <button type="button" id="bulk-preview-btn">Preview</button>
+                  <button type="button" id="bulk-apply-btn" disabled>Apply</button>
+                </div>
+                <div id="bulk-result" class="bulk-result" hidden></div>
+                <div id="bulk-error" class="labels-form-error" hidden></div>
+              </div>
             </section>
 
             <!-- D. Safety Snapshots / Recent Bulk Changes ─────────────── -->
@@ -793,11 +885,11 @@
             <section class="labels-section">
               <h3 class="labels-section-title">Recent Bulk Changes</h3>
               <p class="labels-section-hint">
-                A short history of your recent bulk-label operations, so you can
-                see what you did and reuse a prior selection. This tool arrives
-                in a later phase.
+                Your recent bulk-label operations. Reuse loads a change's
+                criteria back into the tool above. This is a reminder of what
+                you did, not an undo — recovery is what Safety Snapshots are for.
               </p>
-              <div class="labels-placeholder">Coming soon.</div>
+              <ul id="bulk-history-list" class="bulk-history-list"></ul>
             </section>
           </div>
         </div>

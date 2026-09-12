@@ -3612,6 +3612,153 @@ kbd {
   align-items: center;
 }
 
+/* ── Bulk label tool ──────────────────────────────────────────────────────── */
+.bulk-form {
+  margin-top: 8px;
+}
+.bulk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+.bulk-row > label:first-child {
+  min-width: 110px;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.bulk-row select,
+.bulk-row input[type="text"],
+.bulk-row input[type="date"],
+.bulk-row input[type="number"] {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.bulk-row input[type="text"] {
+  flex: 1;
+  min-width: 180px;
+}
+.bulk-row input[type="number"] {
+  width: 84px;
+}
+.bulk-row select:focus,
+.bulk-row input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.bulk-and {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.bulk-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.85rem;
+}
+.bulk-row-action {
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+.bulk-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+#bulk-preview-btn,
+#bulk-apply-btn {
+  font: inherit;
+  border-radius: 6px;
+  padding: 7px 18px;
+  cursor: pointer;
+}
+#bulk-preview-btn {
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+#bulk-preview-btn:hover {
+  background: var(--hover);
+}
+#bulk-apply-btn {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+#bulk-apply-btn:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+#bulk-apply-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.bulk-result {
+  margin-top: 12px;
+  font-size: 0.88rem;
+  color: var(--text);
+  background: var(--hover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.bulk-result strong {
+  font-weight: 600;
+}
+
+.bulk-history-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.bulk-history-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.bulk-history-row:last-child {
+  border-bottom: none;
+}
+.bulk-history-main {
+  flex: 1;
+  min-width: 0;
+}
+.bulk-history-desc {
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.bulk-history-when {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 3px;
+}
+.bulk-history-reuse {
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 5px;
+  padding: 5px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.bulk-history-reuse:hover {
+  background: var(--hover);
+}
+.bulk-history-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 8px 0;
+}
+
 /* ── Recycle Bin ──────────────────────────────────────────────────────────── */
 /* Action control (Delete/Restore All/Selected + Go). Shown only in the Recycle
    Bin view; its visibility never depends on which action is selected. */
