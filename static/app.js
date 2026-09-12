@@ -34,7 +34,8 @@ const state = {
     labelsEnabled: false,
     labelDisplay: "square", // "square" | "square_label"
   },
-  labelRows: [], // the Labels screen's label definitions
+  labelRows: [], // label definitions (shared by the Labels screen and squares)
+  activeLabel: null, // the open conversation's current label ({id,name,color}|null)
   scrollByConversation: {},
   // Which side the sidebar toggle shows: "claude" or "chatgpt". Persisted so
   // reopening the app returns to the side last viewed.
@@ -1291,6 +1292,18 @@ function openConvItemMenu(c, anchorBtn) {
     menu.appendChild(b);
   }
 
+  // Direct label selection (Blank + configured labels) so someone with several
+  // labels need not click-cycle repeatedly. Only when the feature is on.
+  if (labelsFeatureOn()) {
+    appendSetLabelToMenu(
+      menu,
+      c.id,
+      c.label ? c.label.id : null,
+      "sidebar-menu-item",
+      () => closeConvItemMenu(),
+    );
+  }
+
   document.body.appendChild(menu);
   _convMenuEl = menu;
   // Position under the button, right-aligned, kept on screen.
@@ -1347,6 +1360,12 @@ function appendListItems(convs, targetEl = convList) {
     const top = document.createElement("div");
     top.className = "conv-top-row";
     top.innerHTML = `<div class="conv-title">${warningIconsHtml(c)}${escHtml(c.title)}</div>`;
+    // Compact label square, immediately before the title. Only when the feature
+    // is on; it rides on the title's text line so the row keeps its height.
+    if (labelsFeatureOn()) {
+      const titleEl = top.querySelector(".conv-title");
+      titleEl.insertBefore(labelIndicatorEl(c.id, c.label || null), titleEl.firstChild);
+    }
     // Recycle Bin rows carry an always-visible checkbox beside the title. Its
     // presence depends only on the view, never on which action is selected.
     if (state.view === "deleted") {
@@ -1522,7 +1541,7 @@ function updateListSectionTitle() {
   if (!listSectionTitle) return;
   listSectionTitle.textContent = state.q
     ? "Search results"
-    : VIEW_LABELS[state.view] || "Recent";
+    : labelViewTitle(state.view) || VIEW_LABELS[state.view] || "Recent";
 }
 
 // The conversation-count row. In the Recycle Bin it also shows the current
@@ -2118,6 +2137,8 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   thread.hidden = false;
   messagesEl.innerHTML = '<div class="loading">Loading…</div>';
   setThreadTitle("");
+  renderHeaderLabel(null, null);
+  state.activeLabel = null;
   threadMeta.textContent = "";
   threadTags.innerHTML = "";
 
@@ -2137,6 +2158,8 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   state.activeFolderPinned = !!conv.folder_pinned;
 
   setThreadTitle(conv.title);
+  state.activeLabel = conv.label || null;
+  renderHeaderLabel(conv.id, state.activeLabel);
   const ts = formatDate(conv.update_time || conv.create_time);
   threadMeta.textContent = "";
   const metaText = document.createElement("span");
@@ -2440,7 +2463,10 @@ viewFilterEl?.addEventListener("change", () => {
   syncPinnedSectionVisibility();
   syncRecycleControls();
   updateListSectionTitle();
-  saveUiPreferences({ conversationView: state.view });
+  // Label views are session-scoped; only base views are remembered across reloads.
+  if (!String(state.view).startsWith("label:")) {
+    saveUiPreferences({ conversationView: state.view });
+  }
   loadConversations(false);
 });
 
@@ -3887,6 +3913,7 @@ async function saveLabel(label, patch, inputEl) {
     });
     state.labelRows = data.labels || [];
     renderLabelList();
+    onLabelDefsChanged();
   } catch (e) {
     // Put the rejected value back.
     if (inputEl && "name" in patch) inputEl.value = label.name;
@@ -3910,6 +3937,7 @@ async function moveLabel(index, delta) {
     });
     state.labelRows = data.labels || [];
     renderLabelList();
+    onLabelDefsChanged();
   } catch (e) {
     showLabelError(e.message);
   }
@@ -3935,6 +3963,7 @@ async function deleteLabel(label) {
     });
     state.labelRows = data.labels || [];
     renderLabelList();
+    onLabelDefsChanged();
   } catch (e) {
     showLabelError(e.message);
   }
@@ -3956,6 +3985,7 @@ labelAddForm?.addEventListener("submit", async (e) => {
     });
     state.labelRows = data.labels || [];
     renderLabelList();
+    onLabelDefsChanged();
     labelAddName.value = "";
     labelAddName.focus();
   } catch (err) {
@@ -3963,15 +3993,323 @@ labelAddForm?.addEventListener("submit", async (e) => {
   }
 });
 
-labelsEnabledToggle?.addEventListener("change", () => {
-  saveUiPreferences({ labelsEnabled: labelsEnabledToggle.checked });
+labelsEnabledToggle?.addEventListener("change", async () => {
+  await saveUiPreferences({ labelsEnabled: labelsEnabledToggle.checked });
+  // Make sure the definitions are loaded, then bring the whole UI in line:
+  // filter options, sidebar squares, and the open conversation's header.
+  await loadLabelDefs();
+  syncLabelFilterOptions();
+  loadConversations(false);
+  if (state.activeId) renderHeaderLabel(state.activeId, state.activeLabel);
 });
 
 labelsDisplaySelect?.addEventListener("change", () => {
   const val =
     labelsDisplaySelect.value === "square_label" ? "square_label" : "square";
   saveUiPreferences({ labelDisplay: val });
+  // The display mode changes how every square renders.
+  if (labelsFeatureOn()) {
+    loadConversations(false);
+    if (state.activeId) renderHeaderLabel(state.activeId, state.activeLabel);
+  }
 });
+
+// ── Label indicators + assignment (runtime) ──────────────────────────────────
+// The compact square shown before each conversation title. Rendering and every
+// interaction here are gated on the feature being enabled; when it is off no
+// square, menu entry, or label view appears, and the stored data is untouched.
+
+function labelsFeatureOn() {
+  return !!state.preferences.labelsEnabled;
+}
+
+// Labels in their user-configured cycle order. The server already returns them
+// ordered by sort_index, but sort defensively so cycling never depends on it.
+function orderedLabels() {
+  return [...state.labelRows].sort(
+    (a, b) => (a.sort_index || 0) - (b.sort_index || 0),
+  );
+}
+
+function labelById(id) {
+  return state.labelRows.find((l) => l.id === id) || null;
+}
+
+// Load the label definitions once (and after any change) so squares and cycling
+// work without opening the Labels screen. Shared with refreshLabelList's data.
+async function loadLabelDefs() {
+  try {
+    const data = await apiModelState("/api/labels");
+    state.labelRows = data.labels || [];
+  } catch {
+    state.labelRows = [];
+  }
+  return state.labelRows;
+}
+
+// Build the indicator element for one conversation. In "square" mode it is just
+// the square (name only in tooltip/aria); in "square_label" mode a compact name
+// rides beside it. Always keyboard-focusable and clickable.
+function labelIndicatorEl(convId, label) {
+  const wrap = document.createElement("span");
+  wrap.className = "label-indicator";
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "label-square" + (label ? "" : " label-square-blank");
+  if (label) {
+    btn.style.background = _validHexColor(label.color) ? label.color : "#888888";
+    btn.title = label.name;
+    btn.setAttribute("aria-label", `Label: ${label.name}. Activate to change.`);
+  } else {
+    btn.title = "No label";
+    btn.setAttribute("aria-label", "No label. Activate to set one.");
+  }
+  // Primary click cycles; it must never also open/select the conversation.
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    cycleConvLabel(convId, label);
+  });
+  // A right-click offers direct selection without repeated cycling.
+  btn.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openSetLabelPopover(convId, label ? label.id : null, btn);
+  });
+  wrap.appendChild(btn);
+
+  if (label && state.preferences.labelDisplay === "square_label") {
+    const txt = document.createElement("span");
+    txt.className = "label-text";
+    txt.textContent = label.name;
+    wrap.appendChild(txt);
+  }
+  return wrap;
+}
+
+// Blank → label[0] → label[1] → … → last → Blank, in configured order.
+async function cycleConvLabel(convId, currentLabel) {
+  const order = orderedLabels();
+  if (!order.length) return; // no labels configured — nothing to cycle to
+  let nextId;
+  if (!currentLabel) {
+    nextId = order[0].id;
+  } else {
+    const idx = order.findIndex((l) => l.id === currentLabel.id);
+    if (idx === -1) nextId = order[0].id;
+    else if (idx >= order.length - 1) nextId = null; // wrap back to blank
+    else nextId = order[idx + 1].id;
+  }
+  await setConvLabel(convId, nextId);
+}
+
+async function setConvLabel(convId, labelId) {
+  try {
+    const data = await apiModelState("/api/conversation-labels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conv_id: convId, label_id: labelId || null }),
+    });
+    applyConvLabelResult(convId, data.label || null);
+  } catch (_) {
+    /* leave the current square as-is on failure */
+  }
+}
+
+// Reflect a just-applied label into the UI without a full reload where possible.
+function applyConvLabelResult(convId, label) {
+  // In a label view the row may now belong (or no longer belong) to the filter,
+  // so reload the filtered list rather than leaving a stale row behind.
+  if (String(state.view).startsWith("label:")) {
+    loadConversations(false);
+  } else {
+    refreshRowLabel(convId, label);
+  }
+  if (convId === state.activeId) {
+    state.activeLabel = label;
+    renderHeaderLabel(convId, label);
+  }
+  // Keep the Labels screen's usage counts fresh if it happens to be open.
+  if (state.activeSpecialView === "labels") {
+    loadLabelDefs().then(() => {
+      renderLabelList();
+    });
+  }
+}
+
+// Replace (or insert) the indicator on a sidebar row in place.
+function refreshRowLabel(convId, label) {
+  const item = findConvItemEl(convId);
+  const title = item?.querySelector(".conv-title");
+  if (!title) return;
+  const fresh = labelsFeatureOn() ? labelIndicatorEl(convId, label) : null;
+  const old = title.querySelector(":scope > .label-indicator");
+  if (fresh) {
+    if (old) title.replaceChild(fresh, old);
+    else title.insertBefore(fresh, title.firstChild);
+  } else if (old) {
+    old.remove();
+  }
+}
+
+// The square shown next to the open conversation's title in the header.
+function renderHeaderLabel(convId, label) {
+  const holder = $("thread-title-square");
+  if (!holder) return;
+  holder.innerHTML = "";
+  if (!labelsFeatureOn() || !convId) return;
+  holder.appendChild(labelIndicatorEl(convId, label));
+}
+
+// ── Direct label selection (⋮ menus + right-click popover) ────────────────────
+
+// Add a "Set label" group (Blank + each configured label) to an open menu.
+// itemClass matches the menu's own button class so styling stays consistent.
+function appendSetLabelToMenu(menu, convId, currentLabelId, itemClass, onSelect) {
+  const cap = document.createElement("div");
+  cap.className = "menu-section-caption";
+  cap.textContent = "Set label";
+  menu.appendChild(cap);
+
+  const options = [{ id: null, name: "Blank", color: null }, ...orderedLabels()];
+  for (const opt of options) {
+    const b = document.createElement("button");
+    b.className = `${itemClass} set-label-item`;
+    b.setAttribute("role", "menuitem");
+
+    const dot = document.createElement("span");
+    dot.className = "menu-label-dot" + (opt.id ? "" : " menu-label-dot-blank");
+    if (opt.id) dot.style.background = _validHexColor(opt.color) ? opt.color : "#888888";
+
+    const name = document.createElement("span");
+    name.className = "sidebar-menu-item-label";
+    name.textContent = opt.name;
+
+    b.append(dot, name);
+    if ((opt.id || null) === (currentLabelId || null)) {
+      const check = document.createElement("span");
+      check.className = "menu-check";
+      check.textContent = "✓";
+      b.appendChild(check);
+    }
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (onSelect) onSelect();
+      setConvLabel(convId, opt.id);
+    });
+    menu.appendChild(b);
+  }
+}
+
+let _setLabelPopover = null;
+function closeSetLabelPopover() {
+  if (_setLabelPopover) {
+    _setLabelPopover.remove();
+    _setLabelPopover = null;
+    document.removeEventListener("mousedown", _onSetLabelOutside, true);
+    window.removeEventListener("scroll", closeSetLabelPopover, true);
+  }
+}
+function _onSetLabelOutside(e) {
+  if (_setLabelPopover && !_setLabelPopover.contains(e.target)) {
+    closeSetLabelPopover();
+  }
+}
+// A small standalone menu anchored to a square, for right-click direct-select.
+function openSetLabelPopover(convId, currentLabelId, anchorEl) {
+  closeSetLabelPopover();
+  if (!labelsFeatureOn()) return;
+  const menu = document.createElement("div");
+  menu.className = "sidebar-menu conv-item-menu";
+  menu.setAttribute("role", "menu");
+  appendSetLabelToMenu(menu, convId, currentLabelId, "sidebar-menu-item", () =>
+    closeSetLabelPopover(),
+  );
+  document.body.appendChild(menu);
+  _setLabelPopover = menu;
+  const r = anchorEl.getBoundingClientRect();
+  const mw = menu.offsetWidth;
+  let left = r.left;
+  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+  if (left < 8) left = 8;
+  let top = r.bottom + 4;
+  if (top + menu.offsetHeight > window.innerHeight - 8) {
+    top = r.top - menu.offsetHeight - 4;
+  }
+  menu.style.left = `${left}px`;
+  menu.style.top = `${top}px`;
+  document.addEventListener("mousedown", _onSetLabelOutside, true);
+  window.addEventListener("scroll", closeSetLabelPopover, true);
+}
+
+// ── Label filter views in the existing view/filter control ────────────────────
+
+function labelViewTitle(view) {
+  if (!view || !String(view).startsWith("label:")) return null;
+  const sel = String(view).slice("label:".length);
+  if (sel === "__unlabeled__") return "Unlabeled";
+  const l = labelById(sel);
+  return l ? l.name : "Label";
+}
+
+// Rebuild the label options in the filter dropdown to match the current
+// definitions and enabled state. Provider selection is unaffected — the server
+// applies the provider filter alongside the label filter.
+function syncLabelFilterOptions() {
+  if (!viewFilterEl) return;
+  viewFilterEl
+    .querySelectorAll("option.label-view-option")
+    .forEach((o) => o.remove());
+  if (!labelsFeatureOn()) {
+    if (String(state.view).startsWith("label:")) {
+      state.view = "recent";
+      viewFilterEl.value = "recent";
+      updateListSectionTitle();
+    }
+    return;
+  }
+  const mk = (val, text) => {
+    const o = document.createElement("option");
+    o.value = val;
+    o.textContent = text;
+    o.className = "label-view-option";
+    return o;
+  };
+  const frag = document.createDocumentFragment();
+  frag.appendChild(mk("label:__unlabeled__", "Unlabeled"));
+  for (const l of orderedLabels()) frag.appendChild(mk("label:" + l.id, l.name));
+  viewFilterEl.appendChild(frag);
+  // Keep the current selection valid; if its label was deleted, fall back.
+  if (String(state.view).startsWith("label:")) {
+    viewFilterEl.value = state.view;
+    if (viewFilterEl.value !== state.view) {
+      state.view = "recent";
+      viewFilterEl.value = "recent";
+    }
+    updateListSectionTitle();
+  }
+}
+
+// Called after label definitions change (add/rename/recolour/reorder/delete):
+// refresh the filter options and any visible squares.
+function onLabelDefsChanged() {
+  syncLabelFilterOptions();
+  if (labelsFeatureOn()) {
+    loadConversations(false);
+    if (state.activeId) {
+      // The open conversation's label object may have been recoloured/renamed
+      // or cleared (its label deleted); re-read it from the label defs.
+      if (state.activeLabel) {
+        const fresh = labelById(state.activeLabel.id);
+        state.activeLabel = fresh
+          ? { id: fresh.id, name: fresh.name, color: fresh.color }
+          : null;
+      }
+      renderHeaderLabel(state.activeId, state.activeLabel);
+    }
+  }
+}
 
 // ── Import New Chats screen ──────────────────────────────────────────────────
 // Scans the source folder for backup files not yet imported, identifies each as
@@ -5285,6 +5623,25 @@ threadMoreBtn?.addEventListener("click", (e) => {
       pinItem.textContent = state.activePinned ? "Unpin" : "Pin";
     }
   }
+  // Rebuild the direct label-selection group each open so it reflects the
+  // current definitions and the open conversation's label.
+  threadMoreMenu
+    .querySelectorAll(".label-menu-injected")
+    .forEach((n) => n.remove());
+  if (labelsFeatureOn()) {
+    const before = threadMoreMenu.childElementCount;
+    appendSetLabelToMenu(
+      threadMoreMenu,
+      state.activeId,
+      state.activeLabel ? state.activeLabel.id : null,
+      "thread-dropdown-item",
+      () => closeThreadMenus(),
+    );
+    // Tag the just-added nodes so they can be cleared on the next open.
+    Array.from(threadMoreMenu.children)
+      .slice(before)
+      .forEach((n) => n.classList.add("label-menu-injected"));
+  }
   threadMoreMenu.hidden = false;
   document.addEventListener("mousedown", onThreadMenuOutside, true);
 });
@@ -5364,6 +5721,8 @@ async function initApp() {
   applyThreadHeaderCollapsed();
   await loadDatasetFormat();
   await loadUiPreferences();
+  await loadLabelDefs();
+  syncLabelFilterOptions();
   renderSearchHistory();
   await refreshPinnedList();
   await loadFolders();
@@ -5393,7 +5752,10 @@ messagesEl?.addEventListener("scroll", () => {
 window.addEventListener("beforeunload", () => {
   apiUpdatePreferences({
     ...state.preferences,
-    conversationView: state.view,
+    // Don't persist a transient label view as the remembered base view.
+    conversationView: String(state.view).startsWith("label:")
+      ? state.preferences.conversationView || "recent"
+      : state.view,
     scrollByConversation: state.scrollByConversation,
     lastConversationId: state.lastConversationId,
   });

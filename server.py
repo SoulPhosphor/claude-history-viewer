@@ -1109,6 +1109,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_label_create()
         elif path == "/api/labels/reorder":
             self._api_labels_reorder()
+        elif path == "/api/conversation-labels":
+            self._api_conversation_label_set()
         elif path == "/api/import-new":
             self._api_import_new()
         elif path == "/api/recycle-bin/restore":
@@ -1479,6 +1481,22 @@ class Handler(BaseHTTPRequestHandler):
         whole dataset is Claude).
         """
         convs = [dict(r) for r in rows]
+        # Attach each row's label in one batched query so the sidebar can draw
+        # its square without a request per conversation (no N+1).
+        ids = [c["id"] for c in convs]
+        if ids:
+            marks = ",".join("?" * len(ids))
+            labels_by_conv = {}
+            for r in conn.execute(
+                "SELECT cl.conversation_id AS cid, l.id AS id, l.name AS name, l.color AS color "
+                "FROM udb.conversation_labels cl "
+                "JOIN udb.labels l ON l.id = cl.label_id "
+                f"WHERE cl.conversation_id IN ({marks})",
+                tuple(ids),
+            ).fetchall():
+                labels_by_conv[r["cid"]] = {"id": r["id"], "name": r["name"], "color": r["color"]}
+            for c in convs:
+                c["label"] = labels_by_conv.get(c["id"])
         claude_side = (provider == "claude") if provider else (self._dataset_format(conn) == "claude")
         if claude_side:
             flags = _compute_conv_flags(
@@ -1506,6 +1524,14 @@ class Handler(BaseHTTPRequestHandler):
         if provider not in ("claude", "chatgpt"):
             provider = None
         prov_sql = f" AND c.provider = '{provider}'" if provider else ""
+        # A "label:<id>" (or "label:__unlabeled__") view filters by conversation
+        # label. It behaves like the "all" view for the deleted/archived/folder
+        # gating, then adds the label constraint — so a labelled chat still shows
+        # even when archived or inside a folder.
+        label_filter = None
+        if view.startswith("label:"):
+            label_filter = view[len("label:"):]
+            view = "labelview"
         conn = open_db(self.db_path)
         try:
             if view == "unverified":
@@ -1570,9 +1596,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if view == "archived":
                 where_clauses.append("COALESCE(cm.archived, 0) = 1")
-            elif view == "all":
-                pass
-            elif view == "deleted":
+            elif view in ("all", "deleted", "labelview"):
                 pass
             else:
                 where_clauses.append("COALESCE(cm.archived, 0) = 0")
@@ -1587,7 +1611,9 @@ class Handler(BaseHTTPRequestHandler):
             # deleted = 0), so the Recycle Bin is the only place it can be seen
             # and restored; excluding it here would strand it. Its folder
             # membership is preserved so restoring returns it to that folder.
-            if view != "deleted":
+            # A label view searches across folders too, so a labelled chat that
+            # lives in a folder still appears under its label filter.
+            if view not in ("deleted", "labelview"):
                 where_clauses.append(
                     "c.id NOT IN (SELECT conversation_id FROM udb.folder_items)"
                 )
@@ -1595,6 +1621,21 @@ class Handler(BaseHTTPRequestHandler):
             # whitelisted above, so this literal is safe.
             if provider:
                 where_clauses.append(f"c.provider = '{provider}'")
+            # The label constraint. label_id is a uuid4 hex, validated before it
+            # is interpolated (like `provider`); an unrecognised value yields no
+            # rows rather than an error.
+            if label_filter is not None:
+                if label_filter == "__unlabeled__":
+                    where_clauses.append(
+                        "c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels)"
+                    )
+                elif re.fullmatch(r"[0-9a-f]{32}", label_filter):
+                    where_clauses.append(
+                        "c.id IN (SELECT conversation_id FROM udb.conversation_labels "
+                        f"WHERE label_id = '{label_filter}')"
+                    )
+                else:
+                    where_clauses.append("0")
             where_sql = " AND ".join(where_clauses)
 
             if q:
@@ -1756,7 +1797,11 @@ class Handler(BaseHTTPRequestHandler):
             # where the whole feature is absent.
             models = (self._conv_model_state(conn, conv_id)
                       if self._dataset_format(conn) == "claude" else None)
-            self.send_json({"conversation": dict(conv),
+            conv_dict = dict(conv)
+            # The current label rides along so opening a conversation stays one
+            # request; the header square reads it directly.
+            conv_dict["label"] = self._conv_label(conn, conv_id)
+            self.send_json({"conversation": conv_dict,
                             "messages": [parse_msg(m) for m in msgs],
                             "artifacts": artifacts_meta,
                             "models": models,
@@ -2995,6 +3040,56 @@ class Handler(BaseHTTPRequestHandler):
                 idx += 1
             conn.commit()
             self.send_json({"labels": self._labels_with_counts(conn)})
+        finally:
+            conn.close()
+
+    def _conv_label(self, conn, conv_id):
+        """The label a conversation currently carries, or None (the blank
+        state). Shape matches what the sidebar/header square renders."""
+        row = conn.execute(
+            "SELECT l.id, l.name, l.color FROM udb.conversation_labels cl "
+            "JOIN udb.labels l ON l.id = cl.label_id "
+            "WHERE cl.conversation_id = ?",
+            (conv_id,),
+        ).fetchone()
+        return ({"id": row["id"], "name": row["name"], "color": row["color"]}
+                if row else None)
+
+    def _api_conversation_label_set(self):
+        """Set (or clear) a conversation's single label. A falsy label_id
+        clears it back to blank — the assignment row is removed, never swapped
+        for a placeholder label."""
+        payload = self._read_json_body()
+        conv_id = str(payload.get("conv_id") or "").strip()
+        raw = payload.get("label_id")
+        label_id = str(raw).strip() if raw else ""
+        if not conv_id:
+            self.send_json({"error": "conv_id is required"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            if not conn.execute(
+                "SELECT 1 FROM conversations WHERE id = ?", (conv_id,)
+            ).fetchone():
+                self.send_json({"error": "Unknown conversation"}, 404); return
+            if label_id:
+                if not conn.execute(
+                    "SELECT 1 FROM udb.labels WHERE id = ?", (label_id,)
+                ).fetchone():
+                    self.send_json({"error": "Unknown label"}, 404); return
+                conn.execute(
+                    "INSERT INTO udb.conversation_labels(conversation_id, label_id, assigned_at) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT(conversation_id) DO UPDATE SET "
+                    "  label_id = excluded.label_id, assigned_at = excluded.assigned_at",
+                    (conv_id, label_id, time.time()),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM udb.conversation_labels WHERE conversation_id = ?",
+                    (conv_id,),
+                )
+            conn.commit()
+            self.send_json({"conv_id": conv_id, "label": self._conv_label(conn, conv_id)})
         finally:
             conn.close()
 

@@ -3508,6 +3508,110 @@ kbd {
   padding: 10px 0;
 }
 
+/* ── Compact label indicators (sidebar rows + conversation header) ─────────── */
+/* A small square sits immediately before a conversation's title. It must not
+   add a row or materially change row height, so it is an inline-block that
+   rides on the title's text line. */
+.label-indicator {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  max-width: 100%;
+}
+.label-square {
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  margin-right: 5px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  flex-shrink: 0;
+  cursor: pointer;
+  display: inline-block;
+  vertical-align: middle;
+  -webkit-appearance: none;
+  appearance: none;
+}
+/* Blank state: an unobtrusive outline that is still clickable. */
+.label-square-blank {
+  background: transparent;
+  border-color: var(--muted);
+  opacity: 0.55;
+}
+.conv-item:hover .label-square-blank,
+.label-square-blank:hover {
+  opacity: 1;
+}
+.label-square:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* Square + label mode: a compact name beside the square. Capped so a long
+   label name can never crowd the title out entirely. */
+.label-text {
+  display: inline-block;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+  font-size: 11px;
+  color: var(--muted);
+  margin-right: 5px;
+  flex-shrink: 0;
+}
+
+.thread-title-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+#thread-title-square:empty {
+  display: none;
+}
+/* The header square is a touch larger to match the bigger title text. */
+#thread-title-square .label-square {
+  width: 11px;
+  height: 11px;
+}
+
+/* Set-label options inside the ⋮ menus. */
+.menu-section-caption {
+  padding: 6px 12px 2px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+.menu-label-dot {
+  box-sizing: border-box;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+.menu-label-dot-blank {
+  background: transparent;
+  border: 1px solid var(--muted);
+}
+.menu-check {
+  margin-left: auto;
+  padding-left: 10px;
+  color: var(--accent);
+}
+.sidebar-menu-item.set-label-item,
+.thread-dropdown-item.set-label-item {
+  display: flex;
+  align-items: center;
+}
+
 /* ── Recycle Bin ──────────────────────────────────────────────────────────── */
 /* Action control (Delete/Restore All/Selected + Go). Shown only in the Recycle
    Bin view; its visibility never depends on which action is selected. */
