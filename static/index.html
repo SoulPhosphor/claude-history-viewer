@@ -877,9 +877,34 @@
               <p class="labels-section-hint">
                 Manually capture a recoverable snapshot of your labels, folders,
                 tags, titles, pins, and archived/deleted state (never message
-                content). Up to 10 are kept. This tool arrives in a later phase.
+                content). Snapshots are only ever made when you press the button
+                below. Up to 10 are kept.
               </p>
-              <div class="labels-placeholder">Coming soon.</div>
+              <div class="snapshot-create-row">
+                <input
+                  type="text"
+                  id="snapshot-name"
+                  placeholder="Optional name (a timestamp is used if blank)"
+                  spellcheck="false"
+                  maxlength="120"
+                />
+                <button type="button" id="snapshot-create-btn">Create Snapshot</button>
+              </div>
+              <div id="snapshot-error" class="labels-form-error" hidden></div>
+              <div id="snapshot-table-wrap">
+                <table id="snapshot-table">
+                  <thead>
+                    <tr>
+                      <th>Snapshot</th>
+                      <th>Created</th>
+                      <th>Contents</th>
+                      <th>Size</th>
+                      <th aria-label="Actions"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="snapshot-table-body"></tbody>
+                </table>
+              </div>
             </section>
 
             <section class="labels-section">
@@ -929,6 +954,24 @@
           <button id="confirm-modal-cancel" class="modal-btn">Cancel</button>
           <button id="confirm-modal-ok" class="modal-btn modal-btn-danger">
             Delete
+          </button>
+        </div>
+      </div>
+    </div>
+    <!-- Snapshot restore: choose which metadata categories to restore. -->
+    <div id="snapshot-restore-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-title">Restore snapshot</div>
+        <div class="modal-text">
+          Choose which metadata categories to restore. Only the selected
+          categories are returned to their recorded state — this can reverse
+          changes made since the snapshot. Conversation content is never touched.
+        </div>
+        <div id="snapshot-restore-cats" class="snapshot-cats"></div>
+        <div class="modal-buttons">
+          <button id="snapshot-restore-cancel" class="modal-btn">Cancel</button>
+          <button id="snapshot-restore-ok" class="modal-btn modal-btn-primary">
+            Restore
           </button>
         </div>
       </div>

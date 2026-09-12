@@ -3791,6 +3791,109 @@ kbd {
   padding: 8px 0;
 }
 
+/* ── Safety snapshots ─────────────────────────────────────────────────────── */
+.snapshot-create-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+#snapshot-name {
+  flex: 1;
+  min-width: 180px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+}
+#snapshot-name:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+#snapshot-create-btn {
+  font: inherit;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  padding: 7px 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#snapshot-create-btn:hover:not(:disabled) {
+  filter: brightness(1.05);
+}
+#snapshot-create-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.snapshot-ok {
+  color: var(--accent) !important;
+}
+#snapshot-table {
+  width: 100%;
+  margin-top: 10px;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+#snapshot-table th {
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+#snapshot-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.snapshot-name-cell {
+  font-weight: 600;
+}
+.snapshot-contents-cell {
+  color: var(--muted);
+}
+.snapshot-actions {
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+}
+.snapshot-btn {
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 5px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.snapshot-btn:hover {
+  background: var(--hover);
+}
+.snapshot-btn-danger:hover {
+  border-color: #b3261e;
+  color: #b3261e;
+}
+.snapshot-cats {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0;
+  text-align: left;
+}
+.snapshot-cat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
 /* ── Recycle Bin ──────────────────────────────────────────────────────────── */
 /* Action control (Delete/Restore All/Selected + Go). Shown only in the Recycle
    Bin view; its visibility never depends on which action is selected. */
