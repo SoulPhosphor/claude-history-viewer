@@ -1409,8 +1409,17 @@ class Handler(BaseHTTPRequestHandler):
                 "c.create_time, c.update_time, c.message_count, c.preview, "
                 "COALESCE(c.import_status, 'normal') AS import_status, "
                 "c.provider AS provider, "
-                "COALESCE(cm.deleted, 0) AS deleted "
-                "FROM conversations c LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                "COALESCE(cm.deleted, 0) AS deleted, "
+                # The conversation's own pin/folder state, so the thread menu is
+                # correct even for a Compare item from the opposite provider
+                # (whose state is absent from the sidebar-scoped lists).
+                "CASE WHEN pc.conversation_id IS NULL THEN 0 ELSE 1 END AS pinned, "
+                "fi.folder_id AS folder_id, "
+                "COALESCE(fi.pinned, 0) AS folder_pinned "
+                "FROM conversations c "
+                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                "LEFT JOIN pinned_conversations pc ON pc.conversation_id = c.id "
+                "LEFT JOIN udb.folder_items fi ON fi.conversation_id = c.id "
                 # No deleted filter: soft-deleted means "kept out of the lists",
                 # not "unreadable". The import audit lists these deliberately,
                 # and refusing them here left it opening records it could not show.
