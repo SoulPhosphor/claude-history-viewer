@@ -3317,6 +3317,197 @@ kbd {
   background: var(--hover);
 }
 
+/* ── Labels screen ────────────────────────────────────────────────────────── */
+#labels-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#labels-panel[hidden] {
+  display: none;
+}
+#labels-content {
+  flex: 1;
+  padding: 20px 28px 40px;
+  overflow-y: auto;
+}
+.labels-section {
+  max-width: 620px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  margin-bottom: 18px;
+}
+.labels-section-title {
+  margin: 0 0 4px;
+  font-size: 1rem;
+}
+.labels-section-hint {
+  margin: 0 0 14px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.labels-setting-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.labels-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.labels-setting-label {
+  min-width: 110px;
+  font-weight: 600;
+}
+#labels-display-select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+.labels-placeholder {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+#label-add-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+#label-add-color {
+  width: 40px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+  padding: 2px;
+  flex-shrink: 0;
+}
+#label-add-name {
+  flex: 1;
+  min-width: 160px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+}
+#label-add-name:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+#label-add-btn {
+  font: inherit;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  padding: 7px 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#label-add-btn:hover {
+  filter: brightness(1.05);
+}
+.labels-form-error {
+  margin-top: 10px;
+  color: #b3261e;
+  font-size: 0.85rem;
+}
+
+.label-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+}
+.label-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.label-row:last-child {
+  border-bottom: none;
+}
+.label-row-color {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+  padding: 2px;
+  flex-shrink: 0;
+}
+.label-row-name {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: var(--text);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 5px 6px;
+}
+.label-row-name:hover {
+  border-color: var(--border);
+}
+.label-row-name:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--bg);
+}
+.label-row-count {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.label-row-btn {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 5px;
+  padding: 5px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.label-row-btn:hover:not(:disabled) {
+  background: var(--hover);
+}
+.label-row-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.label-row-delete:hover:not(:disabled) {
+  border-color: #b3261e;
+  color: #b3261e;
+}
+.label-list-empty {
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 10px 0;
+}
+
 /* ── Recycle Bin ──────────────────────────────────────────────────────────── */
 /* Action control (Delete/Restore All/Selected + Go). Shown only in the Recycle
    Bin view; its visibility never depends on which action is selected. */

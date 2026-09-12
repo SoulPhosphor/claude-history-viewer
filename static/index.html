@@ -274,6 +274,14 @@
           <span class="sidebar-menu-item-icon" aria-hidden="true">🗓️</span>
           <span class="sidebar-menu-item-label">Add Claude Models</span>
         </button>
+        <button
+          class="sidebar-menu-item"
+          role="menuitem"
+          data-action="labels"
+        >
+          <span class="sidebar-menu-item-icon" aria-hidden="true">🏷️</span>
+          <span class="sidebar-menu-item-label">Labels</span>
+        </button>
       </div>
 
       <!-- Right-click menu for the Folders section, positioned at the click. -->
@@ -695,6 +703,100 @@
             </div>
           </div>
           <div id="att-report-content"></div>
+        </div>
+
+        <div id="labels-panel" hidden>
+          <div class="thread-header">
+            <h2>Labels</h2>
+            <div id="labels-meta">
+              Configurable labels for staging groups of conversations. Names
+              carry no built-in meaning — you choose them.
+            </div>
+          </div>
+          <div id="labels-content">
+            <!-- A. Label feature settings ─────────────────────────────── -->
+            <section class="labels-section">
+              <h3 class="labels-section-title">Label settings</h3>
+              <p class="labels-section-hint">
+                Turn labels on to show them on conversations. Turning them off
+                hides every label control but keeps your label data intact.
+              </p>
+              <div class="labels-setting-row">
+                <label class="labels-switch">
+                  <input type="checkbox" id="labels-enabled-toggle" />
+                  <span>Enable Conversation Labels</span>
+                </label>
+              </div>
+              <div class="labels-setting-row">
+                <label class="labels-setting-label" for="labels-display-select"
+                  >Label Display</label
+                >
+                <select id="labels-display-select">
+                  <option value="square">Square only</option>
+                  <option value="square_label">Square + label</option>
+                </select>
+              </div>
+            </section>
+
+            <!-- B. Label definitions ──────────────────────────────────── -->
+            <section class="labels-section">
+              <h3 class="labels-section-title">Label definitions</h3>
+              <p class="labels-section-hint">
+                Add, rename, recolour, reorder, or delete labels. The order here
+                is the order clicking a conversation's square cycles through.
+              </p>
+              <form id="label-add-form" autocomplete="off">
+                <input
+                  type="color"
+                  id="label-add-color"
+                  value="#4169e1"
+                  aria-label="New label colour"
+                />
+                <input
+                  id="label-add-name"
+                  type="text"
+                  placeholder="New label name"
+                  required
+                  spellcheck="false"
+                  maxlength="60"
+                />
+                <button type="submit" id="label-add-btn">Add Label</button>
+              </form>
+              <div id="label-add-error" class="labels-form-error" hidden></div>
+              <ul id="label-list" class="label-list"></ul>
+            </section>
+
+            <!-- C. Bulk Label Conversations ───────────────────────────── -->
+            <section class="labels-section">
+              <h3 class="labels-section-title">Bulk Label Conversations</h3>
+              <p class="labels-section-hint">
+                Select conversations by criteria and apply a label to all of
+                them at once. This tool arrives in a later phase.
+              </p>
+              <div class="labels-placeholder">Coming soon.</div>
+            </section>
+
+            <!-- D. Safety Snapshots / Recent Bulk Changes ─────────────── -->
+            <section class="labels-section">
+              <h3 class="labels-section-title">Safety Snapshots</h3>
+              <p class="labels-section-hint">
+                Manually capture a recoverable snapshot of your labels, folders,
+                tags, titles, pins, and archived/deleted state (never message
+                content). Up to 10 are kept. This tool arrives in a later phase.
+              </p>
+              <div class="labels-placeholder">Coming soon.</div>
+            </section>
+
+            <section class="labels-section">
+              <h3 class="labels-section-title">Recent Bulk Changes</h3>
+              <p class="labels-section-hint">
+                A short history of your recent bulk-label operations, so you can
+                see what you did and reuse a prior selection. This tool arrives
+                in a later phase.
+              </p>
+              <div class="labels-placeholder">Coming soon.</div>
+            </section>
+          </div>
         </div>
       </main>
     </div>

@@ -325,6 +325,74 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 deleted_at      REAL,
                 PRIMARY KEY (conversation_id, provider)
             );
+
+            -- User-configurable conversation labels. A label is a definition
+            -- (name/colour/order) here; a conversation's assignment lives in
+            -- conversation_labels below. Names carry no hard-coded meaning —
+            -- the user chooses them — and the stable id means renaming or
+            -- recolouring a label never disturbs which conversations use it.
+            CREATE TABLE IF NOT EXISTS labels (
+                id         TEXT PRIMARY KEY,
+                name       TEXT NOT NULL,
+                color      TEXT,
+                -- Position in the click-cycle / display order (0-based).
+                sort_index INTEGER NOT NULL DEFAULT 0,
+                created_at REAL,
+                updated_at REAL
+            );
+
+            -- Which label a conversation has. A conversation has at most one
+            -- label; the blank state is simply the absence of a row (no fake
+            -- "Blank" label). Keyed on conversation_id alone, matching the
+            -- existing tags/folders/model tables — conversation ids are stable
+            -- across rebuilds, so assignments survive a history.db rebuild.
+            CREATE TABLE IF NOT EXISTS conversation_labels (
+                conversation_id TEXT PRIMARY KEY,
+                label_id        TEXT NOT NULL,
+                assigned_at     REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_conv_labels_label
+                ON conversation_labels (label_id);
+
+            -- A short, durable log of each successful conditional bulk-label
+            -- operation. Not an undo journal — it holds no conversation bodies
+            -- and no per-conversation before/after state, only enough to remind
+            -- the user what they did and to let them reuse a prior selection.
+            -- Recovery from a bad change is the job of snapshots, not this.
+            CREATE TABLE IF NOT EXISTS label_bulk_history (
+                id                TEXT PRIMARY KEY,
+                created_at        REAL,
+                -- The selection criteria, serialized, so it can be reloaded.
+                criteria_json     TEXT,
+                -- A human-readable summary captured at execution time.
+                description       TEXT,
+                -- The label applied; NULL means "cleared to blank".
+                target_label_id   TEXT,
+                -- The label's name at the time, kept even if it is later renamed
+                -- or deleted so old history stays readable.
+                target_label_name TEXT,
+                limit_used        INTEGER,
+                -- Sorting/order settings used to pick which matches the limit hit.
+                order_json        TEXT,
+                eligible_count    INTEGER,
+                changed_count     INTEGER
+            );
+
+            -- Manual safety snapshots of user-owned metadata (never message
+            -- content or imported source text). Capped at 10 rows; creation is
+            -- blocked at the cap until the user deletes one (nothing is ever
+            -- deleted silently). The payload is versioned JSON so new categories
+            -- can be added later without invalidating old snapshots.
+            CREATE TABLE IF NOT EXISTS snapshots (
+                id             TEXT PRIMARY KEY,
+                name           TEXT,
+                created_at     REAL,
+                schema_version INTEGER,
+                payload        TEXT,
+                -- Optional display metadata computed at capture time.
+                item_count     INTEGER,
+                payload_size   INTEGER
+            );
             """
         )
         # Add the folders.provider column on databases created before folders
@@ -1037,6 +1105,10 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_model_dismiss()
         elif path == "/api/tags":
             self._api_tag_add()
+        elif path == "/api/labels":
+            self._api_label_create()
+        elif path == "/api/labels/reorder":
+            self._api_labels_reorder()
         elif path == "/api/import-new":
             self._api_import_new()
         elif path == "/api/recycle-bin/restore":
@@ -1062,6 +1134,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_update(urllib.parse.unquote(path[len("/api/conversation/"):]))
         elif path.startswith("/api/claude-models/"):
             self._api_claude_model_update(urllib.parse.unquote(path[len("/api/claude-models/"):]))
+        elif path.startswith("/api/labels/"):
+            self._api_label_update(urllib.parse.unquote(path[len("/api/labels/"):]))
         else:
             self.send_error(404)
 
@@ -1087,6 +1161,8 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) != 2:
                 self.send_error(404); return
             self._api_tag_remove(parts[0], parts[1])
+        elif path.startswith("/api/labels/"):
+            self._api_label_delete(urllib.parse.unquote(path[len("/api/labels/"):]))
         else:
             self.send_error(404)
 
@@ -1197,6 +1273,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_models(qs)
         elif path == "/api/tags":
             self._api_tags_all()
+        elif path == "/api/labels":
+            self._api_labels_list()
         elif path == "/api/preferences":
             self._api_preferences()
         elif path == "/api/pinned":
@@ -2779,6 +2857,144 @@ class Handler(BaseHTTPRequestHandler):
             )
             conn.commit()
             self.send_json({"tags": self._conv_tags(conn, conv_id)})
+        finally:
+            conn.close()
+
+    # ── Conversation labels ──────────────────────────────────────────────────
+    # User-configurable labels stored in the persistent user-data DB (see
+    # `labels` / `conversation_labels` in _ensure_userdata_schema). A label is a
+    # definition here; a conversation has at most one, and the blank state is
+    # the absence of an assignment. Names have no built-in meaning — the user
+    # picks them — and stable ids mean a rename or recolour never moves any
+    # conversation off its label.
+
+    # Colours are stored as #rgb / #rrggbb and validated before write, so the
+    # value can be dropped straight into an inline style on the client.
+    _LABEL_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+    def _norm_label_color(self, value, default="#888888"):
+        s = str(value or "").strip()
+        return s if self._LABEL_COLOR_RE.match(s) else default
+
+    def _labels_with_counts(self, conn):
+        """Every label in cycle order, each with how many conversations use it."""
+        rows = conn.execute(
+            "SELECT l.id, l.name, l.color, l.sort_index, l.created_at, l.updated_at, "
+            "       COUNT(cl.conversation_id) AS count "
+            "FROM udb.labels l "
+            "LEFT JOIN udb.conversation_labels cl ON cl.label_id = l.id "
+            "GROUP BY l.id "
+            "ORDER BY l.sort_index ASC, LOWER(l.name) ASC"
+        ).fetchall()
+        return [{
+            "id":         r["id"],
+            "name":       r["name"],
+            "color":      r["color"],
+            "sort_index": r["sort_index"],
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+            "count":      r["count"],
+        } for r in rows]
+
+    def _api_labels_list(self):
+        conn = open_db(self.db_path)
+        try:
+            self.send_json({"labels": self._labels_with_counts(conn)})
+        finally:
+            conn.close()
+
+    def _api_label_create(self):
+        payload = self._read_json_body()
+        name = " ".join(str(payload.get("name") or "").split())[:60]
+        if not name:
+            self.send_json({"error": "name is required"}, 400); return
+        color = self._norm_label_color(payload.get("color"))
+        now = time.time()
+        conn = open_db(self.db_path)
+        try:
+            # New labels append to the end of the cycle order.
+            row = conn.execute(
+                "SELECT COALESCE(MAX(sort_index), -1) + 1 AS next FROM udb.labels"
+            ).fetchone()
+            sort_index = row["next"] if row else 0
+            lid = uuid.uuid4().hex
+            conn.execute(
+                "INSERT INTO udb.labels(id, name, color, sort_index, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (lid, name, color, sort_index, now, now),
+            )
+            conn.commit()
+            self.send_json({"labels": self._labels_with_counts(conn), "id": lid})
+        finally:
+            conn.close()
+
+    def _api_label_update(self, lid):
+        lid = (lid or "").strip()
+        payload = self._read_json_body()
+        sets, params = [], []
+        if "name" in payload:
+            name = " ".join(str(payload.get("name") or "").split())[:60]
+            if not name:
+                self.send_json({"error": "name cannot be empty"}, 400); return
+            sets.append("name = ?"); params.append(name)
+        if "color" in payload:
+            sets.append("color = ?"); params.append(self._norm_label_color(payload.get("color")))
+        if not sets:
+            self.send_json({"error": "nothing to update"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            if not conn.execute("SELECT 1 FROM udb.labels WHERE id = ?", (lid,)).fetchone():
+                self.send_json({"error": "Unknown label"}, 404); return
+            sets.append("updated_at = ?"); params.append(time.time())
+            params.append(lid)
+            conn.execute(f"UPDATE udb.labels SET {', '.join(sets)} WHERE id = ?", params)
+            conn.commit()
+            self.send_json({"labels": self._labels_with_counts(conn)})
+        finally:
+            conn.close()
+
+    def _api_label_delete(self, lid):
+        """Delete a label. Any conversation carrying it falls back to blank
+        (its assignment row is removed) — never silently reassigned to another
+        label."""
+        lid = (lid or "").strip()
+        conn = open_db(self.db_path)
+        try:
+            if not conn.execute("SELECT 1 FROM udb.labels WHERE id = ?", (lid,)).fetchone():
+                self.send_json({"error": "Unknown label"}, 404); return
+            cur = conn.execute(
+                "DELETE FROM udb.conversation_labels WHERE label_id = ?", (lid,)
+            )
+            cleared = cur.rowcount if cur.rowcount is not None else 0
+            conn.execute("DELETE FROM udb.labels WHERE id = ?", (lid,))
+            conn.commit()
+            self.send_json({"labels": self._labels_with_counts(conn), "cleared": cleared})
+        finally:
+            conn.close()
+
+    def _api_labels_reorder(self):
+        """Set the cycle order from a full list of label ids. Ids not present
+        keep their existing order after the ones given."""
+        payload = self._read_json_body()
+        order = payload.get("order")
+        if not isinstance(order, list):
+            self.send_json({"error": "order must be a list of label ids"}, 400); return
+        now = time.time()
+        conn = open_db(self.db_path)
+        try:
+            known = {r["id"] for r in conn.execute("SELECT id FROM udb.labels").fetchall()}
+            idx = 0
+            for lid in order:
+                lid = str(lid)
+                if lid not in known:
+                    continue
+                conn.execute(
+                    "UPDATE udb.labels SET sort_index = ?, updated_at = ? WHERE id = ?",
+                    (idx, now, lid),
+                )
+                idx += 1
+            conn.commit()
+            self.send_json({"labels": self._labels_with_counts(conn)})
         finally:
             conn.close()
 
