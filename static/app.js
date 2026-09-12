@@ -50,7 +50,14 @@ const state = {
     sortKey: "imported_at", // default: newest import first
     sortDir: "desc",
     busy: false,
+    deletedMode: "skip", // previously-deleted import choice
+    reviewNewMessages: false, // "review chats that have new messages" checkbox
+    review: [], // conversations held aside for review
+    reviewChecked: new Set(), // checked review rows (by conversation id)
   },
+  // Conversations checked in the Recycle Bin. Selection is by conversation id
+  // and persists as the list is scrolled/loaded-more within the view.
+  recycleSelected: new Set(),
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -60,6 +67,9 @@ const searchEl = $("search");
 const searchHistoryListEl = $("search-history-list");
 const viewFilterEl = $("view-filter");
 const resultCount = $("result-count");
+const recycleControls = $("recycle-controls");
+const recycleActionEl = $("recycle-action");
+const recycleGoBtn = $("recycle-go");
 const convList = $("conv-list");
 const listSectionTitle = $("list-section-title");
 const foldersSection = $("folders-section");
@@ -978,6 +988,26 @@ async function apiUpdateConversationMeta(conversationId, payload) {
   return r.json();
 }
 
+// Bulk Recycle Bin actions. `body` is either { all: true, provider } or
+// { ids: [...], provider }; the server scopes "all" to the given provider so it
+// matches the count the user sees.
+async function apiRecycleRestore(body) {
+  const r = await fetch("/api/recycle-bin/restore", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+async function apiRecyclePurge(body) {
+  const r = await fetch("/api/recycle-bin/purge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+
 async function apiTabs() {
   const r = await fetch("/api/tabs");
   return r.json();
@@ -1189,6 +1219,24 @@ async function archiveOrRestoreConversation(c) {
   if (wasPinned) refreshPinnedList();
 }
 
+// Delete → Recycle Bin, from any ordinary view (no archiving required). Sets the
+// deleted flag only; every other bit of the conversation's state is preserved so
+// a later Restore returns it exactly as it was.
+async function deleteConversation(c) {
+  await apiUpdateConversationMeta(c.id, { deleted: true });
+  const wasPinned = state.pinnedIds.has(c.id);
+  const itemEl = findConvItemEl(c.id);
+  // The conversation leaves every non-Recycle-Bin list once deleted.
+  if (itemEl && !state.q) {
+    removeConvItemFromList(itemEl);
+  } else {
+    loadConversations(false);
+  }
+  if (wasPinned) refreshPinnedList();
+  // A foldered chat disappears from its folder (it's now in the Recycle Bin).
+  loadFolders();
+}
+
 function openConvItemMenu(c, anchorBtn) {
   const wasForThis =
     _convMenuEl && _convMenuEl.dataset.convId === c.id;
@@ -1219,6 +1267,11 @@ function openConvItemMenu(c, anchorBtn) {
       fn: () => archiveOrRestoreConversation(c),
     },
   ];
+  // Delete → Recycle Bin, available from every ordinary view (Archive is not a
+  // prerequisite). The Recycle Bin itself uses Restore + the action control.
+  if (!deletedView) {
+    items.push({ label: "Delete", fn: () => deleteConversation(c) });
+  }
   for (const it of items) {
     const b = document.createElement("button");
     b.className = "sidebar-menu-item";
@@ -1288,6 +1341,23 @@ function appendListItems(convs, targetEl = convList) {
     const top = document.createElement("div");
     top.className = "conv-top-row";
     top.innerHTML = `<div class="conv-title">${warningIconsHtml(c)}${escHtml(c.title)}</div>`;
+    // Recycle Bin rows carry an always-visible checkbox beside the title. Its
+    // presence depends only on the view, never on which action is selected.
+    if (state.view === "deleted") {
+      el.classList.add("conv-item-recycle");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = "conv-select";
+      cb.checked = state.recycleSelected.has(c.id);
+      cb.setAttribute("aria-label", "Select conversation");
+      cb.addEventListener("click", (e) => e.stopPropagation());
+      cb.addEventListener("change", () => {
+        if (cb.checked) state.recycleSelected.add(c.id);
+        else state.recycleSelected.delete(c.id);
+        renderResultCount();
+      });
+      top.insertBefore(cb, top.firstChild);
+    }
     top.appendChild(buildConvActions(c));
 
     el.innerHTML = `
@@ -1343,10 +1413,7 @@ function removeConvItemFromList(el) {
   if (!convList.querySelector(".conv-item")) {
     convList.innerHTML = '<div class="no-results">No conversations found.</div>';
   }
-  if (!state.q) {
-    const n = (state.total || 0).toLocaleString();
-    resultCount.textContent = `${n} conversation${state.total !== 1 ? "s" : ""}`;
-  }
+  if (!state.q) renderResultCount();
   loadMoreWrap.hidden = state.offset >= state.total;
 }
 
@@ -1439,6 +1506,7 @@ const VIEW_LABELS = {
   pinned: "Pinned",
   archived: "Archived",
   all: "All",
+  deleted: "Recycle Bin",
   unverified: "Unverified Models",
 };
 
@@ -1449,6 +1517,34 @@ function updateListSectionTitle() {
   listSectionTitle.textContent = state.q
     ? "Search results"
     : VIEW_LABELS[state.view] || "Recent";
+}
+
+// The conversation-count row. In the Recycle Bin it also shows the current
+// selection count (e.g. "327 conversations · 12 selected"), extending the one
+// existing count row rather than adding a second.
+function renderResultCount() {
+  if (!resultCount) return;
+  if (state.q) {
+    const n = (state.total || 0).toLocaleString();
+    resultCount.textContent = `${n} matches`;
+    return;
+  }
+  const n = (state.total || 0).toLocaleString();
+  let text = `${n} conversation${state.total !== 1 ? "s" : ""}`;
+  if (state.view === "deleted") {
+    // The Recycle Bin count row carries the selection count alongside the
+    // total, rather than adding a second row.
+    text += ` · ${state.recycleSelected.size} selected`;
+  }
+  resultCount.textContent = text;
+}
+
+// Show the Recycle Bin action control (action dropdown + Go) only in the
+// Recycle Bin view. Its visibility never depends on which action is selected.
+function syncRecycleControls() {
+  const inRecycle = state.view === "deleted";
+  if (recycleControls) recycleControls.hidden = !inRecycle;
+  if (!inRecycle) state.recycleSelected.clear();
 }
 
 async function loadUiPreferences() {
@@ -1462,6 +1558,7 @@ async function loadUiPreferences() {
     "pinned",
     "archived",
     "all",
+    "deleted",
     "unverified",
   ].includes(savedView)
     ? savedView
@@ -1498,6 +1595,7 @@ async function loadUiPreferences() {
   if (claudeModelsMenuItem) claudeModelsMenuItem.hidden = !isClaudeSide();
   state.view = state.preferences.conversationView;
   if (viewFilterEl) viewFilterEl.value = state.view;
+  syncRecycleControls();
   updateListSectionTitle();
   document.documentElement.style.setProperty(
     "--sidebar-w",
@@ -1839,13 +1937,7 @@ async function loadConversations(append = false) {
       appendListItems(data.conversations || []);
     }
 
-    if (state.q) {
-      const n = (data.total || 0).toLocaleString();
-      resultCount.textContent = `${n} matches`;
-    } else {
-      const n = state.total.toLocaleString();
-      resultCount.textContent = `${n} conversation${state.total !== 1 ? "s" : ""}`;
-    }
+    renderResultCount();
 
     loadMoreWrap.hidden = state.offset >= state.total;
   } catch (e) {
@@ -2333,10 +2425,50 @@ searchEl.addEventListener("keydown", (e) => {
 viewFilterEl?.addEventListener("change", () => {
   state.view = viewFilterEl.value || "recent";
   state.offset = 0;
+  state.recycleSelected.clear();
   syncPinnedSectionVisibility();
+  syncRecycleControls();
   updateListSectionTitle();
   saveUiPreferences({ conversationView: state.view });
   loadConversations(false);
+});
+
+// Recycle Bin action control. The dropdown only decides what Go does; it never
+// affects whether checkboxes are shown. Both permanent-delete actions require a
+// confirmation after Go is pressed.
+recycleGoBtn?.addEventListener("click", async () => {
+  if (state.view !== "deleted") return;
+  const action = recycleActionEl.value;
+  const provider = state.providerSide;
+  const selectedIds = Array.from(state.recycleSelected);
+  const scoped = action.endsWith("-selected");
+  if (scoped && selectedIds.length === 0) {
+    resultCount.textContent = "No conversations selected";
+    setTimeout(renderResultCount, 1600);
+    return;
+  }
+  const isDelete = action.startsWith("delete");
+  const body = scoped ? { ids: selectedIds, provider } : { all: true, provider };
+
+  if (isDelete) {
+    const count = scoped ? selectedIds.length : state.total;
+    const ok = await openConfirm({
+      title: "Permanently delete?",
+      text:
+        `Permanently delete ${count.toLocaleString()} conversation` +
+        `${count !== 1 ? "s" : ""} from the Recycle Bin? ` +
+        "This removes the conversation content and cannot be undone.",
+      okLabel: "Delete permanently",
+    });
+    if (!ok) return;
+    await apiRecyclePurge(body);
+  } else {
+    await apiRecycleRestore(body);
+  }
+  state.recycleSelected.clear();
+  await loadConversations(false);
+  await refreshPinnedList();
+  await loadFolders();
 });
 
 // ── Load more ─────────────────────────────────────────────────────────────────
@@ -3148,6 +3280,8 @@ async function switchProviderSide(side) {
   state.providerSide = side;
   renderProviderToggle();
   saveUiPreferences({ providerSide: side });
+  // Recycle Bin selection is per side; drop it when switching sides.
+  state.recycleSelected.clear();
   // Claude-only UI follows the active side.
   if (claudeModelsMenuItem) claudeModelsMenuItem.hidden = !isClaudeSide();
   // A ChatGPT dataset can never be on the Unverified (Claude models) view.
@@ -3607,6 +3741,21 @@ const importNewStatus = $("import-new-status");
 const importNewSummary = $("import-new-summary");
 const importHistoryBody = $("import-history-body");
 const importHistoryTable = $("import-history-table");
+const importDeletedModeEl = $("import-deleted-mode");
+const importReviewNewWrap = $("import-review-new-wrap");
+const importReviewNewEl = $("import-review-new");
+const importReviewArea = $("import-review-area");
+const importReviewBody = $("import-review-body");
+const importReviewAllBtn = $("import-review-all");
+const importReviewNoneBtn = $("import-review-none");
+const importReviewSelectedBtn = $("import-review-selected");
+
+// The "has new messages" checkbox only applies to the skip choice.
+function syncImportDeletedSetting() {
+  if (importReviewNewWrap) {
+    importReviewNewWrap.hidden = state.importNew.deletedMode !== "skip";
+  }
+}
 
 async function openImportNew() {
   rememberReturnTab();
@@ -3619,7 +3768,84 @@ async function openImportNew() {
   await ensureSpecialTab("import_new", "Import New Chats");
   hideAllPanels();
   importNewPanel.hidden = false;
+  if (importDeletedModeEl) importDeletedModeEl.value = state.importNew.deletedMode;
+  if (importReviewNewEl) importReviewNewEl.checked = state.importNew.reviewNewMessages;
+  syncImportDeletedSetting();
   await loadImportHistory();
+  await loadReviewArea();
+}
+
+// The review area lists previously deleted conversations held aside from an
+// import for the user to decide on. It is persisted server-side, so it survives
+// reopening the Import screen until every row is imported or dismissed.
+async function loadReviewArea() {
+  let review = [];
+  try {
+    const resp = await fetch("/api/import-new/review");
+    if (resp.ok) {
+      const data = await resp.json();
+      review = data.review || [];
+    }
+  } catch (_) {
+    review = [];
+  }
+  state.importNew.review = review;
+  // Drop any checked ids that are no longer present.
+  const present = new Set(review.map((r) => r.conversation_id));
+  for (const id of Array.from(state.importNew.reviewChecked)) {
+    if (!present.has(id)) state.importNew.reviewChecked.delete(id);
+  }
+  renderReviewArea();
+}
+
+function renderReviewArea() {
+  if (!importReviewArea) return;
+  const review = state.importNew.review || [];
+  if (!review.length) {
+    importReviewArea.hidden = true;
+    importReviewBody.innerHTML = "";
+    return;
+  }
+  importReviewArea.hidden = false;
+  importReviewBody.innerHTML = "";
+  for (const r of review) {
+    const tr = document.createElement("tr");
+    const checked = state.importNew.reviewChecked.has(r.conversation_id);
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "import-review-select";
+    cb.checked = checked; // checkboxes start unchecked (nothing is pre-checked)
+    cb.addEventListener("change", () => {
+      if (cb.checked) state.importNew.reviewChecked.add(r.conversation_id);
+      else state.importNew.reviewChecked.delete(r.conversation_id);
+    });
+    const tdCheck = document.createElement("td");
+    tdCheck.className = "import-review-check";
+    tdCheck.appendChild(cb);
+    tr.appendChild(tdCheck);
+    const cells = [
+      r.chat_name || "Untitled",
+      fmtImportDate(r.first_message),
+      fmtImportDate(r.last_message),
+      (r.total_messages || 0).toLocaleString(),
+    ];
+    cells.forEach((val, i) => {
+      const td = document.createElement("td");
+      if (i === 3) td.className = "import-cell-num";
+      td.textContent = val;
+      tr.appendChild(td);
+    });
+    importReviewBody.appendChild(tr);
+  }
+}
+
+async function apiReviewImport(body) {
+  const r = await fetch("/api/import-new/review-import", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return r.json();
 }
 
 async function loadImportHistory() {
@@ -3746,7 +3972,14 @@ async function runImportNew() {
 
   let data;
   try {
-    const resp = await fetch("/api/import-new", { method: "POST" });
+    const resp = await fetch("/api/import-new", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        deleted_mode: state.importNew.deletedMode,
+        review_new_messages: state.importNew.reviewNewMessages,
+      }),
+    });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     data = await resp.json();
   } catch (e) {
@@ -3763,6 +3996,8 @@ async function runImportNew() {
   importNewStatus.innerHTML = "";
   renderImportSummary(data);
   await loadImportHistory();
+  // Refresh the review area — this import may have held conversations aside.
+  await loadReviewArea();
   // New conversations should show up in the sidebar without a reload.
   try {
     await loadConversations(false);
@@ -3787,6 +4022,9 @@ function renderImportSummary(data) {
     { label: "Skipped", n: data.skipped || 0 },
     { label: "Errors", n: data.errors || 0, err: (data.errors || 0) > 0 },
   ];
+  if (data.review) {
+    stats.push({ label: "To review", n: data.review });
+  }
   const nFiles = (data.files || []).length;
   const totalConvs = stats.reduce((a, s) => a + s.n, 0);
 
@@ -3827,6 +4065,48 @@ function renderImportSummary(data) {
 }
 
 importNewBtn?.addEventListener("click", runImportNew);
+
+importDeletedModeEl?.addEventListener("change", () => {
+  state.importNew.deletedMode = importDeletedModeEl.value || "skip";
+  syncImportDeletedSetting();
+});
+importReviewNewEl?.addEventListener("change", () => {
+  state.importNew.reviewNewMessages = importReviewNewEl.checked;
+});
+
+// Import All / None / Selected for the review area.
+async function resolveReview({ importAll = false, dismissAll = false } = {}) {
+  const body = {};
+  if (importAll) {
+    body.import_all = true;
+  } else if (dismissAll) {
+    body.dismiss_all = true;
+  } else {
+    const review = state.importNew.review || [];
+    const byId = new Map(review.map((r) => [r.conversation_id, r]));
+    body.import_ids = Array.from(state.importNew.reviewChecked)
+      .filter((id) => byId.has(id))
+      .map((id) => ({ id, provider: byId.get(id).provider }));
+    if (!body.import_ids.length) {
+      return; // nothing checked — no-op
+    }
+  }
+  await apiReviewImport(body);
+  state.importNew.reviewChecked.clear();
+  await loadReviewArea();
+  await loadImportHistory();
+  try {
+    await loadConversations(false);
+  } catch (_) {}
+}
+
+importReviewAllBtn?.addEventListener("click", () =>
+  resolveReview({ importAll: true }),
+);
+importReviewNoneBtn?.addEventListener("click", () =>
+  resolveReview({ dismissAll: true }),
+);
+importReviewSelectedBtn?.addEventListener("click", () => resolveReview({}));
 
 // ── Add Claude Models screen ─────────────────────────────────────────────────
 
@@ -4267,6 +4547,46 @@ nameModalInput?.addEventListener("keydown", (e) => {
 });
 nameModal?.addEventListener("mousedown", (e) => {
   if (e.target === nameModal) closeNameModal(null);
+});
+
+// ── Confirmation modal (permanent deletion) ─────────────────────────────────────
+const confirmModal = $("confirm-modal");
+const confirmModalTitle = $("confirm-modal-title");
+const confirmModalText = $("confirm-modal-text");
+const confirmModalCancel = $("confirm-modal-cancel");
+const confirmModalOk = $("confirm-modal-ok");
+let _confirmResolve = null;
+
+function openConfirm({
+  title = "Are you sure?",
+  text = "",
+  okLabel = "Delete",
+} = {}) {
+  confirmModalTitle.textContent = title;
+  confirmModalText.textContent = text;
+  confirmModalOk.textContent = okLabel;
+  confirmModal.hidden = false;
+  setTimeout(() => confirmModalOk.focus(), 0);
+  return new Promise((resolve) => {
+    _confirmResolve = resolve;
+  });
+}
+function closeConfirm(result) {
+  confirmModal.hidden = true;
+  const r = _confirmResolve;
+  _confirmResolve = null;
+  if (r) r(result);
+}
+confirmModalCancel?.addEventListener("click", () => closeConfirm(false));
+confirmModalOk?.addEventListener("click", () => closeConfirm(true));
+confirmModal?.addEventListener("mousedown", (e) => {
+  if (e.target === confirmModal) closeConfirm(false);
+});
+document.addEventListener("keydown", (e) => {
+  if (!confirmModal.hidden && e.key === "Escape") {
+    e.preventDefault();
+    closeConfirm(false);
+  }
 });
 
 // ── Folders ─────────────────────────────────────────────────────────────────
@@ -4785,6 +5105,12 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
       }
     } else if (action === "archive") {
       await apiUpdateConversationMeta(cid, { archived: true });
+      await refreshPinnedList();
+      await afterFolderChange();
+    } else if (action === "delete") {
+      // Same behaviour as the sidebar row menu: straight to the Recycle Bin,
+      // no archiving required, other state preserved.
+      await apiUpdateConversationMeta(cid, { deleted: true });
       await refreshPinnedList();
       await afterFolderChange();
     }

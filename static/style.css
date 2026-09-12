@@ -3316,3 +3316,172 @@ kbd {
 .settings-reset-btn:hover {
   background: var(--hover);
 }
+
+/* ── Recycle Bin ──────────────────────────────────────────────────────────── */
+/* Action control (Delete/Restore All/Selected + Go). Shown only in the Recycle
+   Bin view; its visibility never depends on which action is selected. */
+#recycle-controls {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+#recycle-action {
+  flex: 1;
+  padding: 6px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--muted);
+}
+#recycle-action:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+#recycle-go {
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 14px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#recycle-go:hover {
+  filter: brightness(1.05);
+}
+
+/* Per-row selection checkbox, always visible on Recycle Bin rows. */
+.conv-top-row .conv-select {
+  margin: 0 4px 0 0;
+  flex-shrink: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.conv-item-recycle .conv-top-row .conv-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Danger button for the permanent-delete confirmation dialog. */
+.modal-btn-danger {
+  background: #c0392b;
+  border-color: #c0392b;
+  color: #fff;
+}
+.modal-btn-danger:hover {
+  filter: brightness(1.05);
+}
+
+/* ── Import: previously-deleted setting ───────────────────────────────────── */
+.import-deleted-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.import-deleted-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.import-deleted-setting select {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  max-width: 460px;
+}
+.import-deleted-setting select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.import-deleted-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.import-deleted-checkbox input {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ── Import: previously-deleted review area ───────────────────────────────── */
+.import-review-area {
+  margin: 18px 0 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.import-review-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.import-review-title {
+  margin: 0;
+  font-size: 0.95rem;
+}
+.import-review-controls {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.import-review-btn {
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+}
+.import-review-btn:hover {
+  background: var(--hover);
+}
+.import-review-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.import-review-btn-primary:hover {
+  filter: brightness(1.05);
+}
+#import-review-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+#import-review-table th {
+  text-align: left;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+#import-review-table td {
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+#import-review-table .import-review-check {
+  width: 28px;
+  text-align: center;
+}
+#import-review-table .import-review-select {
+  accent-color: var(--accent);
+  cursor: pointer;
+}

@@ -90,6 +90,24 @@ def _ensure_runtime_schema(db_path: Path) -> None:
                 provider        TEXT,
                 compare         INTEGER DEFAULT 0
             );
+            -- Previously-deleted conversations held aside from an import for the
+            -- user to review before re-importing (the "Review" import choice,
+            -- and the "has new messages" case of the skip choice). Holds the
+            -- full parsed record as JSON so it can be imported later without
+            -- re-reading the (now renamed) backup file. Transient review state,
+            -- so it lives in history.db rather than the persistent user DB.
+            CREATE TABLE IF NOT EXISTS pending_reimport (
+                conversation_id TEXT NOT NULL,
+                provider        TEXT NOT NULL,
+                chat_name       TEXT,
+                first_message   REAL,
+                last_message    REAL,
+                total_messages  INTEGER,
+                record_json     TEXT,
+                reason          TEXT,
+                created_at      REAL,
+                PRIMARY KEY (conversation_id, provider)
+            );
             """
         )
         # Indexes that speed up the conversation-list sort and detail load.
@@ -289,6 +307,24 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 PRIMARY KEY (conversation_id, tag)
             );
             CREATE INDEX IF NOT EXISTS idx_conv_tags_tag ON conversation_tags (tag);
+
+            -- A lightweight tombstone left behind when a conversation is
+            -- permanently deleted from the Recycle Bin. It holds no message
+            -- content — only enough identity/metadata for a later import to
+            -- recognise the conversation was deliberately deleted and decide
+            -- whether to re-import it. Lives here (not history.db) so it
+            -- survives a rebuild; identity is (conversation_id, provider), the
+            -- same rule the importer uses everywhere else.
+            CREATE TABLE IF NOT EXISTS deleted_records (
+                conversation_id TEXT NOT NULL,
+                provider        TEXT NOT NULL,
+                chat_name       TEXT,
+                first_message   REAL,
+                last_message    REAL,
+                total_messages  INTEGER,
+                deleted_at      REAL,
+                PRIMARY KEY (conversation_id, provider)
+            );
             """
         )
         # Add the folders.provider column on databases created before folders
@@ -664,23 +700,65 @@ def _resolve_backup_name(source_dir: Path, this_path: Path, base: str, file_hash
         n += 1
 
 
-def import_new_backups(conn, source_dir: Path) -> dict:
+def _record_dates(record: dict) -> tuple:
+    """First-message date, last-message date and total-message count for one
+    importer record — derived from its messages, falling back to the
+    conversation's own create/update times when the messages carry none. Used
+    to fill a review row and to compare an incoming backup against a stored
+    permanent-deletion record."""
+    meta = record.get("meta") or {}
+    msgs = record.get("msgs") or []
+    times = [m.get("create_time") for m in msgs if m.get("create_time")]
+    first = min(times) if times else meta.get("create_time")
+    last = max(times) if times else meta.get("update_time")
+    total = len(msgs) if msgs else (meta.get("message_count") or 0)
+    return first, last, total
+
+
+def import_new_backups(conn, source_dir: Path,
+                       deleted_mode: str = "skip",
+                       review_new_messages: bool = False) -> dict:
     """
     Scan `source_dir` for conversation backups not yet imported, identify each
     by its contents, merge it into the database, and rename it to
     Provider-conversations-YYYY-MM-DD.json. Returns a summary the UI shows.
+
+    `deleted_mode` controls what happens to conversations that were previously
+    permanently deleted (they carry a record in udb.deleted_records):
+      • "skip"   — don't re-import them. With `review_new_messages`, a backup
+                   whose last message is newer than the deleted version is held
+                   aside for review instead of being skipped silently.
+      • "all"    — re-import them normally with the rest of the backup and clear
+                   their deletion record.
+      • "review" — import the rest of the backup now, but hold every previously
+                   deleted conversation aside for the user to review.
+    Held-aside conversations are stored in pending_reimport (with their full
+    record) and surfaced in the import screen's review area.
     """
+    if deleted_mode not in ("skip", "all", "review"):
+        deleted_mode = "skip"
     import hashlib
     import build_db
 
     summary = {
         "added": 0, "updated": 0, "unchanged": 0, "skipped": 0, "errors": 0,
+        # Conversations held aside for review this run (Review choice, or a
+        # previously deleted chat with new messages under the skip choice).
+        "review": 0,
         "files": [], "notes": [],
     }
     known_hashes = set()
     for row in conn.execute("SELECT file_hash FROM imported_backups"):
         if row[0]:
             known_hashes.add(row[0])
+
+    # Permanent-deletion records, keyed by identity (id, provider) → last-message
+    # date, so we can recognise a previously deleted conversation in a backup.
+    deleted_map: dict = {}
+    for row in conn.execute(
+        "SELECT conversation_id, provider, last_message FROM udb.deleted_records"
+    ):
+        deleted_map[(row[0], row[1])] = row[2]
 
     # Only top-level *.json files are candidates. memories/users are export
     # siblings, never conversation backups.
@@ -736,9 +814,64 @@ def import_new_backups(conn, source_dir: Path) -> dict:
             known_hashes.add(file_hash)
             continue
 
-        counts = build_db.reconcile_backup(conn, records, provider)
+        # Split the backup's records against the permanent-deletion records so
+        # previously deleted conversations are handled per the chosen mode and
+        # never silently resurrected.
+        to_import = []          # reconciled normally this run
+        reimported_keys = []    # previously deleted, being re-imported (mode all)
+        held = []               # (record, reason) held aside for review
+        skipped_deleted = 0     # previously deleted, skipped silently
+        for rec in records:
+            key = (rec["meta"]["id"], provider)
+            if key not in deleted_map:
+                to_import.append(rec)
+                continue
+            if deleted_mode == "all":
+                to_import.append(rec)
+                reimported_keys.append(key)
+            elif deleted_mode == "review":
+                held.append((rec, "review"))
+            else:  # skip
+                if review_new_messages:
+                    _f, inc_last, _t = _record_dates(rec)
+                    stored_last = deleted_map[key]
+                    if (inc_last is not None and stored_last is not None
+                            and float(inc_last) > float(stored_last) + 1.0):
+                        held.append((rec, "new_messages"))
+                    else:
+                        skipped_deleted += 1
+                else:
+                    skipped_deleted += 1
+
+        counts = build_db.reconcile_backup(conn, to_import, provider)
         for k in ("added", "updated", "unchanged", "skipped", "errors"):
             summary[k] += counts[k]
+        counts["skipped"] += skipped_deleted
+        summary["skipped"] += skipped_deleted
+
+        # A successfully re-imported conversation is no longer deleted.
+        for cid, prov in reimported_keys:
+            conn.execute(
+                "DELETE FROM udb.deleted_records "
+                "WHERE conversation_id = ? AND provider = ?",
+                (cid, prov),
+            )
+            deleted_map.pop((cid, prov), None)
+
+        # Hold reviewed conversations aside with their full record for later.
+        for rec, reason in held:
+            first, last, total = _record_dates(rec)
+            conn.execute(
+                "INSERT OR REPLACE INTO pending_reimport "
+                "(conversation_id, provider, chat_name, first_message, "
+                " last_message, total_messages, record_json, reason, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (rec["meta"]["id"], provider, rec["meta"].get("title") or "Untitled",
+                 first, last, total, json.dumps(rec, ensure_ascii=False),
+                 reason, time.time()),
+            )
+        summary["review"] += len(held)
+        counts["review"] = len(held)
 
         final_path = source_dir / final_name
         try:
@@ -764,6 +897,85 @@ def import_new_backups(conn, source_dir: Path) -> dict:
         })
 
     return summary
+
+
+# ── Permanent deletion (Recycle Bin → gone) ─────────────────────────────────────
+
+
+def _conv_tombstone_meta(conn, cid: str) -> dict | None:
+    """Gather the lightweight metadata kept in a permanent-deletion record.
+
+    First/last message dates come from the message rows; the conversation's own
+    create/update times are the fallback when a message lacks a timestamp (or a
+    metadata-only record has no messages at all). Holds no message content."""
+    row = conn.execute(
+        "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
+        "c.provider, c.create_time, c.update_time, c.message_count "
+        "FROM conversations c "
+        "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+        "WHERE c.id = ?",
+        (cid,),
+    ).fetchone()
+    if row is None:
+        return None
+    mrow = conn.execute(
+        "SELECT MIN(create_time), MAX(create_time), COUNT(*) "
+        "FROM messages WHERE conversation_id = ?",
+        (cid,),
+    ).fetchone()
+    msg_first, msg_last, msg_count = (mrow or (None, None, 0))
+    first_message = msg_first if msg_first else row["create_time"]
+    last_message = msg_last if msg_last else row["update_time"]
+    total_messages = msg_count if msg_count else (row["message_count"] or 0)
+    return {
+        "conversation_id": cid,
+        "provider": row["provider"] or "",
+        "chat_name": row["title"] or "Untitled",
+        "first_message": first_message,
+        "last_message": last_message,
+        "total_messages": total_messages,
+    }
+
+
+def _purge_conversation(conn, cid: str) -> bool:
+    """Permanently remove one conversation: write its deletion record, then drop
+    every stored row that belongs to it (content and viewer metadata) from both
+    the history and user-data databases. The caller owns the transaction so a
+    batch stays all-or-nothing. Returns True when the conversation existed.
+
+    Never touches the on-disk backup JSON, and never removes shared physical
+    attachment/image files (ownership can't be safely established here)."""
+    meta = _conv_tombstone_meta(conn, cid)
+    if meta is None:
+        return False
+    conn.execute(
+        "INSERT OR REPLACE INTO udb.deleted_records "
+        "(conversation_id, provider, chat_name, first_message, last_message, "
+        " total_messages, deleted_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (meta["conversation_id"], meta["provider"], meta["chat_name"],
+         meta["first_message"], meta["last_message"], meta["total_messages"],
+         time.time()),
+    )
+    # Conversation content and history-side derived rows.
+    conn.execute("DELETE FROM messages WHERE conversation_id = ?", (cid,))
+    conn.execute("DELETE FROM search_index WHERE conversation_id = ?", (cid,))
+    conn.execute("DELETE FROM artifacts WHERE conv_id = ?", (cid,))
+    conn.execute("DELETE FROM conversation_meta WHERE conversation_id = ?", (cid,))
+    conn.execute("DELETE FROM pinned_conversations WHERE conversation_id = ?", (cid,))
+    conn.execute("DELETE FROM workspace_tabs WHERE conversation_id = ?", (cid,))
+    conn.execute("DELETE FROM conversations WHERE id = ?", (cid,))
+    # User-data-side viewer metadata that now has no conversation to belong to.
+    for stmt in (
+        "DELETE FROM udb.folder_items WHERE conversation_id = ?",
+        "DELETE FROM udb.conversation_tags WHERE conversation_id = ?",
+        "DELETE FROM udb.conversation_models WHERE conversation_id = ?",
+        "DELETE FROM udb.conversation_model_flags WHERE conversation_id = ?",
+    ):
+        try:
+            conn.execute(stmt, (cid,))
+        except sqlite3.Error:
+            pass  # a table may be absent on a partial DB; never abort the purge
+    return True
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -827,6 +1039,12 @@ class Handler(BaseHTTPRequestHandler):
             self._api_tag_add()
         elif path == "/api/import-new":
             self._api_import_new()
+        elif path == "/api/recycle-bin/restore":
+            self._api_recycle_restore()
+        elif path == "/api/recycle-bin/purge":
+            self._api_recycle_purge()
+        elif path == "/api/import-new/review-import":
+            self._api_review_import()
         else:
             self.send_error(404)
 
@@ -961,6 +1179,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_import_audit(qs)
         elif path == "/api/imported-backups":
             self._api_imported_backups(qs)
+        elif path == "/api/import-new/review":
+            self._api_review_list(qs)
         elif path == "/api/folders":
             self._api_folders_list(qs)
         elif path == "/api/memories":
@@ -1283,11 +1503,16 @@ class Handler(BaseHTTPRequestHandler):
                 where_clauses.append(
                     "c.id NOT IN (SELECT conversation_id FROM pinned_conversations)"
                 )
-            # Foldered chats never appear in the main list (any view); they live
-            # only in their folder in the sidebar.
-            where_clauses.append(
-                "c.id NOT IN (SELECT conversation_id FROM udb.folder_items)"
-            )
+            # Foldered chats never appear in the main list — they live only in
+            # their folder in the sidebar — EXCEPT in the Recycle Bin. A deleted
+            # chat is hidden from its folder (the folder query filters
+            # deleted = 0), so the Recycle Bin is the only place it can be seen
+            # and restored; excluding it here would strand it. Its folder
+            # membership is preserved so restoring returns it to that folder.
+            if view != "deleted":
+                where_clauses.append(
+                    "c.id NOT IN (SELECT conversation_id FROM udb.folder_items)"
+                )
             # Restrict to the toggled side (Claude or ChatGPT). `provider` is
             # whitelisted above, so this literal is safe.
             if provider:
@@ -1894,9 +2119,18 @@ class Handler(BaseHTTPRequestHandler):
         source_dir = Path(self.source_dir)
         if not source_dir.exists():
             self.send_json({"error": "source folder not found"}, 400); return
+        payload = self._read_json_body()
+        deleted_mode = str(payload.get("deleted_mode") or "skip").strip().lower()
+        if deleted_mode not in ("skip", "all", "review"):
+            deleted_mode = "skip"
+        review_new_messages = bool(payload.get("review_new_messages"))
         conn = open_db(self.db_path)
         try:
-            summary = import_new_backups(conn, source_dir)
+            summary = import_new_backups(
+                conn, source_dir,
+                deleted_mode=deleted_mode,
+                review_new_messages=review_new_messages,
+            )
             conn.commit()
         finally:
             conn.close()
@@ -2769,6 +3003,189 @@ class Handler(BaseHTTPRequestHandler):
                 )
             conn.commit()
             self.send_json({"ok": True})
+        finally:
+            conn.close()
+
+    # ── Recycle Bin ─────────────────────────────────────────────────────────────
+
+    def _recycle_target_ids(self, conn, payload):
+        """Resolve which deleted conversations a bulk action applies to.
+
+        `all` selects every conversation currently in the Recycle Bin, scoped to
+        the given provider side so it matches the count the user sees; otherwise
+        the explicit `ids` list is used (filtered to actually-deleted rows)."""
+        provider = (payload.get("provider") or "").strip().lower()
+        if provider not in ("claude", "chatgpt"):
+            provider = None
+        prov_sql = " AND c.provider = ?" if provider else ""
+        prov_args = (provider,) if provider else ()
+        if payload.get("all"):
+            rows = conn.execute(
+                "SELECT c.id FROM conversations c "
+                "JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                "WHERE COALESCE(cm.deleted, 0) = 1" + prov_sql,
+                prov_args,
+            ).fetchall()
+            return [r[0] for r in rows]
+        ids = payload.get("ids") or []
+        ids = [str(i) for i in ids if i]
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(
+            "SELECT c.id FROM conversations c "
+            "JOIN conversation_meta cm ON cm.conversation_id = c.id "
+            f"WHERE COALESCE(cm.deleted, 0) = 1 AND c.id IN ({marks})" + prov_sql,
+            (*ids, *prov_args),
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    def _api_recycle_restore(self):
+        """Restore conversations out of the Recycle Bin: clear the deleted flag
+        while leaving every other bit of metadata (folder, pins, tags, models)
+        intact, so each returns to exactly the state it had before deletion."""
+        payload = self._read_json_body()
+        conn = open_db(self.db_path)
+        try:
+            ids = self._recycle_target_ids(conn, payload)
+            if not ids:
+                self.send_json({"ok": True, "restored": 0}); return
+            marks = ",".join("?" * len(ids))
+            # Single statement → the whole selection restores or none does.
+            conn.execute(
+                f"UPDATE conversation_meta SET deleted = 0 "
+                f"WHERE conversation_id IN ({marks})",
+                tuple(ids),
+            )
+            conn.commit()
+            self.send_json({"ok": True, "restored": len(ids)})
+        except sqlite3.Error as e:
+            conn.rollback()
+            self.send_json({"error": f"restore failed: {e}"}, 500)
+        finally:
+            conn.close()
+
+    def _api_recycle_purge(self):
+        """Permanently delete conversations from the Recycle Bin. Runs the whole
+        batch inside one transaction so a mid-way failure leaves nothing
+        half-deleted — either every selected conversation is gone (with a
+        deletion record written for each) or the database is untouched."""
+        payload = self._read_json_body()
+        conn = open_db(self.db_path)
+        try:
+            ids = self._recycle_target_ids(conn, payload)
+            if not ids:
+                self.send_json({"ok": True, "purged": 0}); return
+            purged = 0
+            for cid in ids:
+                if _purge_conversation(conn, cid):
+                    purged += 1
+            conn.commit()
+            self.send_json({"ok": True, "purged": purged})
+        except sqlite3.Error as e:
+            conn.rollback()
+            self.send_json({"error": f"permanent delete failed: {e}"}, 500)
+        finally:
+            conn.close()
+
+    # ── Re-import review ─────────────────────────────────────────────────────────
+
+    def _api_review_list(self, qs=None):
+        """Conversations held aside from an import for the user to review before
+        re-importing (the Review choice, and the has-new-messages skip case)."""
+        conn = open_db(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT conversation_id, provider, chat_name, first_message, "
+                "last_message, total_messages, reason, created_at "
+                "FROM pending_reimport ORDER BY created_at DESC, chat_name ASC"
+            ).fetchall()
+            self.send_json({"review": [dict(r) for r in rows]})
+        except sqlite3.Error:
+            self.send_json({"review": []})
+        finally:
+            conn.close()
+
+    def _api_review_import(self):
+        """Resolve reviewed conversations. `import_ids` are re-imported from the
+        record stored at import time (reusing the canonical import logic, so no
+        duplicate is created and the identity is unchanged) and their deletion
+        record is cleared; `dismiss_ids` are simply dropped from the review list
+        and stay permanently deleted. All applied in one transaction."""
+        import build_db
+        payload = self._read_json_body()
+
+        def _norm(items):
+            out = []
+            for it in (items or []):
+                if isinstance(it, dict):
+                    cid = str(it.get("id") or it.get("conversation_id") or "")
+                    prov = str(it.get("provider") or "")
+                else:
+                    cid, prov = str(it), ""
+                if cid:
+                    out.append((cid, prov))
+            return out
+
+        conn = open_db(self.db_path)
+        try:
+            if payload.get("import_all"):
+                import_ids = [(r[0], r[1]) for r in conn.execute(
+                    "SELECT conversation_id, provider FROM pending_reimport"
+                ).fetchall()]
+            else:
+                import_ids = _norm(payload.get("import_ids"))
+            if payload.get("dismiss_all"):
+                dismiss_ids = [(r[0], r[1]) for r in conn.execute(
+                    "SELECT conversation_id, provider FROM pending_reimport"
+                ).fetchall()]
+            else:
+                dismiss_ids = _norm(payload.get("dismiss_ids"))
+
+            imported = 0
+            for cid, prov in import_ids:
+                row = conn.execute(
+                    "SELECT provider, record_json FROM pending_reimport "
+                    "WHERE conversation_id = ? AND (provider = ? OR ? = '')",
+                    (cid, prov, prov),
+                ).fetchone()
+                if row is None:
+                    continue
+                provider = row["provider"]
+                try:
+                    record = json.loads(row["record_json"])
+                except Exception:
+                    record = None
+                if record:
+                    # Reuse the canonical reconcile path → same identity, no dup.
+                    build_db.reconcile_backup(conn, [record], provider)
+                # No longer deleted once re-imported.
+                conn.execute(
+                    "DELETE FROM udb.deleted_records "
+                    "WHERE conversation_id = ? AND provider = ?",
+                    (cid, provider),
+                )
+                conn.execute(
+                    "DELETE FROM pending_reimport "
+                    "WHERE conversation_id = ? AND provider = ?",
+                    (cid, provider),
+                )
+                imported += 1
+
+            dismissed = 0
+            for cid, prov in dismiss_ids:
+                cur = conn.execute(
+                    "DELETE FROM pending_reimport "
+                    "WHERE conversation_id = ? AND (provider = ? OR ? = '')",
+                    (cid, prov, prov),
+                )
+                dismissed += cur.rowcount or 0
+
+            conn.commit()
+            self.send_json({"ok": True, "imported": imported, "dismissed": dismissed})
+        except sqlite3.Error as e:
+            conn.rollback()
+            self.send_json({"error": f"review import failed: {e}"}, 500)
         finally:
             conn.close()
 

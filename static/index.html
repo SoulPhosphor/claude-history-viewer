@@ -85,8 +85,20 @@
             <option value="pinned">Pinned</option>
             <option value="archived">Archived</option>
             <option value="all">All</option>
+            <option value="deleted">Recycle Bin</option>
             <option value="unverified" hidden>Unverified Models</option>
           </select>
+          <!-- Recycle Bin action control: chooses what Go does to the checked
+               (or all) conversations. Shown only in the Recycle Bin view. -->
+          <div id="recycle-controls" hidden>
+            <select id="recycle-action" title="Recycle Bin action">
+              <option value="delete-all">Delete All</option>
+              <option value="delete-selected">Delete Selected</option>
+              <option value="restore-all">Restore All</option>
+              <option value="restore-selected">Restore Selected</option>
+            </select>
+            <button id="recycle-go" type="button">Go</button>
+          </div>
           <div id="result-count"></div>
         </div>
         <div id="conv-sections">
@@ -407,6 +419,9 @@
                   <button class="thread-dropdown-item" data-action="archive">
                     Archive
                   </button>
+                  <button class="thread-dropdown-item" data-action="delete">
+                    Delete
+                  </button>
                 </div>
               </div>
             </div>
@@ -458,6 +473,29 @@
           </div>
           <div id="import-new-content">
             <div class="import-new-top">
+              <div class="import-deleted-setting">
+                <label for="import-deleted-mode" class="import-deleted-label"
+                  >Previously deleted conversations</label
+                >
+                <select id="import-deleted-mode">
+                  <option value="skip">
+                    Don't import previously deleted chats.
+                  </option>
+                  <option value="all">
+                    Import all previously deleted chats.
+                  </option>
+                  <option value="review">
+                    Review previously deleted chats before re-importing.
+                  </option>
+                </select>
+                <label
+                  id="import-review-new-wrap"
+                  class="import-deleted-checkbox"
+                >
+                  <input type="checkbox" id="import-review-new" />
+                  Review deleted conversations that have new messages
+                </label>
+              </div>
               <div class="import-new-action">
                 <button id="import-new-btn" type="button">
                   Import Conversations
@@ -470,6 +508,51 @@
               </p>
             </div>
             <div id="import-new-summary" class="import-new-summary" hidden></div>
+            <!-- Previously deleted conversations held aside for review before
+                 re-importing. Sits between the import controls and the
+                 import-history table. -->
+            <div id="import-review-area" class="import-review-area" hidden>
+              <div class="import-review-head">
+                <h3 class="import-review-title">
+                  Previously deleted conversations to review
+                </h3>
+                <div class="import-review-controls">
+                  <button
+                    id="import-review-all"
+                    type="button"
+                    class="import-review-btn"
+                  >
+                    Import All
+                  </button>
+                  <button
+                    id="import-review-none"
+                    type="button"
+                    class="import-review-btn"
+                  >
+                    Import None
+                  </button>
+                  <button
+                    id="import-review-selected"
+                    type="button"
+                    class="import-review-btn import-review-btn-primary"
+                  >
+                    Import Selected
+                  </button>
+                </div>
+              </div>
+              <table id="import-review-table">
+                <thead>
+                  <tr>
+                    <th class="import-review-check"></th>
+                    <th>Chat Name</th>
+                    <th>First Message</th>
+                    <th>Last Message</th>
+                    <th>Messages</th>
+                  </tr>
+                </thead>
+                <tbody id="import-review-body"></tbody>
+              </table>
+            </div>
             <div class="import-history">
               <div class="import-history-filter">
                 <span class="import-history-filter-label"
@@ -630,6 +713,19 @@
           <button id="name-modal-cancel" class="modal-btn">Cancel</button>
           <button id="name-modal-ok" class="modal-btn modal-btn-primary">
             Okay
+          </button>
+        </div>
+      </div>
+    </div>
+    <!-- Generic confirmation dialog (used for permanent deletion). -->
+    <div id="confirm-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-title" id="confirm-modal-title">Are you sure?</div>
+        <div class="modal-text" id="confirm-modal-text"></div>
+        <div class="modal-buttons">
+          <button id="confirm-modal-cancel" class="modal-btn">Cancel</button>
+          <button id="confirm-modal-ok" class="modal-btn modal-btn-danger">
+            Delete
           </button>
         </div>
       </div>
