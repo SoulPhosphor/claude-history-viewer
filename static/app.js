@@ -4007,6 +4007,7 @@ labelsEnabledToggle?.addEventListener("change", async () => {
   await loadLabelDefs();
   syncLabelFilterOptions();
   loadConversations(false);
+  loadFolders(); // show/hide squares in the folder tree too
   if (state.activeId) renderHeaderLabel(state.activeId, state.activeLabel);
 });
 
@@ -4133,6 +4134,8 @@ function applyConvLabelResult(convId, label) {
   } else {
     refreshRowLabel(convId, label);
   }
+  // A foldered conversation's only sidebar row is in the folder tree.
+  refreshFolderRowLabel(convId, label);
   if (convId === state.activeId) {
     state.activeLabel = label;
     renderHeaderLabel(convId, label);
@@ -4152,6 +4155,29 @@ function refreshRowLabel(convId, label) {
   if (!title) return;
   const fresh = labelsFeatureOn() ? labelIndicatorEl(convId, label) : null;
   const old = title.querySelector(":scope > .label-indicator");
+  if (fresh) {
+    if (old) title.replaceChild(fresh, old);
+    else title.insertBefore(fresh, title.firstChild);
+  } else if (old) {
+    old.remove();
+  }
+}
+
+// Update a conversation's square in the folder tree in place, and keep
+// state.folders in step so a later renderFolders() shows the same label.
+function refreshFolderRowLabel(convId, label) {
+  for (const f of state.folders || []) {
+    for (const c of f.conversations || []) {
+      if (c.id === convId) c.label = label;
+    }
+  }
+  const item = foldersTree?.querySelector(
+    `.folder-conv-item[data-id="${CSS.escape(convId)}"]`,
+  );
+  const title = item?.querySelector(".folder-conv-title");
+  if (!title) return;
+  const old = title.querySelector(":scope > .label-indicator");
+  const fresh = labelsFeatureOn() ? labelIndicatorEl(convId, label) : null;
   if (fresh) {
     if (old) title.replaceChild(fresh, old);
     else title.insertBefore(fresh, title.firstChild);
@@ -4306,6 +4332,9 @@ function onLabelDefsChanged() {
   if (state.activeSpecialView === "labels") refreshBulkLabelSelects();
   if (labelsFeatureOn()) {
     loadConversations(false);
+    // Folder-tree rows carry squares too; re-fetch so their colours/names and
+    // any cleared-by-deletion labels update.
+    loadFolders();
     if (state.activeId) {
       // The open conversation's label object may have been recoloured/renamed
       // or cleared (its label deleted); re-read it from the label defs.
@@ -4317,6 +4346,9 @@ function onLabelDefsChanged() {
       }
       renderHeaderLabel(state.activeId, state.activeLabel);
     }
+  } else {
+    // Feature just turned off → drop squares from the folder tree too.
+    loadFolders();
   }
 }
 
@@ -5677,6 +5709,14 @@ function renderFolders() {
         item.innerHTML =
           (c.pinned ? '<span class="folder-pin-dot" title="Pinned">★</span>' : "") +
           `<span class="folder-conv-title">${escHtml(c.title || "Untitled")}</span>`;
+        // Compact label square before the title, same as the main list.
+        if (labelsFeatureOn()) {
+          const titleEl = item.querySelector(".folder-conv-title");
+          titleEl.insertBefore(
+            labelIndicatorEl(c.id, c.label || null),
+            titleEl.firstChild,
+          );
+        }
         item.addEventListener("click", () => openConversation(c.id, item));
         item.addEventListener("dragstart", (e) => {
           e.dataTransfer.effectAllowed = "move";

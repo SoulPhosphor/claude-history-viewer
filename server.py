@@ -1038,6 +1038,10 @@ def _purge_conversation(conn, cid: str) -> bool:
         "DELETE FROM udb.conversation_tags WHERE conversation_id = ?",
         "DELETE FROM udb.conversation_models WHERE conversation_id = ?",
         "DELETE FROM udb.conversation_model_flags WHERE conversation_id = ?",
+        # The label assignment is viewer metadata too: drop it so a purged
+        # conversation can't keep inflating label counts or silently regain its
+        # old label if the same stable ID is re-imported later.
+        "DELETE FROM udb.conversation_labels WHERE conversation_id = ?",
     ):
         try:
             conn.execute(stmt, (cid,))
@@ -2295,10 +2299,15 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT fi.folder_id AS folder_id, fi.pinned AS pinned, "
                 "c.id AS id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
                 "c.create_time AS create_time, c.update_time AS update_time, "
-                "c.message_count AS message_count "
+                "c.message_count AS message_count, "
+                # The label rides along so folder rows can draw their square
+                # without a request per conversation (no N+1).
+                "ll.id AS label_id, ll.name AS label_name, ll.color AS label_color "
                 "FROM udb.folder_items fi "
                 "JOIN conversations c ON c.id = fi.conversation_id "
                 "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                "LEFT JOIN udb.conversation_labels cl ON cl.conversation_id = c.id "
+                "LEFT JOIN udb.labels ll ON ll.id = cl.label_id "
                 "WHERE COALESCE(cm.deleted, 0) = 0" + prov_item + " "
                 # Pinned chats float to the top within the folder, then newest.
                 "ORDER BY fi.pinned DESC, c.update_time DESC, c.create_time DESC"
@@ -2312,6 +2321,8 @@ class Handler(BaseHTTPRequestHandler):
                     "update_time":   r["update_time"],
                     "message_count": r["message_count"],
                     "pinned":        bool(r["pinned"]),
+                    "label": ({"id": r["label_id"], "name": r["label_name"],
+                               "color": r["label_color"]} if r["label_id"] else None),
                 })
             out = [{
                 "id":            f["id"],
