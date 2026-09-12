@@ -885,10 +885,16 @@
             <section class="labels-section">
               <h3 class="labels-section-title">Recent Bulk Changes</h3>
               <p class="labels-section-hint">
-                Your recent bulk-label operations. Reuse loads a change's
-                criteria back into the tool above. This is a reminder of what
-                you did, not an undo — recovery is what Safety Snapshots are for.
+                Your recent bulk-label operations. Use Again loads a change's
+                criteria back into the tool above (you still Preview and Apply).
+                This is a reminder of what you did, not an undo — recovery is
+                what Safety Snapshots are for.
               </p>
+              <div class="bulk-retention-row">
+                <label for="bulk-retention">Keep the last</label>
+                <input type="number" id="bulk-retention" min="0" max="50" value="5" />
+                <span>changes</span>
+              </div>
               <ul id="bulk-history-list" class="bulk-history-list"></ul>
             </section>
           </div>

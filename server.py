@@ -1119,6 +1119,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_bulk_preview()
         elif path == "/api/labels/bulk-apply":
             self._api_bulk_apply()
+        elif path == "/api/labels/bulk-history/retention":
+            self._api_bulk_retention_set()
         elif path == "/api/import-new":
             self._api_import_new()
         elif path == "/api/recycle-bin/restore":
@@ -3165,9 +3167,18 @@ class Handler(BaseHTTPRequestHandler):
                 where.append(f"({col} > 0 AND {col} >= ? AND {col} < ?)")
                 params += [start, end]
 
-    def _build_bulk_query(self, crit, use_fts=True):
+    def _build_bulk_query(self, crit, use_fts=True, noop_target="__none__"):
         """Turn a criteria dict into (where_sql, params, order_sql, limit_n).
-        Every criterion is optional; populated ones are ANDed together."""
+        Every criterion is optional; populated ones are ANDed together.
+
+        `noop_target` adds the skip-no-op condition so the limit applies only to
+        conversations the operation would actually change:
+          • "__none__"  — no condition (count of everything matching).
+          • a label id  — exclude conversations already carrying that label.
+          • None (Blank) — keep only conversations that currently carry a label
+                           (clearing to blank is a no-op on already-blank ones).
+        Applying the limit after this exclusion is what makes a repeated rule
+        pick up the *next* batch instead of rewriting the same rows."""
         where = ["COALESCE(cm.deleted, 0) = 0"]
         params = []
 
@@ -3227,6 +3238,19 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 params += [like, like]
 
+        # Skip-no-op: narrow to rows the target would actually change.
+        if noop_target != "__none__":
+            if noop_target is None:
+                where.append(
+                    "c.id IN (SELECT conversation_id FROM udb.conversation_labels)"
+                )
+            else:
+                where.append(
+                    "c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels "
+                    "WHERE label_id = ?)"
+                )
+                params.append(noop_target)
+
         col, direction = {
             "started_asc":  ("c.create_time", "ASC"),
             "started_desc": ("c.create_time", "DESC"),
@@ -3247,23 +3271,38 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         return " AND ".join(where), params, order_sql, limit_n
 
-    def _bulk_run(self, conn, crit):
-        """(eligible_count, batch_ids, limit_n). Retries once without FTS if the
-        keyword makes SQLite's MATCH raise."""
+    def _bulk_select(self, conn, crit, target_label_id):
+        """Resolve the criteria against the target into:
+          eligible    — conversations matching the conditions (ignores target),
+          not_already  — of those, how many aren't already at the target,
+          batch_ids    — the first-N (or all) of `not_already`, in order,
+          limit_n      — the first-N limit, or None for "all".
+        These are exactly the rows Apply will change. Retries once without FTS if
+        the keyword makes SQLite's MATCH raise."""
+        FROM = ("FROM conversations c "
+                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id WHERE ")
         last_err = None
         for use_fts in (True, False):
             try:
-                where_sql, params, order_sql, limit_n = self._build_bulk_query(crit, use_fts)
-                base = ("FROM conversations c "
-                        "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
-                        "WHERE " + where_sql)
-                eligible = conn.execute("SELECT COUNT(*) " + base, params).fetchone()[0]
-                sql = "SELECT c.id " + base + " " + order_sql
-                p2 = list(params)
+                # Everything matching the conditions (no target exclusion).
+                w0, p0, _order0, _lim0 = self._build_bulk_query(crit, use_fts)
+                eligible = conn.execute("SELECT COUNT(*) " + FROM + w0, p0).fetchone()[0]
+                # Matching AND not already at the target — the changeable set.
+                w1, p1, order_sql, limit_n = self._build_bulk_query(
+                    crit, use_fts, noop_target=target_label_id
+                )
+                not_already = conn.execute(
+                    "SELECT COUNT(*) " + FROM + w1, p1
+                ).fetchone()[0]
+                sql = "SELECT c.id " + FROM + w1 + " " + order_sql
+                p2 = list(p1)
                 if limit_n is not None:
                     sql += " LIMIT ?"; p2.append(limit_n)
-                ids = [r[0] for r in conn.execute(sql, p2).fetchall()]
-                return eligible, ids, limit_n
+                batch_ids = [r[0] for r in conn.execute(sql, p2).fetchall()]
+                return {
+                    "eligible": eligible, "not_already": not_already,
+                    "batch_ids": batch_ids, "limit_n": limit_n,
+                }
             except sqlite3.OperationalError as e:
                 last_err = e
                 if use_fts:
@@ -3284,60 +3323,46 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return (t, row["name"])
 
-    def _bulk_changed_and_apply(self, conn, ids, target_label_id, write):
-        """How many of `ids` the target would change (label differs), optionally
-        writing the change. IN clauses are chunked to stay under SQLite's
-        variable limit."""
+    def _bulk_write(self, conn, ids, target_label_id):
+        """Apply the target to `ids` — every id is a genuine change because the
+        no-op rows were already excluded by _bulk_select. IN clauses / executemany
+        are chunked to stay under SQLite's variable limit. The caller owns the
+        transaction (commit / rollback)."""
         if not ids:
-            return 0
+            return
         CH = 400
         if target_label_id:
-            already = set()
+            now = time.time()
             for i in range(0, len(ids), CH):
-                chunk = ids[i:i + CH]
-                marks = ",".join("?" * len(chunk))
-                for r in conn.execute(
-                    f"SELECT conversation_id FROM udb.conversation_labels "
-                    f"WHERE label_id = ? AND conversation_id IN ({marks})",
-                    (target_label_id, *chunk),
-                ):
-                    already.add(r[0])
-            changed = len(ids) - len(already)
-            if write:
-                now = time.time()
                 conn.executemany(
                     "INSERT INTO udb.conversation_labels(conversation_id, label_id, assigned_at) "
                     "VALUES (?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET "
                     "label_id = excluded.label_id, assigned_at = excluded.assigned_at",
-                    [(cid, target_label_id, now) for cid in ids],
+                    [(cid, target_label_id, now) for cid in ids[i:i + CH]],
                 )
-            return changed
-        # Clear to blank: only rows that actually exist count as changed.
-        have = set()
-        for i in range(0, len(ids), CH):
-            chunk = ids[i:i + CH]
-            marks = ",".join("?" * len(chunk))
-            for r in conn.execute(
-                f"SELECT conversation_id FROM udb.conversation_labels "
-                f"WHERE conversation_id IN ({marks})",
-                tuple(chunk),
-            ):
-                have.add(r[0])
-        changed = len(have)
-        if write and have:
-            hv = list(have)
-            for i in range(0, len(hv), CH):
-                chunk = hv[i:i + CH]
+        else:
+            for i in range(0, len(ids), CH):
+                chunk = ids[i:i + CH]
                 marks = ",".join("?" * len(chunk))
                 conn.execute(
                     f"DELETE FROM udb.conversation_labels WHERE conversation_id IN ({marks})",
                     tuple(chunk),
                 )
-        return changed
 
-    def _bulk_describe(self, conn, crit, target_name, target_label_id,
-                       eligible, batch, changed):
-        """A human-readable one-line summary captured at execution time."""
+    @staticmethod
+    def _bulk_fmt_day(s):
+        """YYYY-MM-DD → 'Apr 1' for the readable history summary."""
+        try:
+            y, m, d = (int(x) for x in str(s).split("-"))
+            return f"{datetime.date(y, m, d):%b} {d}"
+        except Exception:
+            return str(s)
+
+    def _bulk_describe(self, conn, crit):
+        """The execution-time, human-readable filter+order summary stored with a
+        bulk operation. Resolves label/folder ids to their *current* names and
+        stores the text, so the history row stays readable even if a label is
+        later renamed or deleted (it is never re-rendered from live ids)."""
         parts = []
         prov = str(crit.get("provider") or "all").lower()
         parts.append({"claude": "Claude", "chatgpt": "ChatGPT"}.get(prov, "All providers"))
@@ -3347,50 +3372,101 @@ class Handler(BaseHTTPRequestHandler):
                 return None
             op = str(spec.get("op") or "any").lower()
             if op == "before" and spec.get("date"):
-                return f"{name} before {spec['date']}"
+                return f"{name} before {self._bulk_fmt_day(spec['date'])}"
             if op == "after" and spec.get("date"):
-                return f"{name} after {spec['date']}"
+                return f"{name} after {self._bulk_fmt_day(spec['date'])}"
             if op == "between" and spec.get("date") and spec.get("date2"):
-                return f"{name} {spec['date']}…{spec['date2']}"
+                return (f"{name} {self._bulk_fmt_day(spec['date'])}"
+                        f"–{self._bulk_fmt_day(spec['date2'])}")
             return None
 
-        for p in (dpart(crit.get("started"), "started"), dpart(crit.get("ended"), "updated")):
+        for p in (dpart(crit.get("started"), "Started"), dpart(crit.get("ended"), "Updated")):
             if p:
                 parts.append(p)
 
         label = str(crit.get("label") or "any")
         if label == "blank":
-            parts.append("current label blank")
+            parts.append("Blank")
         elif label != "any":
             r = conn.execute("SELECT name FROM udb.labels WHERE id = ?", (label,)).fetchone()
-            parts.append(f"current label {r['name'] if r else 'unknown'}")
+            parts.append(f"Label: {r['name'] if r else 'unknown'}")
 
         folder = str(crit.get("folder") or "any")
         if folder == "none":
-            parts.append("no folder")
+            parts.append("No folder")
         elif folder != "any":
             r = conn.execute("SELECT name FROM udb.folders WHERE id = ?", (folder,)).fetchone()
-            parts.append(f"folder {r['name'] if r else 'unknown'}")
+            parts.append(f"Folder: {r['name'] if r else 'unknown'}")
 
         tag = str(crit.get("tag") or "").strip()
         if tag:
-            parts.append(f"tag “{tag}”")
+            parts.append(f"Tag: {tag}")
         kw = str(crit.get("keyword") or "").strip()
         if kw:
-            parts.append(f"matching “{kw}”")
+            parts.append(f"“{kw}”")
 
-        lim = crit.get("limit") or {}
-        limtxt = (f"first {lim.get('n')}" if isinstance(lim, dict)
-                  and lim.get("mode") == "first" else "all matching")
-        order_txt = {
-            "started_asc": "started oldest first", "started_desc": "started newest first",
-            "updated_asc": "updated oldest first", "updated_desc": "updated newest first",
-        }.get(str(crit.get("order") or "started_asc"), "")
-        target_txt = target_name if target_label_id else "Blank"
-        return (f"Set label to {target_txt} · {changed} changed of {batch} in batch "
-                f"({eligible} matched) · {limtxt}, {order_txt} · " + " · ".join(parts))
+        parts.append({
+            "started_asc": "Started oldest first", "started_desc": "Started newest first",
+            "updated_asc": "Updated oldest first", "updated_desc": "Updated newest first",
+        }.get(str(crit.get("order") or "started_asc"), "Started oldest first"))
+        return " · ".join(parts)
+
+    # Recent Bulk Changes: how many rows to keep/show. Default 5, user-adjustable.
+    _BULK_HISTORY_DEFAULT = 5
+
+    def _bulk_retention(self, conn):
+        """The Recent-Bulk-Changes retention count (clamped 0..50)."""
+        n = self._BULK_HISTORY_DEFAULT
+        try:
+            row = conn.execute(
+                "SELECT pref_value FROM ui_preferences WHERE pref_key = 'bulkHistoryRetention'"
+            ).fetchone()
+            if row and row[0] is not None:
+                try:
+                    n = int(json.loads(row[0]))
+                except Exception:
+                    n = int(row[0])
+        except (sqlite3.Error, ValueError, TypeError):
+            n = self._BULK_HISTORY_DEFAULT
+        return max(0, min(50, n))
+
+    def _prune_bulk_history(self, conn, n):
+        """Keep only the newest `n` history rows, dropping the oldest excess."""
+        conn.execute(
+            "DELETE FROM udb.label_bulk_history WHERE id NOT IN ("
+            "SELECT id FROM udb.label_bulk_history "
+            "ORDER BY created_at DESC, id DESC LIMIT ?)",
+            (max(0, int(n)),),
+        )
+
+    def _bulk_history_rows(self, conn, n):
+        rows = conn.execute(
+            "SELECT id, created_at, criteria_json, description, target_label_id, "
+            "target_label_name, limit_used, order_json, eligible_count, changed_count "
+            "FROM udb.label_bulk_history ORDER BY created_at DESC, id DESC LIMIT ?",
+            (max(0, int(n)),),
+        ).fetchall()
+        out = []
+        for r in rows:
+            try:
+                crit = json.loads(r["criteria_json"] or "{}")
+            except Exception:
+                crit = {}
+            out.append({
+                "id": r["id"], "created_at": r["created_at"],
+                "description": r["description"],
+                "target_label_id": r["target_label_id"],
+                "target_label_name": r["target_label_name"],
+                "limit_used": r["limit_used"],
+                "eligible_count": r["eligible_count"],
+                "changed_count": r["changed_count"],
+                "criteria": crit,
+            })
+        return out
 
     def _api_bulk_preview(self):
+        """Count only — never mutates. Reports the three numbers the UI shows:
+        matching, not-already-at-target, and how many this run would change."""
         crit = self._read_json_body()
         conn = open_db(self.db_path)
         try:
@@ -3399,18 +3475,24 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Unknown target label"}, 404); return
             target_label_id, target_name = target
             try:
-                eligible, ids, _ = self._bulk_run(conn, crit)
+                sel = self._bulk_select(conn, crit, target_label_id)
             except sqlite3.Error:
                 self.send_json({"error": "Could not evaluate the criteria"}, 400); return
-            changed = self._bulk_changed_and_apply(conn, ids, target_label_id, write=False)
             self.send_json({
-                "eligible": eligible, "batch_size": len(ids), "changed": changed,
-                "target_label_id": target_label_id, "target_label_name": target_name,
+                "eligible": sel["eligible"],
+                "not_already": sel["not_already"],
+                "will_change": len(sel["batch_ids"]),
+                "limit_n": sel["limit_n"],
+                "target_label_id": target_label_id,
+                "target_label_name": target_name,
+                "target_blank": target_label_id is None,
             })
         finally:
             conn.close()
 
     def _api_bulk_apply(self):
+        """Mutate only here, transactionally: the whole batch writes or nothing
+        does. Records one Recent-Bulk-Changes entry and prunes to retention."""
         crit = self._read_json_body()
         conn = open_db(self.db_path)
         try:
@@ -3419,25 +3501,33 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Unknown target label"}, 404); return
             target_label_id, target_name = target
             try:
-                eligible, ids, limit_n = self._bulk_run(conn, crit)
+                sel = self._bulk_select(conn, crit, target_label_id)
             except sqlite3.Error:
                 self.send_json({"error": "Could not evaluate the criteria"}, 400); return
-            changed = self._bulk_changed_and_apply(conn, ids, target_label_id, write=True)
-            desc = self._bulk_describe(conn, crit, target_name, target_label_id,
-                                       eligible, len(ids), changed)
+            ids = sel["batch_ids"]
+            changed = len(ids)
+            desc = self._bulk_describe(conn, crit)
             hid = uuid.uuid4().hex
-            conn.execute(
-                "INSERT INTO udb.label_bulk_history(id, created_at, criteria_json, description, "
-                "target_label_id, target_label_name, limit_used, order_json, "
-                "eligible_count, changed_count) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (hid, time.time(), json.dumps(crit, ensure_ascii=False), desc,
-                 target_label_id, target_name, limit_n,
-                 json.dumps(crit.get("order") or "started_asc"), eligible, changed),
-            )
-            conn.commit()
+            try:
+                self._bulk_write(conn, ids, target_label_id)
+                conn.execute(
+                    "INSERT INTO udb.label_bulk_history(id, created_at, criteria_json, description, "
+                    "target_label_id, target_label_name, limit_used, order_json, "
+                    "eligible_count, changed_count) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (hid, time.time(), json.dumps(crit, ensure_ascii=False), desc,
+                     target_label_id, target_name, sel["limit_n"],
+                     json.dumps(crit.get("order") or "started_asc"),
+                     sel["eligible"], changed),
+                )
+                self._prune_bulk_history(conn, self._bulk_retention(conn))
+                conn.commit()
+            except sqlite3.Error:
+                conn.rollback()
+                self.send_json({"error": "The operation failed and was rolled back"}, 500)
+                return
             self.send_json({
-                "eligible": eligible, "batch_size": len(ids), "changed": changed,
-                "history_id": hid, "description": desc,
+                "eligible": sel["eligible"], "not_already": sel["not_already"],
+                "changed": changed, "history_id": hid, "description": desc,
             })
         finally:
             conn.close()
@@ -3445,28 +3535,30 @@ class Handler(BaseHTTPRequestHandler):
     def _api_bulk_history(self):
         conn = open_db(self.db_path)
         try:
-            rows = conn.execute(
-                "SELECT id, created_at, criteria_json, description, target_label_id, "
-                "target_label_name, limit_used, order_json, eligible_count, changed_count "
-                "FROM udb.label_bulk_history ORDER BY created_at DESC LIMIT 50"
-            ).fetchall()
-            out = []
-            for r in rows:
-                try:
-                    crit = json.loads(r["criteria_json"] or "{}")
-                except Exception:
-                    crit = {}
-                out.append({
-                    "id": r["id"], "created_at": r["created_at"],
-                    "description": r["description"],
-                    "target_label_id": r["target_label_id"],
-                    "target_label_name": r["target_label_name"],
-                    "limit_used": r["limit_used"],
-                    "eligible_count": r["eligible_count"],
-                    "changed_count": r["changed_count"],
-                    "criteria": crit,
-                })
-            self.send_json({"history": out})
+            n = self._bulk_retention(conn)
+            self.send_json({"history": self._bulk_history_rows(conn, n), "retention": n})
+        finally:
+            conn.close()
+
+    def _api_bulk_retention_set(self):
+        """Set the retention count and prune immediately (reducing it drops the
+        oldest excess rows). Returns the updated history + retention."""
+        payload = self._read_json_body()
+        try:
+            n = int(payload.get("retention"))
+        except (TypeError, ValueError):
+            self.send_json({"error": "retention must be an integer"}, 400); return
+        n = max(0, min(50, n))
+        conn = open_db(self.db_path)
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO ui_preferences(pref_key, pref_value) "
+                "VALUES ('bulkHistoryRetention', ?)",
+                (json.dumps(n),),
+            )
+            self._prune_bulk_history(conn, n)
+            conn.commit()
+            self.send_json({"history": self._bulk_history_rows(conn, n), "retention": n})
         finally:
             conn.close()
 
