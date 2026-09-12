@@ -98,11 +98,11 @@ body.sidebar-collapsed #sidebar-footer {
   margin-bottom: 10px;
 }
 
-/* The collapse button sits pinned to the left so the provider toggle can be
+/* The collapse button sits pinned to the right so the provider toggle can be
    centered in the full width of the row. */
 .sidebar-title-row #sidebar-toggle {
   position: absolute;
-  left: 0;
+  right: 0;
   top: 50%;
   transform: translateY(-50%);
 }

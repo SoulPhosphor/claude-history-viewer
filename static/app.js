@@ -19,6 +19,11 @@ const state = {
   activeTabId: null,
   lastConversationId: null, // for returning from a special view
   activeProvider: null, // provider of the open conversation
+  // The open conversation's own pin/folder state (set on open), authoritative
+  // even for a Compare item from the provider not shown in the sidebar.
+  activePinned: false,
+  activeFolderId: null,
+  activeFolderPinned: false,
   preferences: {
     sidebarCollapsed: false,
     sidebarWidth: 300,
@@ -930,7 +935,9 @@ async function apiUpdatePreferences(preferences) {
 }
 
 async function apiPinnedList() {
-  const r = await fetch("/api/pinned");
+  // Scope pins to the toggled side so the loose Pinned list matches the sidebar.
+  const p = new URLSearchParams({ provider: state.providerSide });
+  const r = await fetch(`/api/pinned?${p}`);
   return r.json();
 }
 
@@ -2019,6 +2026,12 @@ async function openConversation(id, clickedEl, targetSeq = null) {
 
   const { conversation: conv, messages, artifacts: artifactsMeta = {} } = data;
   state.activeProvider = conv.provider || null;
+  // The open conversation's own pin/folder state, from the server rather than
+  // the sidebar-scoped sets — so the thread menu stays correct for a Compare
+  // item opened from the opposite provider.
+  state.activePinned = !!conv.pinned;
+  state.activeFolderId = conv.folder_id || null;
+  state.activeFolderPinned = !!conv.folder_pinned;
 
   setThreadTitle(conv.title);
   const ts = formatDate(conv.update_time || conv.create_time);
@@ -3144,6 +3157,7 @@ async function switchProviderSide(side) {
     updateListSectionTitle();
   }
   state.offset = 0;
+  await refreshPinnedList();
   await loadFolders();
   await loadConversations(false);
   syncUnverifiedOption();
@@ -4260,22 +4274,27 @@ async function apiFolders() {
   const p = new URLSearchParams({ provider: state.providerSide });
   return fetch(`/api/folders?${p}`).then((r) => r.json());
 }
-async function apiCreateFolder(name) {
+async function apiCreateFolder(name, provider) {
   return fetch("/api/folders", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    // Folders belong to the side they were created on.
-    body: JSON.stringify({ name, provider: state.providerSide }),
+    // Folders belong to a side. Default to the sidebar's, but callers acting on
+    // a specific conversation (e.g. a Compare item from the other provider)
+    // pass that conversation's provider instead.
+    body: JSON.stringify({
+      name,
+      provider: provider || state.providerSide,
+    }),
   }).then((r) => r.json());
 }
 
 // Shared "New folder" dialog flow, used by the sidebar's Add New Folder
 // button, its right-click context menu, and the Move-to menu's own entry.
 // Returns the created folder (with its id) or null if the user cancelled.
-async function promptCreateFolder() {
+async function promptCreateFolder(provider) {
   const name = await openNameModal({ title: "New folder", value: "" });
   if (!name) return null;
-  const res = await apiCreateFolder(name);
+  const res = await apiCreateFolder(name, provider);
   return res && res.id ? res : null;
 }
 
@@ -4552,7 +4571,13 @@ const moveToMenu = $("move-to-menu");
 const threadMoreBtn = $("thread-more-btn");
 const threadMoreMenu = $("thread-more-menu");
 
+// Bumped on every menu open/close so a slow async Move-to build (which fetches
+// the opposite provider's folders) can tell it has been superseded and must not
+// pop open a menu wired to a conversation the user has since navigated away from.
+let _moveMenuSeq = 0;
+
 function closeThreadMenus() {
+  _moveMenuSeq++;
   if (moveToMenu) moveToMenu.hidden = true;
   if (threadMoreMenu) threadMoreMenu.hidden = true;
   document.removeEventListener("mousedown", onThreadMenuOutside, true);
@@ -4568,8 +4593,27 @@ function onThreadMenuOutside(e) {
   closeThreadMenus();
 }
 
-function buildMoveToMenu() {
-  const cid = state.activeId;
+async function buildMoveToMenu(cid = state.activeId) {
+  // The open conversation may be a Compare item from the opposite provider.
+  // Folders are provider-scoped, so offer the folders of the conversation's own
+  // provider — placing a chat in another provider's folder would hide it from
+  // both sidebars. Reuse the already-loaded set when the sides match.
+  const convProvider = state.activeProvider || state.providerSide;
+  let folders = state.folders;
+  let folderOf = state.folderOf;
+  if (convProvider !== state.providerSide) {
+    try {
+      const p = new URLSearchParams({ provider: convProvider });
+      const data = await fetch(`/api/folders?${p}`).then((r) => r.json());
+      folders = data.folders || [];
+      folderOf = new Map();
+      for (const f of folders)
+        for (const c of f.conversations || []) folderOf.set(c.id, f.id);
+    } catch {
+      folders = [];
+      folderOf = new Map();
+    }
+  }
   moveToMenu.innerHTML = "";
 
   const addNew = document.createElement("button");
@@ -4577,35 +4621,38 @@ function buildMoveToMenu() {
   addNew.textContent = "Add New Folder";
   addNew.addEventListener("click", async () => {
     closeThreadMenus();
-    const res = await promptCreateFolder();
+    // Create the folder on the conversation's own side, not the sidebar's.
+    const res = await promptCreateFolder(convProvider);
     if (res) {
       await apiMoveToFolder(res.id, cid);
+      _syncActiveFolderState(cid, res.id);
       await afterFolderChange();
     }
   });
   moveToMenu.appendChild(addNew);
 
-  if (state.folderOf.has(cid)) {
+  if (folderOf.has(cid)) {
     const remove = document.createElement("button");
     remove.className = "thread-dropdown-item";
     remove.textContent = "Remove from Folder";
     remove.addEventListener("click", async () => {
       closeThreadMenus();
       await apiRemoveFromFolder(cid);
+      _syncActiveFolderState(cid, null);
       await afterFolderChange();
     });
     moveToMenu.appendChild(remove);
   }
 
-  if (state.folders.length) {
+  if (folders.length) {
     const sep = document.createElement("div");
     sep.className = "thread-dropdown-sep";
     moveToMenu.appendChild(sep);
   }
-  for (const f of state.folders) {
+  for (const f of folders) {
     const b = document.createElement("button");
     b.className = "thread-dropdown-item";
-    const isCurrent = state.folderOf.get(cid) === f.id;
+    const isCurrent = folderOf.get(cid) === f.id;
     if (isCurrent) b.classList.add("current");
     b.textContent = f.name;
     b.addEventListener("click", async () => {
@@ -4613,10 +4660,22 @@ function buildMoveToMenu() {
       // Already here: moving again would only clear the pin-within-folder.
       if (isCurrent) return;
       await apiMoveToFolder(f.id, cid);
+      _syncActiveFolderState(cid, f.id);
       await afterFolderChange();
     });
     moveToMenu.appendChild(b);
   }
+}
+
+// Keep the active conversation's tracked folder/pin state in step with a
+// Move-to action, so reopening the ⋮ menu shows the right Pin/Unpin label
+// without waiting for the conversation to be reopened. Moving into a folder
+// clears any loose pin server-side; both operations clear the in-folder pin.
+function _syncActiveFolderState(cid, folderId) {
+  if (cid !== state.activeId) return;
+  state.activeFolderId = folderId;
+  state.activeFolderPinned = false;
+  if (folderId) state.activePinned = false;
 }
 
 moveToBtn?.addEventListener("click", (e) => {
@@ -4625,9 +4684,16 @@ moveToBtn?.addEventListener("click", (e) => {
   const wasOpen = !moveToMenu.hidden;
   closeThreadMenus();
   if (wasOpen) return;
-  buildMoveToMenu();
-  moveToMenu.hidden = false;
-  document.addEventListener("mousedown", onThreadMenuOutside, true);
+  const openForId = state.activeId;
+  const seq = ++_moveMenuSeq;
+  buildMoveToMenu(openForId).then(() => {
+    // The opposite-provider folder fetch is async: bail if the menu was closed,
+    // superseded by another open, or the active conversation changed meanwhile —
+    // otherwise the menu's folder handlers would act on a stale conversation.
+    if (seq !== _moveMenuSeq || state.activeId !== openForId) return;
+    moveToMenu.hidden = false;
+    document.addEventListener("mousedown", onThreadMenuOutside, true);
+  });
 });
 
 threadMoreBtn?.addEventListener("click", (e) => {
@@ -4638,19 +4704,22 @@ threadMoreBtn?.addEventListener("click", (e) => {
   if (wasOpen) return;
   const compareItem = threadMoreMenu.querySelector('[data-action="compare"]');
   if (compareItem) {
-    compareItem.textContent = compareTabForConv(state.activeId)
-      ? "Remove from Compare"
-      : "Compare";
+    // The menu only ever *adds* to Compare. Removal is exclusively the × on the
+    // Compare tab, so a chat already in Compare shows a disabled, no-op entry
+    // rather than a "Remove from Compare" action.
+    const inCompare = !!compareTabForConv(state.activeId);
+    compareItem.textContent = "Compare";
+    compareItem.classList.toggle("current", inCompare);
+    compareItem.disabled = inCompare;
   }
   const pinItem = threadMoreMenu.querySelector('[data-action="pin"]');
   if (pinItem) {
-    if (state.folderOf.has(state.activeId)) {
-      const fid = state.folderOf.get(state.activeId);
-      const folder = state.folders.find((f) => f.id === fid);
-      const conv = folder?.conversations.find((c) => c.id === state.activeId);
-      pinItem.textContent = conv && conv.pinned ? "Unpin" : "Pin";
+    // Use the active conversation's own state (set on open) rather than the
+    // sidebar-scoped sets, which omit an opposite-provider Compare item.
+    if (state.activeFolderId) {
+      pinItem.textContent = state.activeFolderPinned ? "Unpin" : "Pin";
     } else {
-      pinItem.textContent = state.pinnedIds.has(state.activeId) ? "Unpin" : "Pin";
+      pinItem.textContent = state.activePinned ? "Unpin" : "Pin";
     }
   }
   threadMoreMenu.hidden = false;
@@ -4664,14 +4733,14 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
     closeThreadMenus();
     if (!cid) return;
     if (action === "compare") {
-      const existing = compareTabForConv(cid);
-      if (existing) removeFromCompare(existing.id);
-      else
-        addToCompare(
-          cid,
-          threadTitle.textContent || "Conversation",
-          state.activeProvider || state.providerSide,
-        );
+      // Add only — never remove. Removing a Compare item is done with the × on
+      // its tab. A chat already in Compare is a no-op here.
+      if (compareTabForConv(cid)) return;
+      addToCompare(
+        cid,
+        threadTitle.textContent || "Conversation",
+        state.activeProvider || state.providerSide,
+      );
     } else if (action === "rename") {
       const cur = threadTitle.textContent || "";
       const name = await openNameModal({
@@ -4695,18 +4764,22 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
         });
       }
     } else if (action === "pin") {
-      if (state.folderOf.has(cid)) {
-        const fid = state.folderOf.get(cid);
-        const folder = state.folders.find((f) => f.id === fid);
-        const conv = folder?.conversations.find((c) => c.id === cid);
-        await apiFolderPin(cid, !(conv && conv.pinned));
+      // Act on the active conversation's own state (set on open), which is
+      // correct even for an opposite-provider Compare item, and keep it in
+      // sync so reopening the menu shows the right label.
+      if (state.activeFolderId) {
+        const next = !state.activeFolderPinned;
+        await apiFolderPin(cid, next);
+        state.activeFolderPinned = next;
         await loadFolders();
-      } else if (state.pinnedIds.has(cid)) {
+      } else if (state.activePinned) {
         await apiUnpinConversation(cid);
+        state.activePinned = false;
         await refreshPinnedList();
         await loadConversations(false);
       } else {
         await apiPinConversation(cid);
+        state.activePinned = true;
         await refreshPinnedList();
         await loadConversations(false);
       }

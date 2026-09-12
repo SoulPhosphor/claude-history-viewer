@@ -1135,6 +1135,39 @@ def build(source: Path, db_path: Path) -> None:
 
     # ── File index (removed — now handled inline above) ───────────────────────
 
+    # ── Record the seed export in the import history ──────────────────────────
+    # The "Import New Chats" screen skips any file whose hash it has already
+    # imported and renames the rest to Provider-conversations-DATE.json. Without
+    # this row the seed source/conversations.json is treated as a brand-new
+    # backup, imported again and renamed away — which then breaks the documented
+    # `rm -f history.db && python3 app.py` rebuild, since startup needs that
+    # exact path. Recording its hash here keeps the seed in place while still
+    # letting a genuinely new export (different bytes) import normally.
+    try:
+        seed_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        seed_times: list[float] = []
+        for m in conv_rows:
+            for t in (m.get("create_time"), m.get("update_time")):
+                if t:
+                    seed_times.append(t)
+        for msg in msg_rows:
+            t = msg.get("create_time")
+            if t:
+                seed_times.append(t)
+        seed_first = min(seed_times) if seed_times else None
+        seed_last = max(seed_times) if seed_times else None
+        db.execute(
+            "INSERT INTO imported_backups "
+            "(file_name, provider, file_hash, first_chat, last_chat, "
+            " total_chats, imported_at, added, updated, unchanged, skipped, errors) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0)",
+            (source.name, fmt, seed_hash, seed_first, seed_last,
+             len(conv_rows), datetime.now(timezone.utc).timestamp(),
+             len(conv_rows)),
+        )
+    except OSError:
+        pass  # can't hash the seed → it may re-import later, but the build stands
+
     db.commit()
     db.close()
 
@@ -1296,12 +1329,16 @@ def reconcile_backup(conn, records: list, provider: str) -> dict:
     identity (id + provider) and the deletion flag.
 
       • UUID not present            → insert                     (added)
+      • present, other provider     → skip, never overwrite      (skipped)
       • present, is_deleted = true  → skip, never resurrect      (skipped)
       • present, is_deleted = false → reconcile if content moved (updated)
                                        otherwise leave it alone   (unchanged)
 
     A backup that overlaps an older one therefore updates in place and never
     duplicates a conversation, and a conversation the user deleted stays gone.
+    Identity is (id, provider): a same UUID held by the other provider is a
+    different conversation and is never touched, and an older backup imported
+    after a newer one never rolls the stored conversation backward.
     """
     counts = {"added": 0, "updated": 0, "unchanged": 0, "skipped": 0, "errors": 0}
     for r in records:
@@ -1311,12 +1348,19 @@ def reconcile_backup(conn, records: list, provider: str) -> dict:
             msgs = r["msgs"]
             artifacts = r["artifacts"]
             existing = conn.execute(
-                "SELECT title, update_time, message_count FROM conversations WHERE id = ?",
+                "SELECT title, update_time, message_count, provider FROM conversations WHERE id = ?",
                 (cid,),
             ).fetchone()
             if existing is None:
                 _insert_conv_rows(conn, meta, msgs, artifacts, provider)
                 counts["added"] += 1
+                continue
+            # A conversation ID that already belongs to the *other* provider is a
+            # distinct conversation that happens to share a UUID. Overwriting it
+            # would silently destroy the first provider's chat, so leave it be.
+            existing_provider = existing[3]
+            if existing_provider and existing_provider != provider:
+                counts["skipped"] += 1
                 continue
             delrow = conn.execute(
                 "SELECT deleted FROM conversation_meta WHERE conversation_id = ?",
@@ -1331,6 +1375,21 @@ def reconcile_backup(conn, records: list, provider: str) -> dict:
                 and (existing[2] or 0) == (meta.get("message_count") or 0)
             )
             if same:
+                counts["unchanged"] += 1
+                continue
+            # Never let an older backup roll a newer conversation backward: files
+            # are scanned alphabetically, not chronologically, so a stale snapshot
+            # can arrive after a fresh one. Only overwrite when the incoming
+            # record is at least as new as the stored one. A record with no
+            # update_time (or when the stored one has none) can't be ordered, so
+            # fall through to the normal reconcile.
+            inc_ut = meta.get("update_time")
+            if (
+                inc_ut is not None
+                and existing[1] is not None
+                and not _ts_close(inc_ut, existing[1])
+                and float(inc_ut) < float(existing[1])
+            ):
                 counts["unchanged"] += 1
                 continue
             _delete_conv_rows(conn, cid)

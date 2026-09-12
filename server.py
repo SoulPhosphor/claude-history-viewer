@@ -717,10 +717,18 @@ def import_new_backups(conn, source_dir: Path) -> dict:
             continue
         first_ts, last_ts = build_db.backup_date_range(records)
 
-        date_str = _ts_to_date(last_ts) or datetime.date.today().isoformat()
-        label = "Claude" if provider == "claude" else "ChatGPT"
-        base = f"{label}-conversations-{date_str}"
-        final_name, is_dup = _resolve_backup_name(source_dir, path, base, file_hash)
+        if name == "conversations.json":
+            # The seed export keeps its canonical name: the documented
+            # `rm -f history.db && python3 app.py` rebuild needs that exact path.
+            # It is still hash-recorded below, so it imports at most once and is
+            # skipped on every later scan. (Fresh builds record it up front and
+            # never reach this loop; this covers databases built beforehand.)
+            final_name, is_dup = name, False
+        else:
+            date_str = _ts_to_date(last_ts) or datetime.date.today().isoformat()
+            label = "Claude" if provider == "claude" else "ChatGPT"
+            base = f"{label}-conversations-{date_str}"
+            final_name, is_dup = _resolve_backup_name(source_dir, path, base, file_hash)
         if is_dup:
             summary["notes"].append(
                 f"{name}: identical to already-imported {final_name} — skipped"
@@ -972,7 +980,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/preferences":
             self._api_preferences()
         elif path == "/api/pinned":
-            self._api_pinned_list()
+            self._api_pinned_list(qs)
         elif path == "/api/tabs":
             self._api_tabs()
         elif path == "/api/files-manifest":
@@ -1401,8 +1409,17 @@ class Handler(BaseHTTPRequestHandler):
                 "c.create_time, c.update_time, c.message_count, c.preview, "
                 "COALESCE(c.import_status, 'normal') AS import_status, "
                 "c.provider AS provider, "
-                "COALESCE(cm.deleted, 0) AS deleted "
-                "FROM conversations c LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                "COALESCE(cm.deleted, 0) AS deleted, "
+                # The conversation's own pin/folder state, so the thread menu is
+                # correct even for a Compare item from the opposite provider
+                # (whose state is absent from the sidebar-scoped lists).
+                "CASE WHEN pc.conversation_id IS NULL THEN 0 ELSE 1 END AS pinned, "
+                "fi.folder_id AS folder_id, "
+                "COALESCE(fi.pinned, 0) AS folder_pinned "
+                "FROM conversations c "
+                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                "LEFT JOIN pinned_conversations pc ON pc.conversation_id = c.id "
+                "LEFT JOIN udb.folder_items fi ON fi.conversation_id = c.id "
                 # No deleted filter: soft-deleted means "kept out of the lists",
                 # not "unreadable". The import audit lists these deliberately,
                 # and refusing them here left it opening records it could not show.
@@ -1991,8 +2008,26 @@ class Handler(BaseHTTPRequestHandler):
         now = time.time()
         conn = open_db(self.db_path)
         try:
-            if not conn.execute("SELECT 1 FROM udb.folders WHERE id = ?", (fid,)).fetchone():
+            folder = conn.execute(
+                "SELECT provider FROM udb.folders WHERE id = ?", (fid,)
+            ).fetchone()
+            if not folder:
                 self.send_json({"error": "folder not found"}, 404); return
+            # Folders are provider-scoped and folder membership is filtered by
+            # provider in both sidebars, so a chat placed in the other provider's
+            # folder would vanish from every list. Reject the mismatch outright
+            # (a Compare item from the opposite side can reach this path).
+            convrow = conn.execute(
+                "SELECT provider FROM conversations WHERE id = ?", (cid,)
+            ).fetchone()
+            if convrow is None:
+                self.send_json({"error": "conversation not found"}, 404); return
+            folder_provider = folder["provider"]
+            conv_provider = convrow["provider"]
+            if folder_provider and conv_provider and folder_provider != conv_provider:
+                self.send_json(
+                    {"error": "folder belongs to a different provider"}, 409
+                ); return
             conn.execute("DELETE FROM pinned_conversations WHERE conversation_id = ?", (cid,))
             conn.execute(
                 "INSERT OR IGNORE INTO conversation_meta(conversation_id, custom_title, archived, deleted) "
@@ -2544,7 +2579,15 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _api_pinned_list(self):
+    def _api_pinned_list(self, qs=None):
+        # Scope the loose Pinned list to the toggled side so a Claude pin does not
+        # linger in the ChatGPT sidebar (and vice versa). `provider` is validated
+        # against a fixed whitelist, so it is safe to interpolate as a literal.
+        qs = qs or {}
+        provider = ((qs.get("provider") or [""])[0]).strip().lower()
+        if provider not in ("claude", "chatgpt"):
+            provider = None
+        prov_sql = f" AND c.provider = '{provider}'" if provider else ""
         conn = open_db(self.db_path)
         try:
             rows = conn.execute(
@@ -2553,7 +2596,7 @@ class Handler(BaseHTTPRequestHandler):
                 "FROM pinned_conversations p "
                 "JOIN conversations c ON c.id = p.conversation_id "
                 "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
-                "WHERE COALESCE(cm.deleted, 0) = 0 "
+                "WHERE COALESCE(cm.deleted, 0) = 0" + prov_sql + " "
                 "ORDER BY p.order_index ASC, p.pinned_at DESC"
             ).fetchall()
             self.send_json({"pinned": [dict(r) for r in rows]})
