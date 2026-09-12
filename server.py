@@ -1270,6 +1270,9 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_file(static_dir / "style.css")
         elif path == "/api/conversations":
             self._api_conversations(qs)
+        elif path.startswith("/api/conversation-labels/"):
+            self._api_conversation_label_get(
+                urllib.parse.unquote(path[len("/api/conversation-labels/"):]))
         elif path.startswith("/api/conversation/"):
             self._api_detail(urllib.parse.unquote(path[len("/api/conversation/"):]))
         elif path == "/api/search":
@@ -3090,6 +3093,17 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchone()
         return ({"id": row["id"], "name": row["name"], "color": row["color"]}
                 if row else None)
+
+    def _api_conversation_label_get(self, conv_id):
+        """The conversation's current label (or null). Lets the header re-read a
+        single conversation's assignment after a bulk/restore without refetching
+        its whole message list."""
+        conv_id = (conv_id or "").strip()
+        conn = open_db(self.db_path)
+        try:
+            self.send_json({"conv_id": conv_id, "label": self._conv_label(conn, conv_id)})
+        finally:
+            conn.close()
 
     def _api_conversation_label_set(self):
         """Set (or clear) a conversation's single label. A falsy label_id

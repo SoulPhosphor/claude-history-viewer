@@ -4201,6 +4201,29 @@ function renderHeaderLabel(convId, label) {
   holder.appendChild(labelIndicatorEl(convId, label));
 }
 
+// Re-read the open conversation's actual label assignment from the server and
+// update the header. Needed after an operation that can change a conversation's
+// assignment other than through its own square — a bulk apply or a snapshot
+// restore — where the assignment itself may have changed, not just the label's
+// definition. (onLabelDefsChanged's definition-based update is right for a
+// rename/recolour/delete, but it can't see an assignment change.)
+async function refreshActiveHeaderLabel() {
+  if (!state.activeId) return;
+  if (!labelsFeatureOn()) {
+    renderHeaderLabel(null, null);
+    return;
+  }
+  try {
+    const d = await apiModelState(
+      `/api/conversation-labels/${encodeURIComponent(state.activeId)}`,
+    );
+    state.activeLabel = d.label || null;
+  } catch (_) {
+    /* leave the current header as-is on failure */
+  }
+  renderHeaderLabel(state.activeId, state.activeLabel);
+}
+
 // ── Direct label selection (⋮ menus + right-click popover) ────────────────────
 
 // Add a "Set label" group (Blank + each configured label) to an open menu.
@@ -4568,6 +4591,8 @@ async function bulkApply() {
   await loadLabelDefs();
   renderLabelList();
   onLabelDefsChanged();
+  // The open conversation may have been in the batch — re-read its assignment.
+  refreshActiveHeaderLabel();
   loadBulkHistory();
 }
 
@@ -4917,11 +4942,9 @@ async function confirmRestore() {
   await refreshPinnedList();
   loadBulkHistory();
   loadSnapshots();
-  if (state.activeId) {
-    // Re-read the open conversation's label (its assignment may have changed).
-    state.activeLabel = labelById(state.activeLabel?.id) ? state.activeLabel : null;
-    renderHeaderLabel(state.activeId, state.activeLabel);
-  }
+  // A restore can change the open conversation's assignment outright — re-read
+  // it from the server rather than guessing from the label definitions.
+  refreshActiveHeaderLabel();
 }
 
 snapshotCreateBtn?.addEventListener("click", createSnapshot);
@@ -4930,11 +4953,6 @@ snapshotRestoreOk?.addEventListener("click", confirmRestore);
 snapshotRestoreModal?.addEventListener("mousedown", (e) => {
   if (e.target === snapshotRestoreModal) closeRestoreDialog();
 });
-
-// ── Import New Chats screen ──────────────────────────────────────────────────
-// Scans the source folder for backup files not yet imported, identifies each as
-// a Claude or ChatGPT export, merges it in, and renames the source file. Below
-// the import area is the history of every backup already brought in.
 
 // ── Import New Chats screen ──────────────────────────────────────────────────
 // Scans the source folder for backup files not yet imported, identifies each as
