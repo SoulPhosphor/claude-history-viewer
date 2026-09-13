@@ -3282,8 +3282,38 @@ const isClaudeSide = () => state.providerSide === "claude";
 async function apiModelState(path, options) {
   const resp = await fetch(path, options);
   const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+  if (!resp.ok) {
+    const err = new Error(data.error || `HTTP ${resp.status}`);
+    err.status = resp.status;
+    throw err;
+  }
   return data;
+}
+
+// A bare 404 on a label endpoint means the running server predates the labels
+// feature: server.py has the routes, but the process serving this page was not
+// restarted (or the old server.py is still in place). Surface one clear,
+// actionable message instead of a silent no-op or a cryptic "HTTP 404".
+let _warnedLabelServerOutdated = false;
+const LABEL_SERVER_OUTDATED_MSG =
+  "Conversation labels need the updated server. Replace server.py with the " +
+  "new version and restart the app (stop it with Ctrl-C, then run it again).\n\n" +
+  "You do NOT need to rebuild or delete your database, and nothing in the " +
+  "'source' folder needs changing.";
+function isLabelServerOutdated(err) {
+  return !!err && err.status === 404;
+}
+// Message to show for a failed label call: the actionable "update the server"
+// guidance when the routes are missing, otherwise the raw error text.
+function labelErrText(err) {
+  return isLabelServerOutdated(err)
+    ? LABEL_SERVER_OUTDATED_MSG
+    : (err && err.message) || "Something went wrong.";
+}
+function warnLabelServerOutdatedOnce() {
+  if (_warnedLabelServerOutdated) return;
+  _warnedLabelServerOutdated = true;
+  alert(LABEL_SERVER_OUTDATED_MSG);
 }
 
 // Load the export format once at boot; it decides whether any of this renders.
@@ -3932,7 +3962,7 @@ async function saveLabel(label, patch, inputEl) {
     if (inputEl && "name" in patch) inputEl.value = label.name;
     if (inputEl && "color" in patch)
       inputEl.value = _validHexColor(label.color) ? label.color : "#888888";
-    showLabelError(e.message);
+    showLabelError(labelErrText(e));
   }
 }
 
@@ -3952,7 +3982,7 @@ async function moveLabel(index, delta) {
     renderLabelList();
     onLabelDefsChanged();
   } catch (e) {
-    showLabelError(e.message);
+    showLabelError(labelErrText(e));
   }
 }
 
@@ -3978,7 +4008,7 @@ async function deleteLabel(label) {
     renderLabelList();
     onLabelDefsChanged();
   } catch (e) {
-    showLabelError(e.message);
+    showLabelError(labelErrText(e));
   }
 }
 
@@ -4002,7 +4032,7 @@ labelAddForm?.addEventListener("submit", async (e) => {
     labelAddName.value = "";
     labelAddName.focus();
   } catch (err) {
-    showLabelError(err.message);
+    showLabelError(labelErrText(err));
   }
 });
 
@@ -4055,8 +4085,12 @@ async function loadLabelDefs() {
   try {
     const data = await apiModelState("/api/labels");
     state.labelRows = data.labels || [];
-  } catch {
+    state.labelServerOutdated = false;
+  } catch (e) {
     state.labelRows = [];
+    // Remember an outdated server so the first label action can explain it,
+    // rather than alerting at page load before the user has done anything.
+    if (isLabelServerOutdated(e)) state.labelServerOutdated = true;
   }
   return state.labelRows;
 }
@@ -4105,7 +4139,12 @@ function labelIndicatorEl(convId, label) {
 // Blank → label[0] → label[1] → … → last → Blank, in configured order.
 async function cycleConvLabel(convId, currentLabel) {
   const order = orderedLabels();
-  if (!order.length) return; // no labels configured — nothing to cycle to
+  if (!order.length) {
+    // No labels to cycle to. If that is because the running server lacks the
+    // label API (not just because none are configured), say so.
+    if (state.labelServerOutdated) warnLabelServerOutdatedOnce();
+    return;
+  }
   let nextId;
   if (!currentLabel) {
     nextId = order[0].id;
@@ -4126,8 +4165,10 @@ async function setConvLabel(convId, labelId) {
       body: JSON.stringify({ conv_id: convId, label_id: labelId || null }),
     });
     applyConvLabelResult(convId, data.label || null);
-  } catch (_) {
-    /* leave the current square as-is on failure */
+  } catch (e) {
+    // Leave the current square as-is on failure, but if the label routes are
+    // missing entirely, tell the user how to fix it instead of failing silently.
+    if (isLabelServerOutdated(e)) warnLabelServerOutdatedOnce();
   }
 }
 
@@ -4536,7 +4577,9 @@ async function bulkPreview() {
       body: JSON.stringify(crit),
     });
   } catch (e) {
-    showBulkError(e.message);
+    showBulkError(
+      isLabelServerOutdated(e) ? LABEL_SERVER_OUTDATED_MSG : e.message,
+    );
     invalidateBulkPreview();
     return;
   }
@@ -4579,7 +4622,9 @@ async function bulkApply() {
       body: JSON.stringify(crit),
     });
   } catch (e) {
-    showBulkError(e.message);
+    showBulkError(
+      isLabelServerOutdated(e) ? LABEL_SERVER_OUTDATED_MSG : e.message,
+    );
     return;
   }
   bulkResultEl.innerHTML =
