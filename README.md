@@ -32,9 +32,25 @@ This public starter contains only the code and placeholder folders needed to run
   On first run, the app builds a local SQLite full-text search index (`history.db`).
   For large exports this may take 20-40 seconds; subsequent starts are fast.
 
-1. The browser opens automatically at **[http://127.0.0.1:5174](http://127.0.0.1:5174)**
+1. The browser opens automatically at **[http://127.0.0.1:5174](http://127.0.0.1:5174)** (once the server is actually listening — no more racing a blank tab).
 
 If you want to keep the starter completely clean, leave the placeholder `source/README.md` in place and add only your own export files.
+
+### Updating the app (auto-reload)
+
+You do **not** need to stop and restart to pick up new code. While the app is
+running, just replace the files:
+
+- Replace `server.py` (or `build_db.py`) and the running server re-launches
+  itself within a second or two; the open browser tab reloads on its own.
+- Replace anything in `static/` (`app.js`, `index.html`, `style.css`) and the
+  tab reloads on its own — no server restart needed.
+
+Your database is never touched by this — new tables are created automatically on
+startup, so you never have to delete or rebuild `history.db` just to get a new
+feature. If you leave an old copy running and start another, the new one won't
+fight it for the port — it comes up cleanly on the next free port and opens the
+browser there.
 
 ---
 

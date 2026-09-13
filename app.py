@@ -8,6 +8,7 @@ Place your exported conversations.json in a source/ directory, then run:
 
 Requires Python 3.9+. No third-party packages needed.
 """
+import os
 import sys
 import threading
 import webbrowser
@@ -15,7 +16,10 @@ from pathlib import Path
 
 DB_PATH = Path("history.db")
 SOURCE  = Path("source") / "conversations.json"
-PORT    = 5174
+# Preferred port. CHV_PORT lets an auto-restart keep whatever port it ended up
+# on (e.g. a fallback port chosen because another copy was still open), so the
+# already-open browser tab reconnects to the same URL after the reload.
+PORT    = int(os.environ.get("CHV_PORT", "5174"))
 
 
 def main() -> None:
@@ -34,10 +38,17 @@ def main() -> None:
 
     from server import serve
 
-    url = f"http://127.0.0.1:{PORT}"
-    print(f"Claude History → {url}  (Ctrl-C to quit)")
-    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
-    serve(port=PORT, db_path=DB_PATH)
+    print(f"Starting Claude History (preferred port {PORT}) …")
+
+    def on_ready(actual_port: int) -> None:
+        # Called once the server socket is bound and listening, so opening the
+        # browser can no longer race a not-yet-started server. actual_port may
+        # differ from PORT if another copy was still holding the preferred port.
+        url = f"http://127.0.0.1:{actual_port}"
+        print(f"✓ Ready — {url}  (leave this window open; Ctrl-C to quit)")
+        threading.Timer(0.3, lambda: webbrowser.open(url)).start()
+
+    serve(port=PORT, db_path=DB_PATH, on_ready=on_ready)
 
 
 if __name__ == "__main__":

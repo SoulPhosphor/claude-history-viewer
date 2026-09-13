@@ -3290,32 +3290,6 @@ async function apiModelState(path, options) {
   return data;
 }
 
-// A bare 404 on a label endpoint means the running server predates the labels
-// feature: server.py has the routes, but the process serving this page was not
-// restarted (or the old server.py is still in place). Surface one clear,
-// actionable message instead of a silent no-op or a cryptic "HTTP 404".
-let _warnedLabelServerOutdated = false;
-const LABEL_SERVER_OUTDATED_MSG =
-  "Conversation labels need the updated server. Replace server.py with the " +
-  "new version and restart the app (stop it with Ctrl-C, then run it again).\n\n" +
-  "You do NOT need to rebuild or delete your database, and nothing in the " +
-  "'source' folder needs changing.";
-function isLabelServerOutdated(err) {
-  return !!err && err.status === 404;
-}
-// Message to show for a failed label call: the actionable "update the server"
-// guidance when the routes are missing, otherwise the raw error text.
-function labelErrText(err) {
-  return isLabelServerOutdated(err)
-    ? LABEL_SERVER_OUTDATED_MSG
-    : (err && err.message) || "Something went wrong.";
-}
-function warnLabelServerOutdatedOnce() {
-  if (_warnedLabelServerOutdated) return;
-  _warnedLabelServerOutdated = true;
-  alert(LABEL_SERVER_OUTDATED_MSG);
-}
-
 // Load the export format once at boot; it decides whether any of this renders.
 async function loadDatasetFormat() {
   try {
@@ -3962,7 +3936,7 @@ async function saveLabel(label, patch, inputEl) {
     if (inputEl && "name" in patch) inputEl.value = label.name;
     if (inputEl && "color" in patch)
       inputEl.value = _validHexColor(label.color) ? label.color : "#888888";
-    showLabelError(labelErrText(e));
+    showLabelError(e.message);
   }
 }
 
@@ -3982,7 +3956,7 @@ async function moveLabel(index, delta) {
     renderLabelList();
     onLabelDefsChanged();
   } catch (e) {
-    showLabelError(labelErrText(e));
+    showLabelError(e.message);
   }
 }
 
@@ -4008,7 +3982,7 @@ async function deleteLabel(label) {
     renderLabelList();
     onLabelDefsChanged();
   } catch (e) {
-    showLabelError(labelErrText(e));
+    showLabelError(e.message);
   }
 }
 
@@ -4032,7 +4006,7 @@ labelAddForm?.addEventListener("submit", async (e) => {
     labelAddName.value = "";
     labelAddName.focus();
   } catch (err) {
-    showLabelError(labelErrText(err));
+    showLabelError(err.message);
   }
 });
 
@@ -4085,12 +4059,8 @@ async function loadLabelDefs() {
   try {
     const data = await apiModelState("/api/labels");
     state.labelRows = data.labels || [];
-    state.labelServerOutdated = false;
-  } catch (e) {
+  } catch {
     state.labelRows = [];
-    // Remember an outdated server so the first label action can explain it,
-    // rather than alerting at page load before the user has done anything.
-    if (isLabelServerOutdated(e)) state.labelServerOutdated = true;
   }
   return state.labelRows;
 }
@@ -4139,12 +4109,7 @@ function labelIndicatorEl(convId, label) {
 // Blank → label[0] → label[1] → … → last → Blank, in configured order.
 async function cycleConvLabel(convId, currentLabel) {
   const order = orderedLabels();
-  if (!order.length) {
-    // No labels to cycle to. If that is because the running server lacks the
-    // label API (not just because none are configured), say so.
-    if (state.labelServerOutdated) warnLabelServerOutdatedOnce();
-    return;
-  }
+  if (!order.length) return; // no labels configured — nothing to cycle to
   let nextId;
   if (!currentLabel) {
     nextId = order[0].id;
@@ -4165,10 +4130,8 @@ async function setConvLabel(convId, labelId) {
       body: JSON.stringify({ conv_id: convId, label_id: labelId || null }),
     });
     applyConvLabelResult(convId, data.label || null);
-  } catch (e) {
-    // Leave the current square as-is on failure, but if the label routes are
-    // missing entirely, tell the user how to fix it instead of failing silently.
-    if (isLabelServerOutdated(e)) warnLabelServerOutdatedOnce();
+  } catch (_) {
+    /* leave the current square as-is on failure */
   }
 }
 
@@ -4577,9 +4540,7 @@ async function bulkPreview() {
       body: JSON.stringify(crit),
     });
   } catch (e) {
-    showBulkError(
-      isLabelServerOutdated(e) ? LABEL_SERVER_OUTDATED_MSG : e.message,
-    );
+    showBulkError(e.message);
     invalidateBulkPreview();
     return;
   }
@@ -4622,9 +4583,7 @@ async function bulkApply() {
       body: JSON.stringify(crit),
     });
   } catch (e) {
-    showBulkError(
-      isLabelServerOutdated(e) ? LABEL_SERVER_OUTDATED_MSG : e.message,
-    );
+    showBulkError(e.message);
     return;
   }
   bulkResultEl.innerHTML =
@@ -6413,8 +6372,56 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
   });
 });
 
+// ── Silent auto-reload ─────────────────────────────────────────────────────
+// So a code change never "looks applied but isn't fully": when the server
+// restarts with new code (it watches its own files and reloads itself) or when
+// the front-end files on disk change, the page reloads itself to stay in
+// lock-step with the backend. No banner, no prompt, no click — the app keeps
+// its place because scroll position and the open conversation are persisted on
+// unload. /api/version reports the server's start time and a fingerprint of the
+// front-end files; a change in either means "reload".
+let _autoReloadBaseline = null; // { started_at, static_sig }
+let _autoReloadTimer = null;
+async function checkForNewBuild() {
+  let d;
+  try {
+    d = await apiModelState("/api/version");
+  } catch (_) {
+    // Server momentarily unreachable (e.g. mid auto-restart) or too old to have
+    // this endpoint — nothing to do; the next poll will catch up.
+    return;
+  }
+  const now = { started_at: d.started_at, static_sig: d.static_sig || null };
+  if (_autoReloadBaseline === null) {
+    _autoReloadBaseline = now; // first reading establishes the baseline
+    return;
+  }
+  const serverRestarted = now.started_at !== _autoReloadBaseline.started_at;
+  const frontendChanged =
+    now.static_sig !== null &&
+    now.static_sig !== _autoReloadBaseline.static_sig;
+  if (serverRestarted || frontendChanged) {
+    // Reload once; the fresh page re-establishes the baseline on load.
+    _autoReloadBaseline = now;
+    location.reload();
+  }
+}
+
+function startAutoReloadWatch() {
+  checkForNewBuild();
+  // Poll on a short interval, and immediately when the tab regains focus (the
+  // usual moment right after editing files in another window).
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) checkForNewBuild();
+  });
+  window.addEventListener("focus", checkForNewBuild);
+  if (_autoReloadTimer) clearInterval(_autoReloadTimer);
+  _autoReloadTimer = setInterval(checkForNewBuild, 2000);
+}
+
 async function initApp() {
   applyThreadHeaderCollapsed();
+  startAutoReloadWatch();
   await loadDatasetFormat();
   await loadUiPreferences();
   await loadLabelDefs();

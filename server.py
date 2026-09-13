@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Minimal HTTP server for Claude History Viewer."""
 from __future__ import annotations
-import datetime, html, json, mimetypes, os, re, sqlite3, sys, time, urllib.parse, uuid
+import datetime, errno, html, json, mimetypes, os, re, socket, sqlite3, sys, threading, time, urllib.parse, uuid
 import importlib
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
@@ -17,6 +17,46 @@ try:
 except Exception:
     _DocxDocument = None
     _DOCX_OK = False
+
+def _code_signature() -> str:
+    """A cheap fingerprint of the backend code files, read from disk right now.
+
+    Recorded once at import time (the code THIS process is actually running) and
+    re-read on demand. If the two differ, server.py (or build_db.py) was
+    replaced on disk but the process was never restarted — i.e. the running
+    server is older than the files on disk. That is the usual cause of a fix
+    that "looks applied but isn't fully": the new front-end is served straight
+    from disk, while the old backend process keeps answering the API."""
+    import hashlib
+    here = Path(__file__).resolve().parent
+    h = hashlib.sha256()
+    for name in ("server.py", "build_db.py"):
+        try:
+            h.update((here / name).read_bytes())
+        except OSError:
+            pass
+    return h.hexdigest()
+
+
+def _static_signature() -> str:
+    """A fingerprint of the front-end files on disk. The page compares this to
+    what it loaded with; a change means the front-end was updated, so the page
+    reloads itself to pick it up (no server restart needed for front-end-only
+    changes, since static files are served straight from disk)."""
+    import hashlib
+    static_dir = Path(__file__).resolve().parent / "static"
+    h = hashlib.sha256()
+    for name in ("index.html", "app.js", "style.css"):
+        try:
+            h.update((static_dir / name).read_bytes())
+        except OSError:
+            pass
+    return h.hexdigest()
+
+
+_STARTUP_TIME = time.time()
+_STARTUP_CODE_SIG = _code_signature()
+
 
 def _userdata_path(db_path) -> Path:
     """Path to the persistent user-data DB (folders etc.), a sibling of the
@@ -1193,6 +1233,21 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def _api_version(self):
+        """Report whether the running process is older than the code on disk.
+
+        The page polls this so it can warn when server.py has been replaced but
+        the server was not restarted — no version numbers to keep in sync, the
+        server just compares its own loaded code to the files on disk."""
+        current = _code_signature()
+        self.send_json({
+            "started_at": _STARTUP_TIME,
+            "static_sig": _static_signature(),
+            "running_sig": _STARTUP_CODE_SIG,
+            "disk_sig": current,
+            "stale": current != _STARTUP_CODE_SIG,
+        })
+
     def _read_json_body(self) -> dict:
         length = int(self.headers.get("Content-Length", 0))
         if length <= 0:
@@ -1309,6 +1364,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_bulk_history()
         elif path == "/api/snapshots":
             self._api_snapshot_list()
+        elif path == "/api/version":
+            self._api_version()
         elif path == "/api/preferences":
             self._api_preferences()
         elif path == "/api/pinned":
@@ -4259,7 +4316,98 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
 
 
-def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source")):
+def _bind_server(preferred_port, quick_attempts=6, delay=0.4):
+    """Bind the HTTP server and return (httpd, actual_port).
+
+    Prefer `preferred_port`, briefly retrying to ride out a port a just-closed
+    instance is still releasing (e.g. our own auto-restart, which frees and
+    re-takes the same port). If it stays busy, another copy the user simply
+    forgot to close is holding it — so instead of refusing to start, fall back
+    to any free port and run there. A forgotten old instance never blocks a new
+    one; the new one always comes up cleanly on some port."""
+    # SO_REUSEADDR lets us re-bind while the old socket lingers in TIME_WAIT.
+    ThreadingHTTPServer.allow_reuse_address = True
+    # Phase 1: try to get the preferred port, tolerating a brief busy window.
+    for attempt in range(1, quick_attempts + 1):
+        try:
+            return ThreadingHTTPServer(("127.0.0.1", preferred_port), Handler), preferred_port
+        except OSError as e:
+            if e.errno not in (errno.EADDRINUSE, errno.EADDRNOTAVAIL):
+                raise
+            if attempt < quick_attempts:
+                if attempt == 1:
+                    print(f"Port {preferred_port} is busy — waiting briefly in "
+                          f"case a previous instance is still closing…",
+                          flush=True)
+                time.sleep(delay)
+    # Phase 2: still busy — a copy the user left open is holding it. Take a free
+    # port (0 lets the OS pick one atomically) so this instance runs cleanly.
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    actual = httpd.server_address[1]
+    print(f"Port {preferred_port} is in use by another copy that's still open; "
+          f"starting this instance on port {actual} instead.", flush=True)
+    return httpd, actual
+
+
+def _can_restart() -> bool:
+    """Whether we can re-exec ourselves to load new code. True for a normal
+    `python app.py` / `python server.py` launch; false for e.g. `python -c …`,
+    where re-execing would not reproduce this server."""
+    argv0 = sys.argv[0] if sys.argv else ""
+    return bool(argv0) and argv0.endswith(".py") and Path(argv0).exists()
+
+
+def _restart_process(actual_port) -> None:
+    """Re-exec this process to load the new code on disk. The current listening
+    socket is close-on-exec, so the port frees and the fresh process re-binds
+    it; we pass the port through the environment so a fallback port is kept
+    across the restart and the open browser tab reconnects to the same URL."""
+    try:
+        sys.stdout.flush(); sys.stderr.flush()
+    except Exception:
+        pass
+    os.environ["CHV_PORT"] = str(actual_port)
+    try:
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as e:
+        # Very unusual (e.g. a platform where re-exec is unavailable). Say so in
+        # the terminal — where the user launched it — instead of failing mutely.
+        print(f"Auto-reload could not restart the server ({e}). "
+              f"Restart it manually to load the change.",
+              file=sys.stderr, flush=True)
+
+
+def _start_autoreload_watcher(actual_port, poll=1.0) -> None:
+    """Watch the backend code files; when they change on disk, re-exec so the
+    running server is never older than the code. A front-end-only change needs
+    no restart — the page reloads itself when it sees the static files change
+    (see /api/version)."""
+    if not _can_restart():
+        return
+    def watch():
+        pending = None
+        while True:
+            time.sleep(poll)
+            try:
+                sig = _code_signature()
+            except Exception:
+                continue
+            if sig == _STARTUP_CODE_SIG:
+                pending = None
+                continue
+            # Require the new signature to be stable across two polls so we
+            # don't re-exec on a half-written file mid-copy.
+            if sig == pending:
+                print("\nBackend code change detected — reloading the server…",
+                      flush=True)
+                _restart_process(actual_port)
+                return
+            pending = sig
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source"),
+          on_ready=None, autoreload=True):
     _ensure_runtime_schema(db_path)
     _ensure_userdata_schema(db_path)
     _backfill_folder_providers(db_path)
@@ -4270,12 +4418,25 @@ def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source")):
     # idle connection (e.g. a browser preconnect socket, or an aborted fetch)
     # can never block every other request. This is the fix for the UI hanging
     # on "Loading…". daemon_threads lets the process exit cleanly on Ctrl-C.
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    httpd, actual_port = _bind_server(port)
     httpd.daemon_threads = True
+    if autoreload:
+        _start_autoreload_watcher(actual_port)
+    # The socket is bound and listening now, so callers can safely open a
+    # browser — no racing a fixed timer against startup, and pointed at the
+    # port we actually got (which may differ from the preferred one).
+    if on_ready:
+        try:
+            on_ready(actual_port)
+        except Exception:
+            pass
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nStopped.")
+    finally:
+        # Release the port immediately so the next restart doesn't have to wait.
+        httpd.server_close()
 
 if __name__ == "__main__":
     serve()
