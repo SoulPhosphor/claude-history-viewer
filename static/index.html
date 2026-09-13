@@ -783,7 +783,20 @@
                 <button type="submit" id="label-add-btn">Add Label</button>
               </form>
               <div id="label-add-error" class="labels-form-error" hidden></div>
+              <p class="labels-section-hint">
+                Drag a row by the grip on its right edge to reorder — or click
+                the grip to pick the row up, then click where it should go. With
+                the keyboard: focus a grip and use ↑ / ↓ (Home / End to jump to
+                either end).
+              </p>
               <ul id="label-list" class="label-list"></ul>
+              <!-- Reorder feedback for screen readers. -->
+              <div
+                id="label-reorder-live"
+                class="sr-only"
+                aria-live="polite"
+                role="status"
+              ></div>
             </section>
 
             <!-- C. Bulk Label Conversations ───────────────────────────── -->

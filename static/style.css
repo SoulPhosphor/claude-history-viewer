@@ -3551,6 +3551,67 @@ kbd {
   white-space: nowrap;
   flex-shrink: 0;
 }
+/* Screen-reader-only text (reorder announcements). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The reorder grip, on the row's right edge. */
+.label-row-handle {
+  margin-left: 2px;
+  padding: 4px 2px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: grab;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  touch-action: none;
+}
+.label-row-handle svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+.label-row-handle:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.label-row-handle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* Picked up: by click or by keyboard. */
+.label-row-handle[aria-pressed="true"] {
+  background: var(--accent);
+  color: #fff;
+  cursor: grabbing;
+}
+.label-row-grabbed {
+  background: var(--mark-bg);
+  border-radius: 6px;
+}
+.label-row-dragging {
+  opacity: 0.45;
+}
+/* Where the dragged row would land. */
+.label-drop-before {
+  box-shadow: inset 0 2px 0 0 var(--accent);
+}
+.label-drop-after {
+  box-shadow: inset 0 -2px 0 0 var(--accent);
+}
+
 .label-row-btn {
   font: inherit;
   font-size: 13px;

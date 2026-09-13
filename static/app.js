@@ -1313,18 +1313,6 @@ function openConvItemMenu(c, anchorBtn) {
     menu.appendChild(b);
   }
 
-  // Direct label selection (Blank + a toggle per label) so someone with several
-  // labels need not click-cycle repeatedly. Only when the feature is on.
-  if (labelsFeatureOn()) {
-    appendSetLabelToMenu(
-      menu,
-      c.id,
-      c.labels || [],
-      "sidebar-menu-item",
-      () => closeConvItemMenu(),
-    );
-  }
-
   document.body.appendChild(menu);
   _convMenuEl = menu;
   // Position under the button, right-aligned, kept on screen.
@@ -3850,6 +3838,8 @@ async function openLabels() {
         ? "square_label"
         : "square";
   await refreshLabelList();
+  // Open with a colour that is not already in use, for the same reason.
+  refreshLabelAddColor();
   await populateBulkForm();
   loadBulkHistory();
   loadSnapshots();
@@ -3926,24 +3916,6 @@ function renderLabelList() {
     count.className = "label-row-count";
     count.textContent = `${label.count} conv${label.count === 1 ? "" : "s"}`;
 
-    const up = document.createElement("button");
-    up.type = "button";
-    up.className = "label-row-btn";
-    up.textContent = "↑";
-    up.title = "Move up";
-    up.setAttribute("aria-label", `Move ${labelDisplayName(label)} up`);
-    up.disabled = i === 0;
-    up.addEventListener("click", () => moveLabel(i, -1));
-
-    const down = document.createElement("button");
-    down.type = "button";
-    down.className = "label-row-btn";
-    down.textContent = "↓";
-    down.title = "Move down";
-    down.setAttribute("aria-label", `Move ${labelDisplayName(label)} down`);
-    down.disabled = i === state.labelRows.length - 1;
-    down.addEventListener("click", () => moveLabel(i, 1));
-
     const del = document.createElement("button");
     del.type = "button";
     del.className = "label-row-btn label-row-delete";
@@ -3952,10 +3924,12 @@ function renderLabelList() {
     del.setAttribute("aria-label", `Delete ${labelDisplayName(label)}`);
     del.addEventListener("click", () => deleteLabel(label));
 
-    li.append(color, name, count, up, down, del);
+    li.append(color, name, count, del, labelDragHandle(label, i));
+    attachLabelRowReorder(li, label, i);
     labelListEl.appendChild(li);
   });
   syncLabelNameWarning();
+  restoreLabelGrab();
 }
 
 // A label with no name still needs something to call it in menus and tooltips.
@@ -4004,11 +3978,32 @@ async function saveLabel(label, patch, inputEl) {
   }
 }
 
-async function moveLabel(index, delta) {
-  const target = index + delta;
-  if (target < 0 || target >= state.labelRows.length) return;
-  const ids = state.labelRows.map((l) => l.id);
-  [ids[index], ids[target]] = [ids[target], ids[index]];
+// ── Reordering the label list ────────────────────────────────────────────────
+// Three ways to do the same thing, so nobody is locked out:
+//   • drag the handle on the right edge of a row,
+//   • click that handle to pick the row up, then click where it should go,
+//   • focus the handle and use the arrow keys (Enter/Space picks up and drops,
+//     Escape puts it back).
+// Every move writes the new order straight away, so there is no separate
+// "save" step to lose.
+
+// The row currently picked up (by click or keyboard), by label id.
+let _labelGrabbedId = null;
+
+// Move a label to a new index and persist the order.
+async function reorderLabels(fromIndex, toIndex) {
+  const n = state.labelRows.length;
+  if (fromIndex < 0 || fromIndex >= n) return;
+  toIndex = Math.max(0, Math.min(n - 1, toIndex));
+  if (toIndex === fromIndex) return;
+  const rows = [...state.labelRows];
+  const [moved] = rows.splice(fromIndex, 1);
+  rows.splice(toIndex, 0, moved);
+  const ids = rows.map((l) => l.id);
+  // Show the new order at once; the server call only confirms it.
+  state.labelRows = rows;
+  renderLabelList();
+  announceLabelOrder(moved, toIndex, n);
   showLabelError("");
   try {
     const data = await apiModelState("/api/labels/reorder", {
@@ -4021,7 +4016,169 @@ async function moveLabel(index, delta) {
     onLabelDefsChanged();
   } catch (e) {
     showLabelError(e.message);
+    await refreshLabelList(); // put the list back the way the server has it
   }
+}
+
+function labelIndexById(id) {
+  return state.labelRows.findIndex((l) => l.id === id);
+}
+
+// Spoken feedback for a move, for anyone reordering without seeing the list.
+function announceLabelOrder(label, index, total) {
+  const live = $("label-reorder-live");
+  if (live) {
+    live.textContent = `${labelDisplayName(label)} moved to position ${index + 1} of ${total}.`;
+  }
+}
+
+// The grab handle at the right edge of a row.
+function labelDragHandle(label, index) {
+  const h = document.createElement("button");
+  h.type = "button";
+  h.className = "label-row-handle";
+  h.dataset.id = label.id;
+  h.setAttribute("aria-pressed", _labelGrabbedId === label.id ? "true" : "false");
+  h.title = "Drag to reorder — or click to pick up, then arrow keys / click a row";
+  h.setAttribute(
+    "aria-label",
+    `Reorder ${labelDisplayName(label)}, position ${index + 1} of ${state.labelRows.length}. ` +
+      "Press Enter to pick up, arrow keys to move, Enter to drop, Escape to cancel.",
+  );
+  // The six-dot grip that says "this drags".
+  h.innerHTML =
+    '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">' +
+    '<circle cx="6" cy="3.5" r="1.5"/><circle cx="10" cy="3.5" r="1.5"/>' +
+    '<circle cx="6" cy="8" r="1.5"/><circle cx="10" cy="8" r="1.5"/>' +
+    '<circle cx="6" cy="12.5" r="1.5"/><circle cx="10" cy="12.5" r="1.5"/></svg>';
+  return h;
+}
+
+// Pick a row up / put it down (the pointer path that needs no dragging).
+function toggleLabelGrab(id) {
+  _labelGrabbedId = _labelGrabbedId === id ? null : id;
+  paintLabelGrab();
+}
+
+function paintLabelGrab() {
+  labelListEl?.querySelectorAll(".label-row").forEach((row) => {
+    const on = row.dataset.id === _labelGrabbedId;
+    row.classList.toggle("label-row-grabbed", on);
+    row
+      .querySelector(".label-row-handle")
+      ?.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+}
+
+// After a re-render, put the picked-up state — and the keyboard focus — back on
+// the row the user is moving.
+function restoreLabelGrab() {
+  if (!_labelGrabbedId) return;
+  if (labelIndexById(_labelGrabbedId) === -1) {
+    _labelGrabbedId = null;
+    return;
+  }
+  paintLabelGrab();
+  const handle = labelListEl?.querySelector(
+    `.label-row.label-row-grabbed .label-row-handle`,
+  );
+  if (handle && document.activeElement !== handle) handle.focus();
+}
+
+// Wire one row: native drag, click-to-place, and keyboard moves.
+function attachLabelRowReorder(li, label, index) {
+  const handle = li.querySelector(".label-row-handle");
+
+  // ── Native drag, started from the handle only, so the name field still
+  //    behaves like a text field.
+  // Only the handle arms the drag, so the name field still behaves like a text
+  // field; anything that ends the gesture disarms it again.
+  handle.addEventListener("pointerdown", () => (li.draggable = true));
+  handle.addEventListener("pointerup", () => (li.draggable = false));
+  handle.addEventListener("pointercancel", () => (li.draggable = false));
+  li.addEventListener("dragend", () => {
+    li.draggable = false;
+    li.classList.remove("label-row-dragging");
+    clearLabelDropMarks();
+  });
+  li.addEventListener("dragstart", (e) => {
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", label.id);
+    li.classList.add("label-row-dragging");
+  });
+  li.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const r = li.getBoundingClientRect();
+    const after = e.clientY > r.top + r.height / 2;
+    clearLabelDropMarks();
+    li.classList.add(after ? "label-drop-after" : "label-drop-before");
+  });
+  li.addEventListener("dragleave", () => clearLabelDropMarks());
+  li.addEventListener("drop", (e) => {
+    e.preventDefault();
+    const fromId = e.dataTransfer.getData("text/plain");
+    clearLabelDropMarks();
+    li.draggable = false;
+    const from = labelIndexById(fromId);
+    if (from === -1 || fromId === label.id) return;
+    const r = li.getBoundingClientRect();
+    const after = e.clientY > r.top + r.height / 2;
+    let to = labelIndexById(label.id) + (after ? 1 : 0);
+    if (from < to) to -= 1;
+    reorderLabels(from, to);
+  });
+
+  // ── Click to pick up, then click the row it should sit at.
+  handle.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (_labelGrabbedId && _labelGrabbedId !== label.id) {
+      const from = labelIndexById(_labelGrabbedId);
+      _labelGrabbedId = null;
+      reorderLabels(from, index);
+      return;
+    }
+    toggleLabelGrab(label.id);
+  });
+  li.addEventListener("click", () => {
+    if (!_labelGrabbedId || _labelGrabbedId === label.id) return;
+    const from = labelIndexById(_labelGrabbedId);
+    _labelGrabbedId = null;
+    reorderLabels(from, index);
+  });
+
+  // ── Keyboard: arrows move, Enter/Space picks up and drops, Escape cancels.
+  handle.addEventListener("keydown", (e) => {
+    const at = labelIndexById(label.id);
+    // The app-wide shortcuts also claim the arrow keys (they step through the
+    // conversation list), so anything handled here is stopped here.
+    if (["ArrowUp", "ArrowDown", "Enter", " ", "Escape", "Home", "End"].includes(e.key)) {
+      e.stopPropagation();
+    }
+    if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      _labelGrabbedId = label.id;
+      reorderLabels(at, at + (e.key === "ArrowUp" ? -1 : 1));
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      toggleLabelGrab(label.id);
+    } else if (e.key === "Escape" && _labelGrabbedId) {
+      e.preventDefault();
+      _labelGrabbedId = null;
+      paintLabelGrab();
+    } else if (e.key === "Home" || e.key === "End") {
+      e.preventDefault();
+      _labelGrabbedId = label.id;
+      reorderLabels(at, e.key === "Home" ? 0 : state.labelRows.length - 1);
+    }
+  });
+}
+
+function clearLabelDropMarks() {
+  labelListEl
+    ?.querySelectorAll(".label-drop-before, .label-drop-after")
+    .forEach((n) => n.classList.remove("label-drop-before", "label-drop-after"));
 }
 
 async function deleteLabel(label) {
@@ -4050,6 +4207,101 @@ async function deleteLabel(label) {
   }
 }
 
+// ── Picking a colour for the next label ──────────────────────────────────────
+// After each add, the colour box jumps to a fresh colour so someone who does
+// not care about colours never has to choose one — and never gets a repeat.
+// The pick is random among the candidates that sit furthest from the colours
+// already in use, measured in CIE Lab, so the first few labels land in
+// different colour families rather than five shades of orange.
+
+function _hexToRgb(hex) {
+  let h = String(hex || "").trim().replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+  return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+}
+
+function _rgbToHex(r, g, b) {
+  const p = (v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+  return `#${p(r)}${p(g)}${p(b)}`;
+}
+
+function _hslToRgb(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  const [r, g, b] =
+    h < 60 ? [c, x, 0] :
+    h < 120 ? [x, c, 0] :
+    h < 180 ? [0, c, x] :
+    h < 240 ? [0, x, c] :
+    h < 300 ? [x, 0, c] : [c, 0, x];
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
+}
+
+// sRGB → CIE Lab (D65). Lab distance tracks how different two colours *look*,
+// which plain RGB distance does not.
+function _rgbToLab([r, g, b]) {
+  const lin = (v) => {
+    v /= 255;
+    return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+  };
+  const [R, G, B] = [lin(r), lin(g), lin(b)];
+  const X = (R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047;
+  const Y = R * 0.2126 + G * 0.7152 + B * 0.0722;
+  const Z = (R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883;
+  const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+  const [fx, fy, fz] = [f(X), f(Y), f(Z)];
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+
+function _labDist(a, b) {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+// A spread of candidate colours: 24 hues across the wheel, each at a few
+// lightnesses and saturations, so "light orange" is available when plain orange
+// is taken.
+function _labelColorCandidates() {
+  const out = [];
+  for (let h = 0; h < 360; h += 15) {
+    for (const [s, l] of [[0.72, 0.45], [0.62, 0.62], [0.55, 0.76], [0.85, 0.35]]) {
+      out.push(_rgbToHex(..._hslToRgb(h, s, l)));
+    }
+  }
+  return out;
+}
+
+// The next colour: furthest from everything already used, picked at random from
+// the best handful so repeat adds don't march through the wheel in lockstep.
+function pickDistinctLabelColor(usedHexes) {
+  const used = (usedHexes || state.labelRows.map((l) => l.color))
+    .map(_hexToRgb)
+    .filter(Boolean)
+    .map(_rgbToLab);
+  const scored = _labelColorCandidates()
+    .map((hex) => {
+      const lab = _rgbToLab(_hexToRgb(hex));
+      const nearest = used.length
+        ? Math.min(...used.map((u) => _labDist(lab, u)))
+        : Infinity;
+      return { hex, nearest };
+    })
+    .sort((a, b) => b.nearest - a.nearest);
+  if (!scored.length) return "#4169e1";
+  // Among the roughly-equally-distant best candidates, choose at random.
+  const best = scored[0].nearest;
+  const pool = used.length
+    ? scored.filter((c) => c.nearest >= best * 0.82)
+    : scored;
+  return pool[Math.floor(Math.random() * pool.length)].hex;
+}
+
+// Put a fresh, unused colour in the add form's colour box.
+function refreshLabelAddColor() {
+  if (labelAddColor) labelAddColor.value = pickDistinctLabelColor();
+}
+
 labelAddForm?.addEventListener("submit", async (e) => {
   e.preventDefault();
   showLabelError("");
@@ -4065,6 +4317,8 @@ labelAddForm?.addEventListener("submit", async (e) => {
     renderLabelList();
     onLabelDefsChanged();
     labelAddName.value = "";
+    // Ready for the next one: a new name box and a colour nobody has used.
+    refreshLabelAddColor();
     labelAddName.focus();
   } catch (err) {
     showLabelError(err.message);
@@ -4181,7 +4435,7 @@ function labelChipEl(convId, label, allLabels) {
   btn.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    openSetLabelPopover(convId, allLabels || [], btn);
+    openSetLabelPopover(convId, allLabels || [], btn, label ? label.id : null);
   });
   chip.appendChild(btn);
 
@@ -4366,18 +4620,24 @@ async function refreshActiveHeaderLabel() {
 
 // ── Direct label selection (⋮ menus + right-click popover) ────────────────────
 
-// Add a "Set labels" group to an open menu: Blank (clears every label) plus one
-// toggle per configured label, ticked when the conversation carries it. A
-// conversation can carry several, so these toggle rather than replace.
+// Build the right-click list: Blank (clears every label) plus one toggle per
+// configured label, ticked when the conversation carries it. A conversation can
+// carry several, so these toggle rather than replace. Every option shows its
+// colour AND its name whatever the display mode is set to — this list is how
+// you pick, so it always spells the labels out. The square you right-clicked is
+// left out: it is already the active one.
 // itemClass matches the menu's own button class so styling stays consistent.
-function appendSetLabelToMenu(menu, convId, currentLabels, itemClass, onSelect) {
+function appendSetLabelToMenu(menu, convId, currentLabels, itemClass, onSelect, activeId) {
   const held = new Set((currentLabels || []).map((l) => l.id));
   const cap = document.createElement("div");
   cap.className = "menu-section-caption";
   cap.textContent = "Set labels";
   menu.appendChild(cap);
 
-  const options = [{ id: null, name: "Blank", color: null }, ...orderedLabels()];
+  const options = [
+    { id: null, name: "Blank", color: null },
+    ...orderedLabels().filter((l) => l.id !== activeId),
+  ];
   for (const opt of options) {
     const b = document.createElement("button");
     b.className = `${itemClass} set-label-item`;
@@ -4426,14 +4686,21 @@ function _onSetLabelOutside(e) {
   }
 }
 // A small standalone menu anchored to a square, for right-click direct-select.
-function openSetLabelPopover(convId, currentLabels, anchorEl) {
+// `activeId` is the label of the square that was right-clicked, which the list
+// leaves out.
+function openSetLabelPopover(convId, currentLabels, anchorEl, activeId) {
   closeSetLabelPopover();
   if (!labelsFeatureOn()) return;
   const menu = document.createElement("div");
-  menu.className = "sidebar-menu conv-item-menu";
+  menu.className = "sidebar-menu conv-item-menu label-picker-menu";
   menu.setAttribute("role", "menu");
-  appendSetLabelToMenu(menu, convId, currentLabels, "sidebar-menu-item", () =>
-    closeSetLabelPopover(),
+  appendSetLabelToMenu(
+    menu,
+    convId,
+    currentLabels,
+    "sidebar-menu-item",
+    () => closeSetLabelPopover(),
+    activeId,
   );
   document.body.appendChild(menu);
   _setLabelPopover = menu;
@@ -6481,25 +6748,11 @@ threadMoreBtn?.addEventListener("click", (e) => {
       pinItem.textContent = state.activePinned ? "Unpin" : "Pin";
     }
   }
-  // Rebuild the direct label-selection group each open so it reflects the
-  // current definitions and the open conversation's label.
+  // Labels are not offered here. Setting them is the squares' job: click one to
+  // cycle it, right-click one for the full list.
   threadMoreMenu
     .querySelectorAll(".label-menu-injected")
     .forEach((n) => n.remove());
-  if (labelsFeatureOn()) {
-    const before = threadMoreMenu.childElementCount;
-    appendSetLabelToMenu(
-      threadMoreMenu,
-      state.activeId,
-      state.activeLabels || [],
-      "thread-dropdown-item",
-      () => closeThreadMenus(),
-    );
-    // Tag the just-added nodes so they can be cleared on the next open.
-    Array.from(threadMoreMenu.children)
-      .slice(before)
-      .forEach((n) => n.classList.add("label-menu-injected"));
-  }
   threadMoreMenu.hidden = false;
   document.addEventListener("mousedown", onThreadMenuOutside, true);
 });

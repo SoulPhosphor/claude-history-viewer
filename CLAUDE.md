@@ -42,6 +42,19 @@ These are hard rules. Follow them exactly.
   still has no name, show the warning by the display dropdown. It clears when
   every square has a name and comes back if a name is later emptied. When no
   square has a name, put the cursor in the top name box.
+- **Labels are never in the ⋮ menus.** Squares are the only place labels are
+  set: click a square to cycle it, right-click any square for the full picker.
+- **The right-click picker** lists every label with its colour AND its name,
+  whatever the display mode is set to, and leaves out the square that was
+  right-clicked (that one is already active). "Blank" clears them all.
+- **Adding a label picks its colour.** After each add the colour box jumps to a
+  fresh colour that is not in use and sits as far as possible from the ones
+  that are, so a run of new labels lands in different colour families rather
+  than five shades of one.
+- **Reordering labels**: a grip on the row's right edge, no up/down arrows.
+  Drag it, or click it to pick the row up and click where it should go, or
+  focus it and use ↑ / ↓ / Home / End. Every move saves at once and is
+  announced to screen readers.
 - **Bulk tool Preview**: the Preview button stays. Preview **temporarily applies
   all the current filter criteria to the conversation list** so the user can
   review which conversations match — it is not a stats-only readout. The user is
