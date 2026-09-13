@@ -3486,6 +3486,46 @@ class Handler(BaseHTTPRequestHandler):
                 raise
         raise last_err
 
+    def _bulk_page(self, conn, crit, target_label_id, offset, limit):
+        """One page of the batch, resolved entirely in SQL.
+
+        _bulk_select materializes every id because Apply needs them all. A
+        preview only ever shows a page at a time, so this counts with COUNT(*)
+        and fetches with LIMIT/OFFSET instead — otherwise each "Load more" would
+        re-materialize the whole history. Returns (rows, total), where total is
+        the size of the batch the run would change. Retries once without FTS,
+        like _bulk_select, if the keyword makes SQLite's MATCH raise."""
+        FROM = ("FROM conversations c "
+                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id WHERE ")
+        last_err = None
+        for use_fts in (True, False):
+            try:
+                where, params, order_sql, limit_n = self._build_bulk_query(
+                    crit, use_fts, noop_target=target_label_id
+                )
+                total = conn.execute(
+                    "SELECT COUNT(*) " + FROM + where, params
+                ).fetchone()[0]
+                # A first-N limit caps the batch, and so the page too.
+                if limit_n is not None:
+                    total = min(total, limit_n)
+                page_n = min(limit, max(0, total - offset))
+                if page_n <= 0:
+                    return [], total
+                rows = conn.execute(
+                    "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
+                    "c.create_time, c.update_time, c.message_count, c.preview "
+                    + FROM + where + " " + order_sql + " LIMIT ? OFFSET ?",
+                    (*params, page_n, offset),
+                ).fetchall()
+                return [dict(r) for r in rows], total
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if use_fts:
+                    continue
+                raise
+        raise last_err
+
     def _bulk_target(self, conn, crit):
         """(label_id|None, name|None) for the Set-Label-To target; None if the
         target names a label that does not exist. Blank clears the label."""
@@ -3690,27 +3730,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "Unknown target label"}, 404); return
             target_label_id, _name = target
             try:
-                sel = self._bulk_select(conn, crit, target_label_id)
+                rows, total = self._bulk_page(
+                    conn, crit, target_label_id, offset, limit
+                )
             except sqlite3.Error:
                 self.send_json({"error": "Could not evaluate the criteria"}, 400); return
-            ids = sel["batch_ids"]
-            page = ids[offset:offset + limit]
-            rows = []
-            if page:
-                marks = ",".join("?" * len(page))
-                found = {r["id"]: dict(r) for r in conn.execute(
-                    "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
-                    "c.create_time, c.update_time, c.message_count, c.preview "
-                    "FROM conversations c "
-                    "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
-                    f"WHERE c.id IN ({marks})",
-                    tuple(page),
-                ).fetchall()}
-                # Keep the batch's own order, not SQLite's.
-                rows = [found[cid] for cid in page if cid in found]
             prov = str(crit.get("provider") or "all").lower()
             self._send_conv_list(
-                conn, rows, len(ids), offset, limit,
+                conn, rows, total, offset, limit,
                 prov if prov in ("claude", "chatgpt") else None,
             )
         finally:

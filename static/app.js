@@ -3937,6 +3937,12 @@ function labelDisplayName(label) {
   return String(label?.name || "").trim() || "unnamed label";
 }
 
+// The same, for a row the user picks from a list — a marker, not a sentence, so
+// an unnamed label is never an empty-looking option.
+function labelPickName(label) {
+  return String(label?.name || "").trim() || "(unnamed)";
+}
+
 // "Enter labels below or no labels will be applied." — shown by the display
 // dropdown whenever Square + Label is selected and at least one square still
 // has no name to show. It clears itself the moment every square has a name, and
@@ -3971,7 +3977,7 @@ async function saveLabel(label, patch, inputEl) {
     onLabelDefsChanged();
   } catch (e) {
     // Put the rejected value back.
-    if (inputEl && "name" in patch) inputEl.value = label.name;
+    if (inputEl && "name" in patch) inputEl.value = label.name || "";
     if (inputEl && "color" in patch)
       inputEl.value = _validHexColor(label.color) ? label.color : "#888888";
     showLabelError(e.message);
@@ -4184,10 +4190,10 @@ function clearLabelDropMarks() {
 async function deleteLabel(label) {
   const used = label.count > 0;
   const msg = used
-    ? `Delete the label “${label.name}”? ${label.count} conversation${
+    ? `Delete the label “${labelPickName(label)}”? ${label.count} conversation${
         label.count === 1 ? "" : "s"
       } currently use it and will be cleared back to blank.`
-    : `Delete the label “${label.name}”?`;
+    : `Delete the label “${labelPickName(label)}”?`;
   const ok = await openConfirm({
     title: "Delete label?",
     text: msg,
@@ -4649,9 +4655,7 @@ function appendSetLabelToMenu(menu, convId, currentLabels, itemClass, onSelect, 
 
     const name = document.createElement("span");
     name.className = "sidebar-menu-item-label";
-    name.textContent = opt.id
-      ? String(opt.name || "").trim() || "(unnamed)"
-      : "Blank";
+    name.textContent = opt.id ? labelPickName(opt) : "Blank";
 
     b.append(dot, name);
     const ticked = opt.id ? held.has(opt.id) : held.size === 0;
@@ -4726,7 +4730,7 @@ function labelViewTitle(view) {
   const sel = String(view).slice("label:".length);
   if (sel === "__unlabeled__") return "Unlabeled";
   const l = labelById(sel);
-  return l ? l.name : "Label";
+  return l ? labelPickName(l) : "Label";
 }
 
 // Rebuild the label options in the filter dropdown to match the current
@@ -4754,7 +4758,8 @@ function syncLabelFilterOptions() {
   };
   const frag = document.createDocumentFragment();
   frag.appendChild(mk("label:__unlabeled__", "Unlabeled"));
-  for (const l of orderedLabels()) frag.appendChild(mk("label:" + l.id, l.name));
+  for (const l of orderedLabels())
+    frag.appendChild(mk("label:" + l.id, labelPickName(l)));
   viewFilterEl.appendChild(frag);
   // Keep the current selection valid; if its label was deleted, fall back.
   if (String(state.view).startsWith("label:")) {
@@ -4816,6 +4821,20 @@ function invalidateBulkPreview() {
   exitBulkPreview();
 }
 
+// What to call a Set-Label-To target. Only a genuinely blank target is "Blank":
+// an unnamed label has an empty name but a real id, and saying "Blank" for it
+// would describe the opposite of what the run does.
+function bulkTargetName(d) {
+  if (!d || d.target_blank || !d.target_label_id) return "Blank";
+  return String(d.target_label_name || "").trim() || "(unnamed)";
+}
+
+// The same, for a stored Recent-Bulk-Changes row (it carries the id too).
+function bulkHistoryTargetName(h) {
+  if (!h || !h.target_label_id) return "Blank";
+  return String(h.target_label_name || "").trim() || "(unnamed)";
+}
+
 // The sidebar banner that says the list is showing a previewed batch.
 function syncBulkPreviewBanner() {
   const banner = $("bulk-preview-banner");
@@ -4827,7 +4846,7 @@ function syncBulkPreviewBanner() {
     return;
   }
   const n = state.bulkPreview.data?.will_change ?? 0;
-  const target = state.bulkPreview.data?.target_label_name || "Blank";
+  const target = bulkTargetName(state.bulkPreview.data);
   const txt = $("bulk-preview-banner-text");
   if (txt) {
     txt.textContent =
@@ -4861,7 +4880,8 @@ function refreshBulkLabelSelects() {
     for (const l of orderedLabels()) {
       const o = document.createElement("option");
       o.value = l.id;
-      o.textContent = l.name;
+      // An unnamed label would otherwise be an empty, unpickable-looking row.
+      o.textContent = labelPickName(l);
       sel.appendChild(o);
     }
     if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
@@ -5001,7 +5021,7 @@ async function bulkPreview() {
   const got = await readBulkPreview();
   if (!got) return;
   const { crit, data } = got;
-  const target = data.target_label_name || "Blank";
+  const target = bulkTargetName(data);
   const notAlready = data.target_blank
     ? `<strong>${data.not_already.toLocaleString()}</strong> are not already blank.`
     : `<strong>${data.not_already.toLocaleString()}</strong> are not already set to “${escHtml(target)}”.`;
@@ -5038,7 +5058,7 @@ async function bulkApply() {
     showBulkError("Nothing to change — no conversation matches that isn't already set.");
     return;
   }
-  const target = data.target_label_name || "Blank";
+  const target = bulkTargetName(data);
   const ok = await openConfirm({
     title: "Apply label to batch?",
     text:
@@ -5111,7 +5131,7 @@ async function loadBulkHistory() {
     const action = document.createElement("div");
     action.className = "bulk-history-action";
     const limitText = h.limit_used ? `First ${h.limit_used}` : "All matching";
-    action.textContent = `${limitText} → ${h.target_label_name || "Blank"}`;
+    action.textContent = `${limitText} → ${bulkHistoryTargetName(h)}`;
     // Line 4 — how many actually changed.
     const changed = document.createElement("div");
     changed.className = "bulk-history-changed";
