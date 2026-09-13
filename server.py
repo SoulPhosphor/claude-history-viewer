@@ -381,15 +381,17 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 updated_at REAL
             );
 
-            -- Which label a conversation has. A conversation has at most one
-            -- label; the blank state is simply the absence of a row (no fake
-            -- "Blank" label). Keyed on conversation_id alone, matching the
-            -- existing tags/folders/model tables — conversation ids are stable
-            -- across rebuilds, so assignments survive a history.db rebuild.
+            -- Which labels a conversation carries. A conversation can carry
+            -- several; the blank state is simply the absence of any row (no
+            -- fake "Blank" label). Keyed on (conversation_id, label_id) so one
+            -- conversation can hold many labels and no label twice.
+            -- Conversation ids are stable across rebuilds, so assignments
+            -- survive a history.db rebuild.
             CREATE TABLE IF NOT EXISTS conversation_labels (
-                conversation_id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
                 label_id        TEXT NOT NULL,
-                assigned_at     REAL
+                assigned_at     REAL,
+                PRIMARY KEY (conversation_id, label_id)
             );
             CREATE INDEX IF NOT EXISTS idx_conv_labels_label
                 ON conversation_labels (label_id);
@@ -447,6 +449,35 @@ def _ensure_userdata_schema(db_path: Path) -> None:
         # summary column for snapshots created before it existed.
         try:
             conn.execute("ALTER TABLE snapshots ADD COLUMN summary TEXT")
+        except sqlite3.Error:
+            pass
+        # Databases built before conversations could carry several labels have
+        # conversation_labels keyed on conversation_id alone. Rebuild the table
+        # with the (conversation_id, label_id) key, carrying every existing
+        # assignment over unchanged.
+        try:
+            cols = conn.execute("PRAGMA table_info(conversation_labels)").fetchall()
+            single = any(c[1] == "conversation_id" and c[5] == 1 for c in cols) and len(
+                [c for c in cols if c[5] > 0]
+            ) == 1
+            if single:
+                conn.executescript(
+                    """
+                    CREATE TABLE conversation_labels_new (
+                        conversation_id TEXT NOT NULL,
+                        label_id        TEXT NOT NULL,
+                        assigned_at     REAL,
+                        PRIMARY KEY (conversation_id, label_id)
+                    );
+                    INSERT OR IGNORE INTO conversation_labels_new
+                        SELECT conversation_id, label_id, assigned_at
+                        FROM conversation_labels;
+                    DROP TABLE conversation_labels;
+                    ALTER TABLE conversation_labels_new RENAME TO conversation_labels;
+                    CREATE INDEX IF NOT EXISTS idx_conv_labels_label
+                        ON conversation_labels (label_id);
+                    """
+                )
         except sqlite3.Error:
             pass
         conn.commit()
@@ -1163,6 +1194,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_labels_reorder()
         elif path == "/api/conversation-labels":
             self._api_conversation_label_set()
+        elif path == "/api/labels/bulk-preview-list":
+            self._api_bulk_preview_list()
         elif path == "/api/labels/bulk-preview":
             self._api_bulk_preview()
         elif path == "/api/labels/bulk-apply":
@@ -1570,22 +1603,11 @@ class Handler(BaseHTTPRequestHandler):
         whole dataset is Claude).
         """
         convs = [dict(r) for r in rows]
-        # Attach each row's label in one batched query so the sidebar can draw
-        # its square without a request per conversation (no N+1).
-        ids = [c["id"] for c in convs]
-        if ids:
-            marks = ",".join("?" * len(ids))
-            labels_by_conv = {}
-            for r in conn.execute(
-                "SELECT cl.conversation_id AS cid, l.id AS id, l.name AS name, l.color AS color "
-                "FROM udb.conversation_labels cl "
-                "JOIN udb.labels l ON l.id = cl.label_id "
-                f"WHERE cl.conversation_id IN ({marks})",
-                tuple(ids),
-            ).fetchall():
-                labels_by_conv[r["cid"]] = {"id": r["id"], "name": r["name"], "color": r["color"]}
-            for c in convs:
-                c["label"] = labels_by_conv.get(c["id"])
+        # Attach each row's labels in one batched query so the sidebar can draw
+        # its squares without a request per conversation (no N+1).
+        by_conv = self._labels_by_conv(conn, [c["id"] for c in convs])
+        for c in convs:
+            c["labels"] = by_conv.get(c["id"], [])
         claude_side = (provider == "claude") if provider else (self._dataset_format(conn) == "claude")
         if claude_side:
             flags = _compute_conv_flags(
@@ -1889,7 +1911,7 @@ class Handler(BaseHTTPRequestHandler):
             conv_dict = dict(conv)
             # The current label rides along so opening a conversation stays one
             # request; the header square reads it directly.
-            conv_dict["label"] = self._conv_label(conn, conv_id)
+            conv_dict["labels"] = self._conv_labels(conn, conv_id)
             self.send_json({"conversation": conv_dict,
                             "messages": [parse_msg(m) for m in msgs],
                             "artifacts": artifacts_meta,
@@ -2378,19 +2400,17 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT fi.folder_id AS folder_id, fi.pinned AS pinned, "
                 "c.id AS id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
                 "c.create_time AS create_time, c.update_time AS update_time, "
-                "c.message_count AS message_count, "
-                # The label rides along so folder rows can draw their square
-                # without a request per conversation (no N+1).
-                "ll.id AS label_id, ll.name AS label_name, ll.color AS label_color "
+                "c.message_count AS message_count "
                 "FROM udb.folder_items fi "
                 "JOIN conversations c ON c.id = fi.conversation_id "
                 "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
-                "LEFT JOIN udb.conversation_labels cl ON cl.conversation_id = c.id "
-                "LEFT JOIN udb.labels ll ON ll.id = cl.label_id "
                 "WHERE COALESCE(cm.deleted, 0) = 0" + prov_item + " "
                 # Pinned chats float to the top within the folder, then newest.
                 "ORDER BY fi.pinned DESC, c.update_time DESC, c.create_time DESC"
             ).fetchall()
+            # Labels come from one batched query, not a join: a conversation can
+            # carry several, and joining would duplicate its folder row.
+            folder_labels = self._labels_by_conv(conn, [r["id"] for r in rows])
             by_folder: dict = {}
             for r in rows:
                 by_folder.setdefault(r["folder_id"], []).append({
@@ -2400,8 +2420,7 @@ class Handler(BaseHTTPRequestHandler):
                     "update_time":   r["update_time"],
                     "message_count": r["message_count"],
                     "pinned":        bool(r["pinned"]),
-                    "label": ({"id": r["label_id"], "name": r["label_name"],
-                               "color": r["label_color"]} if r["label_id"] else None),
+                    "labels":        folder_labels.get(r["id"], []),
                 })
             out = [{
                 "id":            f["id"],
@@ -3004,10 +3023,11 @@ class Handler(BaseHTTPRequestHandler):
     # ── Conversation labels ──────────────────────────────────────────────────
     # User-configurable labels stored in the persistent user-data DB (see
     # `labels` / `conversation_labels` in _ensure_userdata_schema). A label is a
-    # definition here; a conversation has at most one, and the blank state is
-    # the absence of an assignment. Names have no built-in meaning — the user
-    # picks them — and stable ids mean a rename or recolour never moves any
-    # conversation off its label.
+    # definition here; a conversation can carry several, and the blank state is
+    # the absence of any assignment. Names have no built-in meaning — the user
+    # picks them, and a name is optional (an unnamed label is a colour-only
+    # square) — and stable ids mean a rename or recolour never moves any
+    # conversation off its labels.
 
     # Colours are stored as #rgb / #rrggbb and validated before write, so the
     # value can be dropped straight into an inline style on the client.
@@ -3046,9 +3066,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_label_create(self):
         payload = self._read_json_body()
+        # The name is optional: a label can be a colour-only square. It only
+        # ever shows as text when the display mode is "Square + Label".
         name = " ".join(str(payload.get("name") or "").split())[:60]
-        if not name:
-            self.send_json({"error": "name is required"}, 400); return
         color = self._norm_label_color(payload.get("color"))
         now = time.time()
         conn = open_db(self.db_path)
@@ -3074,9 +3094,8 @@ class Handler(BaseHTTPRequestHandler):
         payload = self._read_json_body()
         sets, params = [], []
         if "name" in payload:
+            # Clearing a name back to blank is allowed — the square stays.
             name = " ".join(str(payload.get("name") or "").split())[:60]
-            if not name:
-                self.send_json({"error": "name cannot be empty"}, 400); return
             sets.append("name = ?"); params.append(name)
         if "color" in payload:
             sets.append("color = ?"); params.append(self._norm_label_color(payload.get("color")))
@@ -3139,64 +3158,131 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _conv_label(self, conn, conv_id):
-        """The label a conversation currently carries, or None (the blank
-        state). Shape matches what the sidebar/header square renders."""
-        row = conn.execute(
+    def _conv_labels(self, conn, conv_id):
+        """Every label a conversation carries, in the user's configured order.
+        An empty list is the blank state. Shape matches what the sidebar and
+        header squares render."""
+        rows = conn.execute(
             "SELECT l.id, l.name, l.color FROM udb.conversation_labels cl "
             "JOIN udb.labels l ON l.id = cl.label_id "
-            "WHERE cl.conversation_id = ?",
+            "WHERE cl.conversation_id = ? "
+            "ORDER BY l.sort_index ASC, LOWER(l.name) ASC",
             (conv_id,),
-        ).fetchone()
-        return ({"id": row["id"], "name": row["name"], "color": row["color"]}
-                if row else None)
+        ).fetchall()
+        return [{"id": r["id"], "name": r["name"], "color": r["color"]} for r in rows]
+
+    def _labels_by_conv(self, conn, ids):
+        """Batched _conv_labels for a page of conversations: {conv_id: [label]}.
+        One query for the whole page, so the sidebar never does an N+1."""
+        out = {}
+        if not ids:
+            return out
+        CH = 400
+        for i in range(0, len(ids), CH):
+            chunk = list(ids[i:i + CH])
+            marks = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                "SELECT cl.conversation_id AS cid, l.id AS id, l.name AS name, "
+                "       l.color AS color "
+                "FROM udb.conversation_labels cl "
+                "JOIN udb.labels l ON l.id = cl.label_id "
+                f"WHERE cl.conversation_id IN ({marks}) "
+                "ORDER BY l.sort_index ASC, LOWER(l.name) ASC",
+                tuple(chunk),
+            ).fetchall():
+                out.setdefault(r["cid"], []).append(
+                    {"id": r["id"], "name": r["name"], "color": r["color"]}
+                )
+        return out
 
     def _api_conversation_label_get(self, conv_id):
-        """The conversation's current label (or null). Lets the header re-read a
-        single conversation's assignment after a bulk/restore without refetching
-        its whole message list."""
+        """The conversation's current labels. Lets the header re-read a single
+        conversation's assignments after a bulk/restore without refetching its
+        whole message list."""
         conv_id = (conv_id or "").strip()
         conn = open_db(self.db_path)
         try:
-            self.send_json({"conv_id": conv_id, "label": self._conv_label(conn, conv_id)})
+            self.send_json({"conv_id": conv_id,
+                            "labels": self._conv_labels(conn, conv_id)})
         finally:
             conn.close()
 
     def _api_conversation_label_set(self):
-        """Set (or clear) a conversation's single label. A falsy label_id
-        clears it back to blank — the assignment row is removed, never swapped
-        for a placeholder label."""
+        """Change which labels a conversation carries. The body names one of:
+
+          {label_id, action: "add" | "remove" | "toggle" | "only"}
+            act on that single label ("only" replaces the whole set with it),
+          {label_ids: [...]}
+            replace the whole set with exactly these,
+          {label_id: null}  /  {label_ids: []}
+            clear back to blank — the rows are removed, never swapped for a
+            placeholder label.
+
+        Always answers with the conversation's full label list."""
         payload = self._read_json_body()
         conv_id = str(payload.get("conv_id") or "").strip()
-        raw = payload.get("label_id")
-        label_id = str(raw).strip() if raw else ""
         if not conv_id:
             self.send_json({"error": "conv_id is required"}, 400); return
+        raw = payload.get("label_id")
+        label_id = str(raw).strip() if raw else ""
+        action = str(payload.get("action") or "").strip().lower()
+        id_list = payload.get("label_ids")
         conn = open_db(self.db_path)
         try:
             if not conn.execute(
                 "SELECT 1 FROM conversations WHERE id = ?", (conv_id,)
             ).fetchone():
                 self.send_json({"error": "Unknown conversation"}, 404); return
-            if label_id:
-                if not conn.execute(
-                    "SELECT 1 FROM udb.labels WHERE id = ?", (label_id,)
-                ).fetchone():
-                    self.send_json({"error": "Unknown label"}, 404); return
+            known = {r["id"] for r in
+                     conn.execute("SELECT id FROM udb.labels").fetchall()}
+            now = time.time()
+
+            def add(lid):
                 conn.execute(
-                    "INSERT INTO udb.conversation_labels(conversation_id, label_id, assigned_at) "
-                    "VALUES (?, ?, ?) "
-                    "ON CONFLICT(conversation_id) DO UPDATE SET "
-                    "  label_id = excluded.label_id, assigned_at = excluded.assigned_at",
-                    (conv_id, label_id, time.time()),
+                    "INSERT OR IGNORE INTO udb.conversation_labels"
+                    "(conversation_id, label_id, assigned_at) VALUES (?, ?, ?)",
+                    (conv_id, lid, now),
                 )
-            else:
+
+            def clear():
                 conn.execute(
                     "DELETE FROM udb.conversation_labels WHERE conversation_id = ?",
                     (conv_id,),
                 )
+
+            if isinstance(id_list, list):
+                wanted = [str(x).strip() for x in id_list if str(x or "").strip()]
+                for lid in wanted:
+                    if lid not in known:
+                        self.send_json({"error": "Unknown label"}, 404); return
+                clear()
+                for lid in wanted:
+                    add(lid)
+            elif not label_id:
+                # No label named and no list: clear to blank.
+                clear()
+            else:
+                if label_id not in known:
+                    self.send_json({"error": "Unknown label"}, 404); return
+                has = conn.execute(
+                    "SELECT 1 FROM udb.conversation_labels "
+                    "WHERE conversation_id = ? AND label_id = ?",
+                    (conv_id, label_id),
+                ).fetchone() is not None
+                if action == "remove" or (action == "toggle" and has):
+                    conn.execute(
+                        "DELETE FROM udb.conversation_labels "
+                        "WHERE conversation_id = ? AND label_id = ?",
+                        (conv_id, label_id),
+                    )
+                elif action == "only":
+                    clear()
+                    add(label_id)
+                else:  # "add", "toggle" (not present), or no action given
+                    add(label_id)
             conn.commit()
-            self.send_json({"conv_id": conv_id, "label": self._conv_label(conn, conv_id)})
+            self.send_json({"conv_id": conv_id,
+                            "labels": self._conv_labels(conn, conv_id)})
         finally:
             conn.close()
 
@@ -3333,9 +3419,11 @@ class Handler(BaseHTTPRequestHandler):
                     "c.id IN (SELECT conversation_id FROM udb.conversation_labels)"
                 )
             else:
+                # Set-Label-To replaces the whole set, so the only no-op is a
+                # conversation already carrying exactly this one label.
                 where.append(
                     "c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels "
-                    "WHERE label_id = ?)"
+                    "GROUP BY conversation_id HAVING COUNT(*) = 1 AND MAX(label_id) = ?)"
                 )
                 params.append(noop_target)
 
@@ -3419,22 +3507,21 @@ class Handler(BaseHTTPRequestHandler):
         if not ids:
             return
         CH = 400
-        if target_label_id:
-            now = time.time()
-            for i in range(0, len(ids), CH):
+        now = time.time()
+        for i in range(0, len(ids), CH):
+            chunk = ids[i:i + CH]
+            marks = ",".join("?" * len(chunk))
+            # Set-Label-To sets the batch to exactly the target, so any labels
+            # these conversations already carry are cleared first.
+            conn.execute(
+                f"DELETE FROM udb.conversation_labels WHERE conversation_id IN ({marks})",
+                tuple(chunk),
+            )
+            if target_label_id:
                 conn.executemany(
-                    "INSERT INTO udb.conversation_labels(conversation_id, label_id, assigned_at) "
-                    "VALUES (?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET "
-                    "label_id = excluded.label_id, assigned_at = excluded.assigned_at",
-                    [(cid, target_label_id, now) for cid in ids[i:i + CH]],
-                )
-        else:
-            for i in range(0, len(ids), CH):
-                chunk = ids[i:i + CH]
-                marks = ",".join("?" * len(chunk))
-                conn.execute(
-                    f"DELETE FROM udb.conversation_labels WHERE conversation_id IN ({marks})",
-                    tuple(chunk),
+                    "INSERT OR IGNORE INTO udb.conversation_labels"
+                    "(conversation_id, label_id, assigned_at) VALUES (?, ?, ?)",
+                    [(cid, target_label_id, now) for cid in chunk],
                 )
 
     @staticmethod
@@ -3575,6 +3662,57 @@ class Handler(BaseHTTPRequestHandler):
                 "target_label_name": target_name,
                 "target_blank": target_label_id is None,
             })
+        finally:
+            conn.close()
+
+    def _api_bulk_preview_list(self):
+        """The batch itself, as conversation rows the sidebar can render.
+
+        This is what makes Preview *apply* the criteria: the sidebar shows the
+        exact conversations this run would change, in the order the run would
+        take them, instead of only a count. Never mutates. Body is the same
+        criteria object as bulk-preview, plus optional limit/offset for paging.
+        """
+        payload = self._read_json_body()
+        crit = payload.get("criteria") if isinstance(payload.get("criteria"), dict) else payload
+        try:
+            limit = max(1, min(200, int(payload.get("limit") or 50)))
+        except (TypeError, ValueError):
+            limit = 50
+        try:
+            offset = max(0, int(payload.get("offset") or 0))
+        except (TypeError, ValueError):
+            offset = 0
+        conn = open_db(self.db_path)
+        try:
+            target = self._bulk_target(conn, crit)
+            if target is None:
+                self.send_json({"error": "Unknown target label"}, 404); return
+            target_label_id, _name = target
+            try:
+                sel = self._bulk_select(conn, crit, target_label_id)
+            except sqlite3.Error:
+                self.send_json({"error": "Could not evaluate the criteria"}, 400); return
+            ids = sel["batch_ids"]
+            page = ids[offset:offset + limit]
+            rows = []
+            if page:
+                marks = ",".join("?" * len(page))
+                found = {r["id"]: dict(r) for r in conn.execute(
+                    "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
+                    "c.create_time, c.update_time, c.message_count, c.preview "
+                    "FROM conversations c "
+                    "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                    f"WHERE c.id IN ({marks})",
+                    tuple(page),
+                ).fetchall()}
+                # Keep the batch's own order, not SQLite's.
+                rows = [found[cid] for cid in page if cid in found]
+            prov = str(crit.get("provider") or "all").lower()
+            self._send_conv_list(
+                conn, rows, len(ids), offset, limit,
+                prov if prov in ("claude", "chatgpt") else None,
+            )
         finally:
             conn.close()
 

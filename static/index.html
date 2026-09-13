@@ -100,6 +100,12 @@
             <button id="recycle-go" type="button">Go</button>
           </div>
           <div id="result-count"></div>
+          <!-- Bulk-tool Preview banner: shown while the list is temporarily
+               filtered to a previewed batch. -->
+          <div id="bulk-preview-banner" hidden>
+            <span id="bulk-preview-banner-text"></span>
+            <button type="button" id="bulk-preview-exit">Exit preview</button>
+          </div>
         </div>
         <div id="conv-sections">
           <section class="conv-section" id="folders-section">
@@ -712,8 +718,9 @@
           <div class="thread-header">
             <h2>Labels</h2>
             <div id="labels-meta">
-              Configurable labels for staging groups of conversations. Names
-              carry no built-in meaning — you choose them.
+              Configurable labels for staging groups of conversations. A
+              conversation can carry several. Names carry no built-in meaning —
+              you choose them, and a name is optional.
             </div>
           </div>
           <div id="labels-content">
@@ -736,9 +743,14 @@
                 >
                 <select id="labels-display-select">
                   <option value="square">Square only</option>
-                  <option value="square_label">Square + label</option>
+                  <option value="square_label">Square + Label</option>
                 </select>
               </div>
+              <!-- Shown only while Square + Label is selected and at least one
+                   square still has no name to show. -->
+              <p id="labels-name-warning" class="warning-text" hidden>
+                Enter labels below or no labels will be applied.
+              </p>
             </section>
 
             <!-- B. Label definitions ──────────────────────────────────── -->
@@ -747,6 +759,12 @@
               <p class="labels-section-hint">
                 Add, rename, recolour, reorder, or delete labels. The order here
                 is the order clicking a conversation's square cycles through.
+                Names are optional — a label with no name is a colour-only
+                square.
+              </p>
+              <p class="labels-section-hint">
+                Labels will only show if square + label display is selected
+                above.
               </p>
               <form id="label-add-form" autocomplete="off">
                 <input
@@ -758,8 +776,7 @@
                 <input
                   id="label-add-name"
                   type="text"
-                  placeholder="New label name"
-                  required
+                  placeholder="New label name (optional)"
                   spellcheck="false"
                   maxlength="60"
                 />
@@ -774,8 +791,12 @@
               <h3 class="labels-section-title">Bulk Label Conversations</h3>
               <p class="labels-section-hint">
                 Select conversations by criteria — all populated criteria are
-                combined with AND — then set one label on the batch. The only
+                combined with AND — then set one label on the batch, replacing
+                whatever labels those conversations already carry. The only
                 action is Set Label To; nothing here deletes, archives, or moves.
+                Preview temporarily filters the conversation list to the batch
+                so you can look through it. Preview is optional — Apply works on
+                its own.
               </p>
               <div class="bulk-form">
                 <div class="bulk-row">
@@ -864,7 +885,10 @@
                 </div>
                 <div class="bulk-buttons">
                   <button type="button" id="bulk-preview-btn">Preview</button>
-                  <button type="button" id="bulk-apply-btn" disabled>Apply</button>
+                  <button type="button" id="bulk-preview-clear-btn" hidden>
+                    Clear Preview
+                  </button>
+                  <button type="button" id="bulk-apply-btn">Apply</button>
                 </div>
                 <div id="bulk-result" class="bulk-result" hidden></div>
                 <div id="bulk-error" class="labels-form-error" hidden></div>

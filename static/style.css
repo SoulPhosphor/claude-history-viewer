@@ -26,6 +26,24 @@
   --code-bg: #eeeae3;
   --user-bubble: #ede9e1;
   --mark-bg: rgba(217, 119, 87, 0.18);
+  /* Warning copy (e.g. "enter labels or none will be applied"). Themable. */
+  --warning-text: #c0392b;
+  --warning-weight: 700;
+  /* Label squares. One set of variables drives every square, wherever it is
+     drawn — beside a title, under the date/messages line, or in the thread
+     header — so retheming or resizing happens in one place. */
+  --label-square-size: 14px;
+  --label-square-size-header: 16px;
+  --label-square-radius: 3px;
+  --label-square-blank-border: var(--muted);
+  /* Gap between a square and its own name. */
+  --label-chip-gap: 5px;
+  /* Gap between neighbouring squares — wide enough that one is hard to
+     mis-click for the next. */
+  --label-group-gap: 10px;
+  --label-text-size: 11px;
+  --label-text-color: var(--muted);
+  --label-text-max: 110px;
 }
 
 html,
@@ -523,6 +541,41 @@ mark.search-term-highlight {
   gap: 8px;
   font-size: 11px;
   color: var(--muted);
+}
+
+/* Bulk-tool Preview banner: the conversation list is temporarily filtered to a
+   previewed batch. Colours come from the theme variables. */
+#bulk-preview-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--mark-bg);
+  font-size: 11px;
+  color: var(--text);
+}
+#bulk-preview-banner[hidden] {
+  display: none;
+}
+#bulk-preview-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+#bulk-preview-exit {
+  font: inherit;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 5px;
+  padding: 2px 8px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#bulk-preview-exit:hover {
+  background: var(--hover);
 }
 
 /* ── Load more ───────────────────────────────────────────────────────────── */
@@ -2377,11 +2430,18 @@ kbd {
 .folder-conv-item {
   display: flex;
   align-items: center;
+  /* Wrap so a folder row's label row can drop onto its own line, the way the
+     main list drops it under the date/messages line. */
+  flex-wrap: wrap;
   gap: 6px;
   padding: 5px 12px 5px 22px;
   cursor: pointer;
   font-size: 12.5px;
   color: var(--text);
+}
+.folder-conv-item > .conv-label-row {
+  flex-basis: 100%;
+  margin-top: 0;
 }
 .folder-conv-item:hover {
   background: var(--hover);
@@ -3426,8 +3486,20 @@ kbd {
 }
 .labels-form-error {
   margin-top: 10px;
-  color: #b3261e;
+  color: var(--warning-text);
   font-size: 0.85rem;
+}
+
+/* Warning copy anywhere in the app. Red and bold by default; both come from
+   variables so a theme can restyle every warning at once. */
+.warning-text {
+  color: var(--warning-text);
+  font-weight: var(--warning-weight);
+  font-size: 0.85rem;
+  margin-top: 8px;
+}
+.warning-text[hidden] {
+  display: none;
 }
 
 .label-list {
@@ -3508,24 +3580,49 @@ kbd {
   padding: 10px 0;
 }
 
-/* ── Compact label indicators (sidebar rows + conversation header) ─────────── */
-/* A small square sits immediately before a conversation's title. It must not
-   add a row or materially change row height, so it is an inline-block that
-   rides on the title's text line. */
+/* ── Label indicators (sidebar rows + conversation header) ─────────────────── */
+/* One chip = one square, plus that label's name when the display mode is
+   "Square + Label". The very same .label-chip is used beside a title, in the
+   row under the date/messages line, and in the thread header, so the three
+   never drift apart — only the size variable differs for the header. */
 .label-indicator {
   display: inline-flex;
   align-items: center;
   vertical-align: middle;
+  gap: var(--label-group-gap);
   max-width: 100%;
+}
+/* Placement B: below the date/messages line. Used as soon as a conversation
+   shows more than one square, or any square shows a name. Squares-only wrap
+   freely across the row; named ones are capped at three per line. */
+.conv-label-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--label-group-gap);
+  margin-top: 4px;
+}
+.conv-label-row.label-row-named {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, max-content));
+  justify-content: start;
+  column-gap: var(--label-group-gap);
+  row-gap: 4px;
+}
+.label-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--label-chip-gap);
+  min-width: 0;
+  vertical-align: middle;
 }
 .label-square {
   box-sizing: border-box;
-  width: 9px;
-  height: 9px;
+  width: var(--label-square-size);
+  height: var(--label-square-size);
   padding: 0;
-  margin-right: 5px;
   border: 1px solid transparent;
-  border-radius: 2px;
+  border-radius: var(--label-square-radius);
   flex-shrink: 0;
   cursor: pointer;
   display: inline-block;
@@ -3536,7 +3633,7 @@ kbd {
 /* Blank state: an unobtrusive outline that is still clickable. */
 .label-square-blank {
   background: transparent;
-  border-color: var(--muted);
+  border-color: var(--label-square-blank-border);
   opacity: 0.55;
 }
 .conv-item:hover .label-square-blank,
@@ -3547,19 +3644,22 @@ kbd {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
-/* Square + label mode: a compact name beside the square. Capped so a long
-   label name can never crowd the title out entirely. */
+/* The label's name beside its square. Capped so a long name can never crowd
+   the title out entirely. */
 .label-text {
   display: inline-block;
-  max-width: 110px;
+  max-width: var(--label-text-max);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: middle;
-  font-size: 11px;
-  color: var(--muted);
-  margin-right: 5px;
-  flex-shrink: 0;
+  font-size: var(--label-text-size);
+  color: var(--label-text-color);
+}
+/* Placement A: inline before the title. Only ever one unnamed square. */
+.conv-title > .label-indicator,
+.folder-conv-title > .label-indicator {
+  margin-right: var(--label-chip-gap);
 }
 
 .thread-title-row {
@@ -3571,10 +3671,13 @@ kbd {
 #thread-title-square:empty {
   display: none;
 }
-/* The header square is a touch larger to match the bigger title text. */
+/* The header squares are a touch larger to match the bigger title text. */
 #thread-title-square .label-square {
-  width: 11px;
-  height: 11px;
+  width: var(--label-square-size-header);
+  height: var(--label-square-size-header);
+}
+#thread-title-square .label-indicator {
+  margin-right: var(--label-group-gap);
 }
 
 /* Set-label options inside the ⋮ menus. */
