@@ -3854,6 +3854,11 @@ kbd {
   border-top: 1px solid var(--border);
   margin-top: 4px;
 }
+.bulk-section-subtitle {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--text);
+}
 .bulk-buttons {
   display: flex;
   gap: 10px;

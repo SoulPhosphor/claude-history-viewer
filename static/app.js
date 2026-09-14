@@ -3946,6 +3946,13 @@ function labelPickName(label) {
   return String(label?.name || "").trim() || "(unnamed)";
 }
 
+// Same idea, but for a picker where "(unnamed)" tells the user nothing useful
+// to tell that square apart from another — show its colour instead.
+function labelPickNameOrColor(label) {
+  const name = String(label?.name || "").trim();
+  return name || String(label?.color || "").trim() || "(unnamed)";
+}
+
 // "Enter labels below or no labels will be applied." — shown by the display
 // dropdown whenever Square + Label is selected and at least one square still
 // has no name to show. It clears itself the moment every square has a name, and
@@ -4803,9 +4810,12 @@ function onLabelDefsChanged() {
 }
 
 // ── Conditional bulk labeling (Labels screen · sections C & D) ────────────────
-// A narrow tool: pick conversations by criteria (all ANDed) and Set Label To a
-// label or Blank. It never deletes/archives/moves. Preview before Apply; every
-// applied change is logged to Recent Bulk Changes for reuse (not undo).
+// A narrow tool: pick conversations by criteria (all ANDed) and Add, Remove,
+// or Clear a set of labels on them. It never deletes/archives/moves. Preview
+// before Apply; every applied change is logged to Recent Bulk Changes for
+// reuse (not undo) — or, if a "First N" limit doesn't cover everything
+// eligible, saved as an Unfinished Label Run instead (see the run functions
+// further down) until it's carried to completion.
 
 let _bulkPreviewed = null; // {crit, data} captured on a successful preview
 
@@ -4824,20 +4834,6 @@ function invalidateBulkPreview() {
   exitBulkPreview();
 }
 
-// What to call a Set-Label-To target. Only a genuinely blank target is "Blank":
-// an unnamed label has an empty name but a real id, and saying "Blank" for it
-// would describe the opposite of what the run does.
-function bulkTargetName(d) {
-  if (!d || d.target_blank || !d.target_label_id) return "Blank";
-  return String(d.target_label_name || "").trim() || "(unnamed)";
-}
-
-// The same, for a stored Recent-Bulk-Changes row (it carries the id too).
-function bulkHistoryTargetName(h) {
-  if (!h || !h.target_label_id) return "Blank";
-  return String(h.target_label_name || "").trim() || "(unnamed)";
-}
-
 // The sidebar banner that says the list is showing a previewed batch.
 function syncBulkPreviewBanner() {
   const banner = $("bulk-preview-banner");
@@ -4849,12 +4845,12 @@ function syncBulkPreviewBanner() {
     return;
   }
   const n = state.bulkPreview.data?.will_change ?? 0;
-  const target = bulkTargetName(state.bulkPreview.data);
+  const summary = state.bulkPreview.data?.action_summary || "(bulk change)";
   const txt = $("bulk-preview-banner-text");
   if (txt) {
     txt.textContent =
       `Preview: ${n.toLocaleString()} conversation${n === 1 ? "" : "s"} ` +
-      `this run would set to “${target}”.`;
+      `this run would apply “${summary}” to.`;
   }
   banner.hidden = false;
 }
@@ -4880,12 +4876,31 @@ function exitBulkPreview(opts = {}) {
 // { value, name } per selected chip. `value` is what the server understands
 // (a label/folder id, "blank"/"none", or the raw tag/keyword text); `name` is
 // what the chip displays.
-const bulkChipState = { labels: [], folders: [], tags: [], keywords: [] };
+const bulkChipState = { labels: [], folders: [], tags: [], keywords: [], targetLabels: [] };
+
+// Element ids for a chip row's container/label don't all follow the plain
+// `bulk-${kind}-*` template (targetLabels' HTML ids use a hyphen).
+const BULK_CHIP_DOM_KIND = { targetLabels: "target-labels" };
+function bulkChipElId(kind, suffix) {
+  return `bulk-${BULK_CHIP_DOM_KIND[kind] || kind}-${suffix}`;
+}
 
 function bulkChipOptions(kind) {
   if (kind === "labels") {
     return [{ value: "blank", label: "Blank" }].concat(
       orderedLabels().map((l) => ({ value: l.id, label: labelPickName(l) })),
+    );
+  }
+  if (kind === "targetLabels") {
+    // "Which labels it should apply to" — always offers "All"; an unnamed
+    // label shows its colour (as text, and as a swatch on the option) instead
+    // of a blank/placeholder row.
+    return [{ value: "all", label: "All" }].concat(
+      orderedLabels().map((l) => ({
+        value: l.id,
+        label: labelPickNameOrColor(l),
+        swatch: String(l.name || "").trim() ? null : l.color,
+      })),
     );
   }
   if (kind === "folders") {
@@ -4897,7 +4912,7 @@ function bulkChipOptions(kind) {
 }
 
 function renderBulkChipRow(kind) {
-  const container = $(`bulk-${kind}-chips`);
+  const container = $(bulkChipElId(kind, "chips"));
   if (!container) return;
   container.innerHTML = "";
   for (const chip of bulkChipState[kind]) {
@@ -4963,6 +4978,12 @@ function showBulkChipPicker(kind, addBtn) {
     const opt = document.createElement("option");
     opt.value = o.value;
     opt.textContent = o.label;
+    // An unnamed label's option shows its colour as a swatch too, not just
+    // as text, where the browser renders option background colours.
+    if (o.swatch) {
+      opt.style.backgroundColor = o.swatch;
+      opt.style.color = "#fff";
+    }
     sel.appendChild(opt);
   }
   addBtn.replaceWith(sel);
@@ -5027,26 +5048,18 @@ async function showBulkChipTextPicker(kind, addBtn) {
   input.addEventListener("blur", finish);
 }
 
-// Fill the target select from current data, preserving any selection that is
-// still valid. Also drops/refreshes "Current label" chips against live label
-// defs (a deleted label can no longer filter anything; a renamed one shows
-// its new name). Rebuild only — no network — used when definitions change
-// while the screen is open.
-function refreshBulkLabelSelects() {
-  const sel = $("bulk-target");
-  if (sel) {
-    const cur = sel.value;
-    sel.innerHTML = '<option value="blank">Blank</option>';
-    for (const l of orderedLabels()) {
-      const o = document.createElement("option");
-      o.value = l.id;
-      // An unnamed label would otherwise be an empty, unpickable-looking row.
-      o.textContent = labelPickName(l);
-      sel.appendChild(o);
-    }
-    if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
-  }
+// Show/hide "Which labels it should apply to" — irrelevant once Cleared is
+// picked, since clearing always wipes every label the batch carries.
+function syncBulkTargetLabelsVisibility() {
+  const row = $("bulk-target-labels-row");
+  if (row) row.hidden = $("bulk-label-action")?.value === "cleared";
+}
 
+// Drop/refresh the "Current label" and "Which labels it should apply to"
+// chips against live label defs (a deleted label can no longer filter or be
+// targeted; a renamed one shows its new name/colour). Rebuild only — no
+// network — used when definitions change while the screen is open.
+function refreshBulkLabelSelects() {
   const byId = new Map(orderedLabels().map((l) => [l.id, l]));
   bulkChipState.labels = bulkChipState.labels
     .filter((c) => c.value === "blank" || byId.has(c.value))
@@ -5054,6 +5067,15 @@ function refreshBulkLabelSelects() {
       c.value === "blank" ? c : { value: c.value, name: labelPickName(byId.get(c.value)) },
     );
   renderBulkChipRow("labels");
+
+  bulkChipState.targetLabels = bulkChipState.targetLabels
+    .filter((c) => c.value === "all" || byId.has(c.value))
+    .map((c) =>
+      c.value === "all"
+        ? c
+        : { value: c.value, name: labelPickNameOrColor(byId.get(c.value)) },
+    );
+  renderBulkChipRow("targetLabels");
 }
 
 async function populateBulkForm() {
@@ -5081,6 +5103,7 @@ async function populateBulkForm() {
   state.bulkTagOptions = tags;
   renderBulkChipRow("tags");
   renderBulkChipRow("keywords");
+  syncBulkTargetLabelsVisibility();
 }
 
 // Show/hide the date input(s) for one date criterion based on its operator.
@@ -5121,7 +5144,8 @@ function readBulkCriteria() {
       limitMode === "first"
         ? { mode: "first", n: Math.max(1, parseInt($("bulk-limit-n")?.value, 10) || 1) }
         : { mode: "all" },
-    target: $("bulk-target")?.value || "blank",
+    label_action: $("bulk-label-action")?.value || "added",
+    label_targets: bulkChipState.targetLabels.map((c) => c.value),
   };
 }
 
@@ -5137,6 +5161,8 @@ function validateBulkCriteria(crit) {
   }
   if (crit.limit.mode === "first" && (!crit.limit.n || crit.limit.n < 1))
     return "Limit: enter a positive number.";
+  if (crit.label_action !== "cleared" && crit.label_targets.length === 0)
+    return "Which labels it should apply to: choose at least one label, or All.";
   return null;
 }
 
@@ -5173,10 +5199,9 @@ async function bulkPreview() {
   const got = await readBulkPreview();
   if (!got) return;
   const { crit, data } = got;
-  const target = bulkTargetName(data);
-  const notAlready = data.target_blank
-    ? `<strong>${data.not_already.toLocaleString()}</strong> are not already blank.`
-    : `<strong>${data.not_already.toLocaleString()}</strong> are not already set to “${escHtml(target)}”.`;
+  const notAlready =
+    `<strong>${data.not_already.toLocaleString()}</strong> would actually change ` +
+    `(“${escHtml(data.action_summary)}” applied).`;
   // "the first N" only when a first-N limit actually caps the eligible set —
   // First N takes the next N of everything eligible, in order, regardless of
   // whether some of them already carry the target.
@@ -5213,14 +5238,13 @@ async function bulkApply() {
     showBulkError("Nothing to change — no conversation matches that isn't already set.");
     return;
   }
-  const target = bulkTargetName(data);
   // A "First N" that won't cover everything eligible will be saved as an
   // Unfinished Label Run instead of completing outright — say so up front.
   const partial = data.limit_n != null && data.will_change < data.eligible;
   const ok = await openConfirm({
-    title: "Apply label to batch?",
+    title: "Apply label change to batch?",
     text:
-      `Set label to “${target}” on ${data.will_change.toLocaleString()} conversation` +
+      `${data.action_summary} on ${data.will_change.toLocaleString()} conversation` +
       `${data.will_change === 1 ? "" : "s"} (${data.eligible.toLocaleString()} matched). ` +
       (partial
         ? "The remaining conversations will be saved as an Unfinished Label Run " +
@@ -5293,11 +5317,11 @@ async function loadBulkHistory() {
     const crit = document.createElement("div");
     crit.className = "bulk-history-crit";
     crit.textContent = h.description || "(bulk change)";
-    // Line 3 — limit → target (using the execution-time target name).
+    // Line 3 — limit → the frozen action summary.
     const action = document.createElement("div");
     action.className = "bulk-history-action";
     const limitText = h.limit_used ? `First ${h.limit_used}` : "All matching";
-    action.textContent = `${limitText} → ${bulkHistoryTargetName(h)}`;
+    action.textContent = `${limitText} → ${h.action_summary}`;
     // Line 4 — how many actually changed.
     const changed = document.createElement("div");
     changed.className = "bulk-history-changed";
@@ -5369,9 +5393,10 @@ function renderBulkRunRow(run) {
   const tr = document.createElement("tr");
 
   const crit = document.createElement("td");
+  // criteria_lines already ends with a "Labels should be" line — the server
+  // freezes it alongside the rest at creation time.
   const lines = (run.criteria_lines || [])
     .map(([label, value]) => `${label}: ${value}`);
-  lines.push(`Set label to: ${bulkHistoryTargetName(run)}`);
   const pre = document.createElement("p");
   pre.className = "bulk-run-criteria";
   pre.textContent = lines.join("\n");
@@ -5528,7 +5553,30 @@ function reuseBulkCriteria(crit) {
     $("bulk-limit-n").disabled = mode !== "first";
     if (mode === "first" && lim.n) $("bulk-limit-n").value = lim.n;
   }
-  setSel("bulk-target", crit.target || "blank", "blank");
+  // Accept the current label_action/label_targets, or fall back to a
+  // pre-chip "target" row (its "blank" meant Cleared; anything else meant
+  // Added of that one label — there was no Removed before this model).
+  let labelAction = crit.label_action;
+  let targetIds = Array.isArray(crit.label_targets) ? crit.label_targets.slice() : null;
+  if (!labelAction) {
+    const t = crit.target;
+    if (!t || t === "blank") {
+      labelAction = "cleared";
+      targetIds = [];
+    } else {
+      labelAction = "added";
+      targetIds = [t];
+    }
+  }
+  setSel("bulk-label-action", labelAction, "added");
+  bulkChipState.targetLabels = (targetIds || [])
+    .filter((v) => v === "all" || byId.has(v))
+    .map((v) =>
+      v === "all" ? { value: "all", name: "All" } : { value: v, name: labelPickNameOrColor(byId.get(v)) },
+    );
+  renderBulkChipRow("targetLabels");
+  syncBulkTargetLabelsVisibility();
+
   invalidateBulkPreview();
   showBulkError("");
   $("bulk-provider")?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -5545,6 +5593,7 @@ document.querySelectorAll('input[name="bulk-limit"]').forEach((r) => {
     if (n) n.disabled = !first;
   });
 });
+$("bulk-label-action")?.addEventListener("change", syncBulkTargetLabelsVisibility);
 // Any criteria change invalidates a standing preview so Apply can't act on stale
 // numbers. (Buttons emit no input/change events, so Preview/Apply are unaffected.)
 document.querySelector(".bulk-form")?.addEventListener("input", invalidateBulkPreview);

@@ -805,15 +805,17 @@
               <p class="labels-section-hint">
                 Select conversations by criteria — different fields are combined
                 with AND, multiple values in the same field (Current label, Folder,
-                Tag, Keyword) are combined with OR — then set one label on the
-                batch, replacing whatever labels those conversations already
-                carry. The only action is Set Label To; nothing here deletes,
-                archives, or moves. Preview temporarily filters the conversation
-                list to the batch so you can look through it. Preview is optional
-                — Apply works on its own. Choosing "First" under Limit and
-                applying fewer than everything that qualifies saves the rest as
-                an Unfinished Label Run below, so you can pick up where it left
-                off.
+                Tag, Keyword) are combined with OR — then choose whether the
+                chosen labels should be Added, Removed, or Cleared on the batch.
+                Added/Removed only touch the labels you pick, leaving any other
+                labels those conversations carry alone; Cleared removes every
+                label a conversation has. Nothing here deletes, archives, or
+                moves conversations. Preview temporarily filters the
+                conversation list to the batch so you can look through it.
+                Preview is optional — Apply works on its own. Choosing "First"
+                under Limit and applying fewer than everything that qualifies
+                saves the rest as an Unfinished Label Run below, so you can
+                pick up where it left off.
               </p>
               <div class="bulk-form">
                 <div class="bulk-row">
@@ -884,14 +886,29 @@
                     aria-labelledby="bulk-keyword-label"
                   ></span>
                 </div>
+                <div class="bulk-row bulk-row-action">
+                  <span class="bulk-section-subtitle">
+                    What should happen to conversations with these criteria?
+                  </span>
+                </div>
                 <div class="bulk-row">
-                  <label for="bulk-order">Order</label>
-                  <select id="bulk-order">
-                    <option value="started_asc">Started: oldest first</option>
-                    <option value="started_desc">Started: newest first</option>
-                    <option value="updated_asc">Last Message: oldest first</option>
-                    <option value="updated_desc">Last Message: newest first</option>
+                  <label for="bulk-label-action">Labels should be</label>
+                  <select id="bulk-label-action">
+                    <option value="added">Added</option>
+                    <option value="removed">Removed</option>
+                    <option value="cleared">Cleared</option>
                   </select>
+                </div>
+                <div class="bulk-row bulk-chip-row" id="bulk-target-labels-row">
+                  <span id="bulk-target-labels-label" class="bulk-chip-row-label">
+                    Which labels it should apply to
+                  </span>
+                  <span
+                    id="bulk-target-labels-chips"
+                    class="bulk-chip-strip"
+                    role="group"
+                    aria-labelledby="bulk-target-labels-label"
+                  ></span>
                 </div>
                 <div class="bulk-row">
                   <label>Limit</label>
@@ -905,9 +922,14 @@
                   </label>
                   <input type="number" id="bulk-limit-n" min="1" value="50" disabled />
                 </div>
-                <div class="bulk-row bulk-row-action">
-                  <label for="bulk-target">Set label to</label>
-                  <select id="bulk-target"><option value="blank">Blank</option></select>
+                <div class="bulk-row">
+                  <label for="bulk-order">Order</label>
+                  <select id="bulk-order">
+                    <option value="started_asc">Started: oldest first</option>
+                    <option value="started_desc">Started: newest first</option>
+                    <option value="updated_asc">Last Message: oldest first</option>
+                    <option value="updated_desc">Last Message: newest first</option>
+                  </select>
                 </div>
                 <div class="bulk-buttons">
                   <button type="button" id="bulk-preview-btn">Preview</button>
