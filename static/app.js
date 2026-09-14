@@ -3813,6 +3813,8 @@ const bulkPreviewBtn = $("bulk-preview-btn");
 const bulkApplyBtn = $("bulk-apply-btn");
 const bulkHistoryList = $("bulk-history-list");
 const bulkRetentionInput = $("bulk-retention");
+const bulkRunsTableBody = $("bulk-runs-table-body");
+const bulkRunsErrorEl = $("bulk-runs-error");
 const snapshotNameInput = $("snapshot-name");
 const snapshotCreateBtn = $("snapshot-create-btn");
 const snapshotErrorEl = $("snapshot-error");
@@ -3842,6 +3844,7 @@ async function openLabels() {
   refreshLabelAddColor();
   await populateBulkForm();
   loadBulkHistory();
+  loadBulkRuns();
   loadSnapshots();
 }
 
@@ -4868,15 +4871,172 @@ function exitBulkPreview(opts = {}) {
   if (opts.reload !== false) loadConversations(false);
 }
 
-// Fill the label/target/folder/tag selects from current data, preserving any
-// selection that is still valid.
-// Rebuild only the label-derived selects (no network) — used when definitions
-// change while the screen is open.
+// ── Bulk-criteria chip rows (Current label / Folder / Tag / Keyword) ──────────
+// Each row reads "Label [chip ×] [chip ×] [+]" all on one line: multiple chips
+// in the same row are OR'd together (different rows still AND). Selecting a
+// value adds it as a chip immediately; the "+" then reappears to add another.
+// Labels/folders pick from a live dropdown; tags/keywords are free text.
+
+// { value, name } per selected chip. `value` is what the server understands
+// (a label/folder id, "blank"/"none", or the raw tag/keyword text); `name` is
+// what the chip displays.
+const bulkChipState = { labels: [], folders: [], tags: [], keywords: [] };
+
+function bulkChipOptions(kind) {
+  if (kind === "labels") {
+    return [{ value: "blank", label: "Blank" }].concat(
+      orderedLabels().map((l) => ({ value: l.id, label: labelPickName(l) })),
+    );
+  }
+  if (kind === "folders") {
+    return [{ value: "none", label: "No folder" }].concat(
+      (state.bulkFolderOptions || []).map((f) => ({ value: f.id, label: f.name })),
+    );
+  }
+  return [];
+}
+
+function renderBulkChipRow(kind) {
+  const container = $(`bulk-${kind}-chips`);
+  if (!container) return;
+  container.innerHTML = "";
+  for (const chip of bulkChipState[kind]) {
+    const el = document.createElement("span");
+    el.className = "tag-chip";
+    const name = document.createElement("span");
+    name.className = "tag-chip-name";
+    name.textContent = chip.name;
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "tag-chip-x";
+    x.title = `Remove ${chip.name}`;
+    x.setAttribute("aria-label", `Remove ${chip.name}`);
+    x.textContent = "✕";
+    x.addEventListener("click", () => removeBulkChip(kind, chip.value));
+    el.append(name, x);
+    container.appendChild(el);
+  }
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "tag-add-btn";
+  addBtn.title = `Add ${kind}`;
+  addBtn.setAttribute("aria-label", `Add ${kind}`);
+  addBtn.textContent = "+";
+  addBtn.addEventListener("click", () => showBulkChipPicker(kind, addBtn));
+  container.appendChild(addBtn);
+}
+
+function addBulkChip(kind, value, name) {
+  if (bulkChipState[kind].some((c) => c.value === value)) {
+    renderBulkChipRow(kind);
+    return;
+  }
+  bulkChipState[kind].push({ value, name });
+  renderBulkChipRow(kind);
+  invalidateBulkPreview();
+}
+
+function removeBulkChip(kind, value) {
+  bulkChipState[kind] = bulkChipState[kind].filter((c) => c.value !== value);
+  renderBulkChipRow(kind);
+  invalidateBulkPreview();
+}
+
+// "+" clicked: for Current label/Folder, swap it for a <select> of the
+// remaining options; for Tag/Keyword, swap it for a text input.
+function showBulkChipPicker(kind, addBtn) {
+  if (kind === "tags" || kind === "keywords") {
+    showBulkChipTextPicker(kind, addBtn);
+    return;
+  }
+  const used = new Set(bulkChipState[kind].map((c) => c.value));
+  const opts = bulkChipOptions(kind).filter((o) => !used.has(o.value));
+  const sel = document.createElement("select");
+  sel.className = "bulk-chip-picker";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Select…";
+  placeholder.disabled = true;
+  placeholder.selected = true;
+  sel.appendChild(placeholder);
+  for (const o of opts) {
+    const opt = document.createElement("option");
+    opt.value = o.value;
+    opt.textContent = o.label;
+    sel.appendChild(opt);
+  }
+  addBtn.replaceWith(sel);
+  sel.focus();
+  if (typeof sel.showPicker === "function") {
+    try { sel.showPicker(); } catch (_) {}
+  }
+  let settled = false;
+  sel.addEventListener("change", () => {
+    if (!sel.value) return;
+    settled = true;
+    const chosen = opts.find((o) => o.value === sel.value);
+    addBulkChip(kind, sel.value, chosen ? chosen.label : sel.value);
+  });
+  sel.addEventListener("blur", () => {
+    if (settled) return;
+    renderBulkChipRow(kind);
+  });
+}
+
+async function showBulkChipTextPicker(kind, addBtn) {
+  const form = document.createElement("form");
+  form.className = "tag-add-form";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "tag-add-input";
+  input.spellcheck = false;
+  input.placeholder = kind === "tags" ? "Tag name" : "Keyword";
+  if (kind === "tags") {
+    input.setAttribute("list", "bulk-tag-suggestions");
+    if (!$("bulk-tag-suggestions")) {
+      const datalist = document.createElement("datalist");
+      datalist.id = "bulk-tag-suggestions";
+      document.body.appendChild(datalist);
+    }
+    const datalist = $("bulk-tag-suggestions");
+    datalist.innerHTML = "";
+    const used = new Set(bulkChipState.tags.map((c) => c.value));
+    for (const t of state.bulkTagOptions || []) {
+      if (used.has(t)) continue;
+      const opt = document.createElement("option");
+      opt.value = t;
+      datalist.appendChild(opt);
+    }
+  }
+  form.appendChild(input);
+  addBtn.replaceWith(form);
+  input.focus();
+
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    const val = input.value.trim();
+    if (val) addBulkChip(kind, val, val);
+    else renderBulkChipRow(kind);
+  };
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    finish();
+  });
+  input.addEventListener("blur", finish);
+}
+
+// Fill the target select from current data, preserving any selection that is
+// still valid. Also drops/refreshes "Current label" chips against live label
+// defs (a deleted label can no longer filter anything; a renamed one shows
+// its new name). Rebuild only — no network — used when definitions change
+// while the screen is open.
 function refreshBulkLabelSelects() {
-  const fillLabels = (sel, first) => {
-    if (!sel) return;
+  const sel = $("bulk-target");
+  if (sel) {
     const cur = sel.value;
-    sel.innerHTML = first;
+    sel.innerHTML = '<option value="blank">Blank</option>';
     for (const l of orderedLabels()) {
       const o = document.createElement("option");
       o.value = l.id;
@@ -4885,50 +5045,42 @@ function refreshBulkLabelSelects() {
       sel.appendChild(o);
     }
     if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
-  };
-  fillLabels($("bulk-label"), '<option value="any">Any</option><option value="blank">Blank</option>');
-  fillLabels($("bulk-target"), '<option value="blank">Blank</option>');
+  }
+
+  const byId = new Map(orderedLabels().map((l) => [l.id, l]));
+  bulkChipState.labels = bulkChipState.labels
+    .filter((c) => c.value === "blank" || byId.has(c.value))
+    .map((c) =>
+      c.value === "blank" ? c : { value: c.value, name: labelPickName(byId.get(c.value)) },
+    );
+  renderBulkChipRow("labels");
 }
 
 async function populateBulkForm() {
   refreshBulkLabelSelects();
 
-  const folderSel = $("bulk-folder");
-  if (folderSel) {
-    let folders = [];
-    try {
-      const d = await (await fetch("/api/folders")).json();
-      folders = d.folders || [];
-    } catch (_) {}
-    const cur = folderSel.value;
-    folderSel.innerHTML =
-      '<option value="any">Any</option><option value="none">No folder</option>';
-    for (const f of folders) {
-      const o = document.createElement("option");
-      o.value = f.id;
-      o.textContent = f.name;
-      folderSel.appendChild(o);
-    }
-    if ([...folderSel.options].some((o) => o.value === cur)) folderSel.value = cur;
-  }
+  let folders = [];
+  try {
+    const d = await (await fetch("/api/folders")).json();
+    folders = d.folders || [];
+  } catch (_) {}
+  state.bulkFolderOptions = folders;
+  const folderById = new Map(folders.map((f) => [f.id, f]));
+  bulkChipState.folders = bulkChipState.folders
+    .filter((c) => c.value === "none" || folderById.has(c.value))
+    .map((c) =>
+      c.value === "none" ? c : { value: c.value, name: folderById.get(c.value).name },
+    );
+  renderBulkChipRow("folders");
 
-  const tagSel = $("bulk-tag");
-  if (tagSel) {
-    let tags = [];
-    try {
-      const d = await (await fetch("/api/tags")).json();
-      tags = d.tags || [];
-    } catch (_) {}
-    const cur = tagSel.value;
-    tagSel.innerHTML = '<option value="">Any</option>';
-    for (const t of tags) {
-      const o = document.createElement("option");
-      o.value = t;
-      o.textContent = t;
-      tagSel.appendChild(o);
-    }
-    if ([...tagSel.options].some((o) => o.value === cur)) tagSel.value = cur;
-  }
+  let tags = [];
+  try {
+    const d = await (await fetch("/api/tags")).json();
+    tags = d.tags || [];
+  } catch (_) {}
+  state.bulkTagOptions = tags;
+  renderBulkChipRow("tags");
+  renderBulkChipRow("keywords");
 }
 
 // Show/hide the date input(s) for one date criterion based on its operator.
@@ -4960,10 +5112,10 @@ function readBulkCriteria() {
     provider: $("bulk-provider")?.value || "all",
     started: dateSpec("bulk-started"),
     ended: dateSpec("bulk-ended"),
-    label: $("bulk-label")?.value || "any",
-    folder: $("bulk-folder")?.value || "any",
-    tag: $("bulk-tag")?.value || "",
-    keyword: ($("bulk-keyword")?.value || "").trim(),
+    labels: bulkChipState.labels.map((c) => c.value),
+    folders: bulkChipState.folders.map((c) => c.value),
+    tags: bulkChipState.tags.map((c) => c.value),
+    keywords: bulkChipState.keywords.map((c) => c.value),
     order: $("bulk-order")?.value || "started_asc",
     limit:
       limitMode === "first"
@@ -4976,7 +5128,7 @@ function readBulkCriteria() {
 function validateBulkCriteria(crit) {
   for (const [spec, name] of [
     [crit.started, "Started"],
-    [crit.ended, "Last updated"],
+    [crit.ended, "Last Message"],
   ]) {
     if ((spec.op === "before" || spec.op === "after") && !spec.date)
       return `${name}: choose a date.`;
@@ -5025,10 +5177,13 @@ async function bulkPreview() {
   const notAlready = data.target_blank
     ? `<strong>${data.not_already.toLocaleString()}</strong> are not already blank.`
     : `<strong>${data.not_already.toLocaleString()}</strong> are not already set to “${escHtml(target)}”.`;
-  // "the first N" only when a first-N limit actually caps the changeable set.
-  const capped = data.limit_n != null && data.will_change < data.not_already;
+  // "the first N" only when a first-N limit actually caps the eligible set —
+  // First N takes the next N of everything eligible, in order, regardless of
+  // whether some of them already carry the target.
+  const capped = data.limit_n != null && data.will_change < data.eligible;
   const willChange = capped
-    ? `This operation will change the first <strong>${data.will_change.toLocaleString()}</strong>.`
+    ? `This operation will change the first <strong>${data.will_change.toLocaleString()}</strong> ` +
+      `(the rest will be saved as an Unfinished Label Run to continue later).`
     : `This operation will change <strong>${data.will_change.toLocaleString()}</strong>.`;
   bulkResultEl.innerHTML =
     `<div>${data.eligible.toLocaleString()} conversation${data.eligible === 1 ? "" : "s"} match these conditions.</div>` +
@@ -5059,11 +5214,18 @@ async function bulkApply() {
     return;
   }
   const target = bulkTargetName(data);
+  // A "First N" that won't cover everything eligible will be saved as an
+  // Unfinished Label Run instead of completing outright — say so up front.
+  const partial = data.limit_n != null && data.will_change < data.eligible;
   const ok = await openConfirm({
     title: "Apply label to batch?",
     text:
       `Set label to “${target}” on ${data.will_change.toLocaleString()} conversation` +
       `${data.will_change === 1 ? "" : "s"} (${data.eligible.toLocaleString()} matched). ` +
+      (partial
+        ? "The remaining conversations will be saved as an Unfinished Label Run " +
+          "you can continue later. "
+        : "") +
       "This is not undoable — make a Safety Snapshot first if you want a recovery point.",
     okLabel: "Apply label",
   });
@@ -5082,8 +5244,11 @@ async function bulkApply() {
   _bulkPreviewed = null;
   exitBulkPreview({ reload: false });
   bulkResultEl.innerHTML =
-    `Applied: <strong>${res.changed.toLocaleString()}</strong> changed ` +
-    `(${res.eligible.toLocaleString()} matched).`;
+    res.run_complete === false
+      ? `Saved as an Unfinished Label Run: <strong>${res.changed.toLocaleString()}</strong> of ` +
+        `${res.eligible.toLocaleString()} completed so far. Continue it below.`
+      : `Applied: <strong>${res.changed.toLocaleString()}</strong> changed ` +
+        `(${res.eligible.toLocaleString()} matched).`;
   bulkResultEl.hidden = false;
   // Refresh label counts, sidebar squares, the filter, and the history list.
   await loadLabelDefs();
@@ -5092,6 +5257,7 @@ async function bulkApply() {
   // The open conversation may have been in the batch — re-read its assignment.
   refreshActiveHeaderLabel();
   loadBulkHistory();
+  loadBulkRuns();
 }
 
 async function loadBulkHistory() {
@@ -5167,6 +5333,141 @@ async function saveBulkRetention() {
   } catch (_) {}
 }
 
+// ── Unfinished Label Runs (Labels screen · section C2) ─────────────────────
+// A saved bulk-label run whose "First N" limit didn't cover every qualifying
+// conversation. The criteria and the qualifying set are frozen at creation;
+// Continue only ever advances into that same frozen, ordered list — it never
+// re-evaluates the criteria or looks at conversations' current labels. The
+// only thing the user can change here is how many to process next.
+
+function showBulkRunsError(msg) {
+  if (!bulkRunsErrorEl) return;
+  bulkRunsErrorEl.textContent = msg || "";
+  bulkRunsErrorEl.hidden = !msg;
+}
+
+async function loadBulkRuns() {
+  if (!bulkRunsTableBody) return;
+  let runs = [];
+  try {
+    const d = await apiModelState("/api/labels/bulk-runs");
+    runs = d.runs || [];
+  } catch (_) {}
+  bulkRunsTableBody.innerHTML = "";
+  if (!runs.length) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = '<td colspan="5" class="no-results">No unfinished runs.</td>';
+    bulkRunsTableBody.appendChild(tr);
+    return;
+  }
+  for (const run of runs) {
+    bulkRunsTableBody.appendChild(renderBulkRunRow(run));
+  }
+}
+
+function renderBulkRunRow(run) {
+  const tr = document.createElement("tr");
+
+  const crit = document.createElement("td");
+  const lines = (run.criteria_lines || [])
+    .map(([label, value]) => `${label}: ${value}`);
+  lines.push(`Set label to: ${bulkHistoryTargetName(run)}`);
+  const pre = document.createElement("p");
+  pre.className = "bulk-run-criteria";
+  pre.textContent = lines.join("\n");
+  crit.appendChild(pre);
+
+  const total = document.createElement("td");
+  total.className = "bulk-run-count";
+  total.textContent = (run.total_qualifying ?? 0).toLocaleString();
+
+  const completed = document.createElement("td");
+  completed.className = "bulk-run-count";
+  const completedN = run.completed_count ?? 0;
+  completed.textContent =
+    completedN > 0 ? `1-${completedN.toLocaleString()}` : "0";
+
+  const batch = document.createElement("td");
+  const batchInput = document.createElement("input");
+  batchInput.type = "number";
+  batchInput.className = "bulk-run-batch-input";
+  batchInput.min = "1";
+  batchInput.value = run.batch_size || 1;
+  batch.appendChild(batchInput);
+
+  const actions = document.createElement("td");
+  actions.className = "snapshot-actions";
+  const continueBtn = document.createElement("button");
+  continueBtn.type = "button";
+  continueBtn.className = "snapshot-btn";
+  continueBtn.textContent = "Continue";
+  continueBtn.addEventListener("click", () =>
+    continueBulkRun(run.id, batchInput, continueBtn),
+  );
+  const delBtn = document.createElement("button");
+  delBtn.type = "button";
+  delBtn.className = "snapshot-btn snapshot-btn-danger";
+  delBtn.textContent = "Delete";
+  delBtn.addEventListener("click", () => deleteBulkRun(run));
+  actions.append(continueBtn, delBtn);
+
+  tr.append(crit, total, completed, batch, actions);
+  return tr;
+}
+
+async function continueBulkRun(runId, batchInput, continueBtn) {
+  showBulkRunsError("");
+  const n = Math.max(1, parseInt(batchInput.value, 10) || 1);
+  continueBtn.disabled = true;
+  try {
+    const res = await apiModelState("/api/labels/bulk-runs/continue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: runId, batch_size: n }),
+    });
+    if (res.complete) {
+      // Refresh label counts, sidebar squares, the filter, and the history list.
+      await loadLabelDefs();
+      renderLabelList();
+      onLabelDefsChanged();
+      refreshActiveHeaderLabel();
+      loadBulkHistory();
+    } else {
+      // Same refreshes, minus the history entry that only exists once the
+      // whole run finishes.
+      await loadLabelDefs();
+      renderLabelList();
+      onLabelDefsChanged();
+      refreshActiveHeaderLabel();
+    }
+    loadBulkRuns();
+  } catch (e) {
+    showBulkRunsError(e.message);
+  } finally {
+    continueBtn.disabled = false;
+  }
+}
+
+async function deleteBulkRun(run) {
+  const ok = await openConfirm({
+    title: "Delete unfinished run?",
+    text:
+      "Delete this saved run and its progress. Conversations it already " +
+      "processed keep whatever label they were set to — nothing is undone.",
+    okLabel: "Delete run",
+  });
+  if (!ok) return;
+  try {
+    await apiModelState(`/api/labels/bulk-runs/${encodeURIComponent(run.id)}`, {
+      method: "DELETE",
+    });
+  } catch (e) {
+    showBulkRunsError(e.message);
+    return;
+  }
+  loadBulkRuns();
+}
+
 // Load a past operation's criteria back into the form. Ids that no longer exist
 // (a deleted label/folder) fall back to Any/Blank rather than an empty select.
 function reuseBulkCriteria(crit) {
@@ -5186,10 +5487,37 @@ function reuseBulkCriteria(crit) {
   };
   applyDate("bulk-started", crit.started);
   applyDate("bulk-ended", crit.ended);
-  setSel("bulk-label", crit.label || "any", "any");
-  setSel("bulk-folder", crit.folder || "any", "any");
-  setSel("bulk-tag", crit.tag || "", "");
-  if ($("bulk-keyword")) $("bulk-keyword").value = crit.keyword || "";
+
+  // Accept both the current array-of-chips fields and the older single-value
+  // fields a Recent-Bulk-Changes row from before chips existed still carries.
+  const toValues = (arrField, scalarField, emptyVal) => {
+    if (Array.isArray(crit[arrField])) return crit[arrField].slice();
+    const v = crit[scalarField];
+    return v === undefined || v === null || v === emptyVal || v === "" ? [] : [v];
+  };
+
+  const byId = new Map(orderedLabels().map((l) => [l.id, l]));
+  bulkChipState.labels = toValues("labels", "label", "any")
+    .filter((v) => v === "blank" || byId.has(v))
+    .map((v) => (v === "blank" ? { value: "blank", name: "Blank" } : { value: v, name: labelPickName(byId.get(v)) }));
+  renderBulkChipRow("labels");
+
+  const folderById = new Map((state.bulkFolderOptions || []).map((f) => [f.id, f]));
+  bulkChipState.folders = toValues("folders", "folder", "any")
+    .filter((v) => v === "none" || folderById.has(v))
+    .map((v) => (v === "none" ? { value: "none", name: "No folder" } : { value: v, name: folderById.get(v).name }));
+  renderBulkChipRow("folders");
+
+  bulkChipState.tags = toValues("tags", "tag", "")
+    .filter(Boolean)
+    .map((v) => ({ value: v, name: v }));
+  renderBulkChipRow("tags");
+
+  bulkChipState.keywords = toValues("keywords", "keyword", "")
+    .filter(Boolean)
+    .map((v) => ({ value: v, name: v }));
+  renderBulkChipRow("keywords");
+
   setSel("bulk-order", crit.order || "started_asc", "started_asc");
   const lim = crit.limit || { mode: "all" };
   const mode = lim.mode === "first" ? "first" : "all";

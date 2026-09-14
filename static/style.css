@@ -3819,6 +3819,30 @@ kbd {
   color: var(--muted);
   font-size: 0.85rem;
 }
+/* Current label / Folder / Tag / Keyword: a label, then one row of chips —
+   one per selected value — ending in a "+" that reveals the control to add
+   another. Reuses the same .tag-chip/.tag-add-btn pieces as the per-thread
+   tag editor so the two stay visually identical. */
+.bulk-chip-row-label {
+  min-width: 110px;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.bulk-chip-strip {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.bulk-chip-picker {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  padding: 2px 6px;
+}
 .bulk-inline {
   display: inline-flex;
   align-items: center;
@@ -3997,13 +4021,15 @@ kbd {
 .snapshot-ok {
   color: var(--accent) !important;
 }
-#snapshot-table {
+#snapshot-table,
+#bulk-runs-table {
   width: 100%;
   margin-top: 10px;
   border-collapse: collapse;
   font-size: 0.85rem;
 }
-#snapshot-table th {
+#snapshot-table th,
+#bulk-runs-table th {
   text-align: left;
   font-size: 0.75rem;
   font-weight: 600;
@@ -4011,10 +4037,33 @@ kbd {
   padding: 6px 8px;
   border-bottom: 1px solid var(--border);
 }
-#snapshot-table td {
+#snapshot-table td,
+#bulk-runs-table td {
   padding: 8px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
+}
+/* ── Unfinished Label Runs ────────────────────────────────────────────────── */
+.bulk-run-criteria {
+  margin: 0;
+  color: var(--muted);
+  white-space: pre-line;
+}
+.bulk-run-count {
+  white-space: nowrap;
+}
+.bulk-run-batch-input {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 7px;
+  width: 84px;
+}
+.bulk-run-batch-input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 .snapshot-name-cell {
   font-weight: 600;
