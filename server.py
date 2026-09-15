@@ -420,6 +420,32 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 changed_count     INTEGER
             );
 
+            -- A saved, partially-processed conditional bulk-label operation.
+            -- Created when an Apply's "First N" limit leaves some of the
+            -- qualifying conversations unprocessed. The qualifying set and its
+            -- order are frozen at creation (ids_json) so later Continues never
+            -- re-run the criteria against current data — they only slice
+            -- further into this same frozen list and advance completed_count.
+            -- Deleted once the whole list has been processed (a Recent Bulk
+            -- Changes row is written at that point) or if the user deletes it.
+            CREATE TABLE IF NOT EXISTS label_bulk_runs (
+                id                  TEXT PRIMARY KEY,
+                created_at          REAL,
+                criteria_json       TEXT,
+                -- Read-only "Criteria:" lines shown in Unfinished Label Runs,
+                -- frozen at creation like label_bulk_history.description.
+                criteria_lines_json TEXT,
+                order_desc          TEXT,
+                target_label_id     TEXT,
+                target_label_name   TEXT,
+                total_qualifying    INTEGER,
+                completed_count     INTEGER,
+                batch_size          INTEGER,
+                -- The full ordered set of qualifying conversation ids, frozen
+                -- at creation time.
+                ids_json            TEXT
+            );
+
             -- Manual safety snapshots of user-owned metadata (never message
             -- content or imported source text). Capped at 10 rows; creation is
             -- blocked at the cap until the user deletes one (nothing is ever
@@ -451,6 +477,15 @@ def _ensure_userdata_schema(db_path: Path) -> None:
             conn.execute("ALTER TABLE snapshots ADD COLUMN summary TEXT")
         except sqlite3.Error:
             pass
+        # Bulk-label rows recorded before "Set label to" became Added/Removed/
+        # Cleared carry the action in target_label_id/target_label_name
+        # instead; label_action/action_summary just come back NULL for those.
+        for tbl in ("label_bulk_history", "label_bulk_runs"):
+            for col in ("label_action TEXT", "action_summary TEXT"):
+                try:
+                    conn.execute(f"ALTER TABLE {tbl} ADD COLUMN {col}")
+                except sqlite3.Error:
+                    pass
         # Databases built before conversations could carry several labels have
         # conversation_labels keyed on conversation_id alone. Rebuild the table
         # with the (conversation_id, label_id) key, carrying every existing
@@ -1202,6 +1237,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_bulk_apply()
         elif path == "/api/labels/bulk-history/retention":
             self._api_bulk_retention_set()
+        elif path == "/api/labels/bulk-runs/continue":
+            self._api_bulk_run_continue()
         elif path == "/api/snapshots":
             self._api_snapshot_create()
         elif path.startswith("/api/snapshots/") and path.endswith("/restore"):
@@ -1259,6 +1296,8 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) != 2:
                 self.send_error(404); return
             self._api_tag_remove(parts[0], parts[1])
+        elif path.startswith("/api/labels/bulk-runs/"):
+            self._api_bulk_run_delete(urllib.parse.unquote(path[len("/api/labels/bulk-runs/"):]))
         elif path.startswith("/api/labels/"):
             self._api_label_delete(urllib.parse.unquote(path[len("/api/labels/"):]))
         elif path.startswith("/api/snapshots/"):
@@ -1395,6 +1434,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_labels_list()
         elif path == "/api/labels/bulk-history":
             self._api_bulk_history()
+        elif path == "/api/labels/bulk-runs":
+            self._api_bulk_run_list()
         elif path == "/api/snapshots":
             self._api_snapshot_list()
         elif path == "/api/version":
@@ -3341,18 +3382,13 @@ class Handler(BaseHTTPRequestHandler):
                 where.append(f"({col} > 0 AND {col} >= ? AND {col} < ?)")
                 params += [start, end]
 
-    def _build_bulk_query(self, crit, use_fts=True, noop_target="__none__"):
-        """Turn a criteria dict into (where_sql, params, order_sql, limit_n).
-        Every criterion is optional; populated ones are ANDed together.
-
-        `noop_target` adds the skip-no-op condition so the limit applies only to
-        conversations the operation would actually change:
-          • "__none__"  — no condition (count of everything matching).
-          • a label id  — exclude conversations already carrying that label.
-          • None (Blank) — keep only conversations that currently carry a label
-                           (clearing to blank is a no-op on already-blank ones).
-        Applying the limit after this exclusion is what makes a repeated rule
-        pick up the *next* batch instead of rewriting the same rows."""
+    def _build_bulk_query(self, crit, use_fts=True):
+        """Turn a criteria dict into (where_sql, params, order_sql, limit_n)
+        for the full eligible set — every criterion is optional; populated
+        ones are ANDed together. Never excludes rows the action would treat as
+        a no-op; callers that need that (an "All matching" apply, so the limit
+        applies only to conversations the write would actually change) AND in
+        a clause from _bulk_noop_clause themselves."""
         where = ["COALESCE(cm.deleted, 0) = 0"]
         params = []
 
@@ -3363,69 +3399,75 @@ class Handler(BaseHTTPRequestHandler):
         self._bulk_date_clause(where, params, "c.create_time", crit.get("started"))
         self._bulk_date_clause(where, params, "c.update_time", crit.get("ended"))
 
-        label = str(crit.get("label") or "any")
-        if label == "blank":
-            where.append("c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels)")
-        elif label != "any":
-            if re.fullmatch(r"[0-9a-f]{32}", label):
-                where.append("c.id IN (SELECT conversation_id FROM udb.conversation_labels "
-                             "WHERE label_id = ?)"); params.append(label)
-            else:
-                where.append("0")
+        # Labels/folders/tags/keywords are each a list of chip values, OR'd
+        # together within the field (any chip matches); an empty list means no
+        # filter on that field ("Any"). Fields are still ANDed with each other.
+        labels = crit.get("labels")
+        labels = labels if isinstance(labels, list) else []
+        if labels:
+            ors = []
+            for lab in labels:
+                lab = str(lab)
+                if lab == "blank":
+                    ors.append("c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels)")
+                elif re.fullmatch(r"[0-9a-f]{32}", lab):
+                    ors.append("c.id IN (SELECT conversation_id FROM udb.conversation_labels "
+                               "WHERE label_id = ?)"); params.append(lab)
+                else:
+                    ors.append("0")
+            where.append("(" + " OR ".join(ors) + ")")
 
-        folder = str(crit.get("folder") or "any")
-        if folder == "none":
-            where.append("c.id NOT IN (SELECT conversation_id FROM udb.folder_items)")
-        elif folder != "any":
-            if re.fullmatch(r"[0-9a-f]{32}", folder):
-                where.append("c.id IN (SELECT conversation_id FROM udb.folder_items "
-                             "WHERE folder_id = ?)"); params.append(folder)
-            else:
-                where.append("0")
+        folders = crit.get("folders")
+        folders = folders if isinstance(folders, list) else []
+        if folders:
+            ors = []
+            for fol in folders:
+                fol = str(fol)
+                if fol == "none":
+                    ors.append("c.id NOT IN (SELECT conversation_id FROM udb.folder_items)")
+                elif re.fullmatch(r"[0-9a-f]{32}", fol):
+                    ors.append("c.id IN (SELECT conversation_id FROM udb.folder_items "
+                               "WHERE folder_id = ?)"); params.append(fol)
+                else:
+                    ors.append("0")
+            where.append("(" + " OR ".join(ors) + ")")
 
-        tag = str(crit.get("tag") or "").strip()
-        if tag:
+        tags = crit.get("tags")
+        tags = [str(t).strip() for t in tags if str(t).strip()] if isinstance(tags, list) else []
+        if tags:
+            marks = ",".join("?" * len(tags))
             where.append("c.id IN (SELECT conversation_id FROM udb.conversation_tags "
-                         "WHERE tag = ?)"); params.append(tag)
+                         f"WHERE tag IN ({marks}))")
+            params += tags
 
         # Keyword reuses the same FTS-then-LIKE behaviour as the main search so
         # there is only one search implementation. len<3 or an FTS parse error
-        # falls back to a title/tag LIKE (see _bulk_run's retry).
-        q = str(crit.get("keyword") or "").strip()
-        if q:
-            like = f"%{q}%"
-            if use_fts and len(q) >= 3:
-                where.append(
-                    "c.id IN ("
-                    "SELECT conversation_id FROM search_index WHERE search_index MATCH ? "
-                    "UNION SELECT c2.id FROM conversations c2 "
-                    "  LEFT JOIN conversation_meta cm2 ON cm2.conversation_id = c2.id "
-                    "  WHERE COALESCE(cm2.deleted,0)=0 "
-                    "    AND COALESCE(NULLIF(cm2.custom_title,''), c2.title) LIKE ? "
-                    "UNION SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?)"
-                )
-                params += [q, like, like]
-            else:
-                where.append(
-                    "(COALESCE(NULLIF(cm.custom_title,''), c.title) LIKE ? "
-                    "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?))"
-                )
-                params += [like, like]
-
-        # Skip-no-op: narrow to rows the target would actually change.
-        if noop_target != "__none__":
-            if noop_target is None:
-                where.append(
-                    "c.id IN (SELECT conversation_id FROM udb.conversation_labels)"
-                )
-            else:
-                # Set-Label-To replaces the whole set, so the only no-op is a
-                # conversation already carrying exactly this one label.
-                where.append(
-                    "c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels "
-                    "GROUP BY conversation_id HAVING COUNT(*) = 1 AND MAX(label_id) = ?)"
-                )
-                params.append(noop_target)
+        # falls back to a title/tag LIKE (see _bulk_run's retry). Multiple
+        # keyword chips are OR'd together.
+        keywords = crit.get("keywords")
+        keywords = [str(k).strip() for k in keywords if str(k).strip()] if isinstance(keywords, list) else []
+        if keywords:
+            ors = []
+            for q in keywords:
+                like = f"%{q}%"
+                if use_fts and len(q) >= 3:
+                    ors.append(
+                        "c.id IN ("
+                        "SELECT conversation_id FROM search_index WHERE search_index MATCH ? "
+                        "UNION SELECT c2.id FROM conversations c2 "
+                        "  LEFT JOIN conversation_meta cm2 ON cm2.conversation_id = c2.id "
+                        "  WHERE COALESCE(cm2.deleted,0)=0 "
+                        "    AND COALESCE(NULLIF(cm2.custom_title,''), c2.title) LIKE ? "
+                        "UNION SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?)"
+                    )
+                    params += [q, like, like]
+                else:
+                    ors.append(
+                        "(COALESCE(NULLIF(cm.custom_title,''), c.title) LIKE ? "
+                        "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?))"
+                    )
+                    params += [like, like]
+            where.append("(" + " OR ".join(ors) + ")")
 
         col, direction = {
             "started_asc":  ("c.create_time", "ASC"),
@@ -3447,34 +3489,115 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         return " AND ".join(where), params, order_sql, limit_n
 
-    def _bulk_select(self, conn, crit, target_label_id):
-        """Resolve the criteria against the target into:
-          eligible    — conversations matching the conditions (ignores target),
-          not_already  — of those, how many aren't already at the target,
-          batch_ids    — the first-N (or all) of `not_already`, in order,
+    def _bulk_action_targets(self, conn, crit):
+        """Resolve the criteria's action into (action, mode, ids_names):
+          action    — "added", "removed", or "cleared".
+          mode      — "all" (every current label def) or "specific".
+          ids_names — [(label_id, name), ...] the action actually touches;
+                      empty for "cleared" (it never targets specific labels).
+        Unknown/deleted label ids in label_targets are silently dropped rather
+        than failing — a saved Unfinished Label Run must keep working even if
+        a label it names is later renamed or deleted; the caller decides
+        whether an empty result is worth rejecting (only relevant when the
+        run/apply is first created, from live, user-picked ids)."""
+        action = str(crit.get("label_action") or "added").lower()
+        if action not in ("added", "removed", "cleared"):
+            action = "added"
+        if action == "cleared":
+            return action, "all", []
+        raw = crit.get("label_targets")
+        raw = raw if isinstance(raw, list) else []
+        if "all" in [str(t) for t in raw]:
+            rows = conn.execute("SELECT id, name FROM udb.labels").fetchall()
+            return action, "all", [(r["id"], r["name"]) for r in rows]
+        ids_names = []
+        for t in raw:
+            t = str(t)
+            if not re.fullmatch(r"[0-9a-f]{32}", t):
+                continue
+            row = conn.execute("SELECT name FROM udb.labels WHERE id = ?", (t,)).fetchone()
+            if row:
+                ids_names.append((t, row["name"]))
+        return action, "specific", ids_names
+
+    def _bulk_noop_clause(self, action, ids_names):
+        """(sql, params) that is true for a conversation the action would NOT
+        change — already in the target state — or None if there's nothing to
+        exclude (an Added/Removed with no resolved target labels can never
+        change anything, so every eligible row would be a no-op; callers treat
+        that as "nothing to skip" and just get zero out of the not-already
+        count naturally). Never has a leading AND — callers wrap it."""
+        ids = [i for i, _ in ids_names]
+        if action == "cleared":
+            return "c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels)", []
+        if not ids:
+            return None
+        marks = ",".join("?" * len(ids))
+        if action == "added":
+            # No-op: the conversation already carries every one of these.
+            return (
+                f"(SELECT COUNT(DISTINCT label_id) FROM udb.conversation_labels "
+                f"WHERE conversation_id = c.id AND label_id IN ({marks})) = {len(ids)}",
+                list(ids),
+            )
+        # action == "removed": no-op if the conversation carries none of these.
+        return (
+            f"c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels "
+            f"WHERE label_id IN ({marks}))",
+            list(ids),
+        )
+
+    @staticmethod
+    def _bulk_action_summary(action, mode, ids_names):
+        """Frozen, human-readable "Labels should be" line — e.g. "Added:
+        Housing, Research", "Removed: All", "Cleared"."""
+        word = {"added": "Added", "removed": "Removed", "cleared": "Cleared"}[action]
+        if action == "cleared":
+            return word
+        if mode == "all":
+            return f"{word}: All"
+        names = [n for _, n in ids_names]
+        return f"{word}: {', '.join(names)}" if names else f"{word}: (none)"
+
+    def _bulk_select(self, conn, crit, action_spec):
+        """Resolve the criteria against the action into:
+          eligible    — conversations matching the conditions (action ignored),
+          not_already  — of those, how many the action would actually change,
+          batch_ids    — the rows Apply will actually write, in order,
           limit_n      — the first-N limit, or None for "all".
-        These are exactly the rows Apply will change. Retries once without FTS if
-        the keyword makes SQLite's MATCH raise."""
+        A "First N" limit is a run-style batch: it takes the first N of the
+        full eligible set unconditionally, the same rows Continue would take
+        next, rather than skipping ones already in the target state — so
+        Preview matches what Apply/Continue actually do. "All matching" keeps
+        the old not-already-skip behaviour, since it always finishes in one
+        shot and skipping no-ops there is a pure efficiency win with no
+        behaviour difference for the caller. Retries once without FTS if the
+        keyword makes SQLite's MATCH raise."""
+        action, _mode, ids_names = action_spec
+        noop = self._bulk_noop_clause(action, ids_names)
         FROM = ("FROM conversations c "
                 "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id WHERE ")
         last_err = None
         for use_fts in (True, False):
             try:
-                # Everything matching the conditions (no target exclusion).
-                w0, p0, _order0, _lim0 = self._build_bulk_query(crit, use_fts)
+                # Everything matching the conditions (action ignored).
+                w0, p0, order_sql, limit_n = self._build_bulk_query(crit, use_fts)
                 eligible = conn.execute("SELECT COUNT(*) " + FROM + w0, p0).fetchone()[0]
-                # Matching AND not already at the target — the changeable set.
-                w1, p1, order_sql, limit_n = self._build_bulk_query(
-                    crit, use_fts, noop_target=target_label_id
-                )
+                # Matching AND the action would actually change it.
+                if noop:
+                    noop_sql, noop_params = noop
+                    w1, p1 = w0 + f" AND NOT ({noop_sql})", p0 + noop_params
+                else:
+                    w1, p1 = w0, p0
                 not_already = conn.execute(
                     "SELECT COUNT(*) " + FROM + w1, p1
                 ).fetchone()[0]
-                sql = "SELECT c.id " + FROM + w1 + " " + order_sql
-                p2 = list(p1)
                 if limit_n is not None:
-                    sql += " LIMIT ?"; p2.append(limit_n)
-                batch_ids = [r[0] for r in conn.execute(sql, p2).fetchall()]
+                    sql = "SELECT c.id " + FROM + w0 + " " + order_sql + " LIMIT ?"
+                    batch_ids = [r[0] for r in conn.execute(sql, (*p0, limit_n)).fetchall()]
+                else:
+                    sql = "SELECT c.id " + FROM + w1 + " " + order_sql
+                    batch_ids = [r[0] for r in conn.execute(sql, p1).fetchall()]
                 return {
                     "eligible": eligible, "not_already": not_already,
                     "batch_ids": batch_ids, "limit_n": limit_n,
@@ -3486,7 +3609,27 @@ class Handler(BaseHTTPRequestHandler):
                 raise
         raise last_err
 
-    def _bulk_page(self, conn, crit, target_label_id, offset, limit):
+    def _bulk_eligible_ids(self, conn, crit):
+        """The full ordered set of conversations matching the criteria, target
+        ignored — the frozen list an Unfinished Label Run is built from and
+        sliced against on every Continue. Retries once without FTS, like the
+        other bulk helpers, if the keyword makes SQLite's MATCH raise."""
+        FROM = ("FROM conversations c "
+                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id WHERE ")
+        last_err = None
+        for use_fts in (True, False):
+            try:
+                where, params, order_sql, _limit_n = self._build_bulk_query(crit, use_fts)
+                sql = "SELECT c.id " + FROM + where + " " + order_sql
+                return [r[0] for r in conn.execute(sql, params).fetchall()]
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if use_fts:
+                    continue
+                raise
+        raise last_err
+
+    def _bulk_page(self, conn, crit, action_spec, offset, limit):
         """One page of the batch, resolved entirely in SQL.
 
         _bulk_select materializes every id because Apply needs them all. A
@@ -3495,14 +3638,22 @@ class Handler(BaseHTTPRequestHandler):
         re-materialize the whole history. Returns (rows, total), where total is
         the size of the batch the run would change. Retries once without FTS,
         like _bulk_select, if the keyword makes SQLite's MATCH raise."""
+        action, _mode, ids_names = action_spec
+        # A "First N" limit is a run-style batch: the page is the first N of
+        # the full eligible set (matches _bulk_select), not the
+        # would-actually-change set. "All matching" keeps the old
+        # not-already-skip behaviour.
+        noop = None if (crit.get("limit") or {}).get("mode") == "first" \
+            else self._bulk_noop_clause(action, ids_names)
         FROM = ("FROM conversations c "
                 "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id WHERE ")
         last_err = None
         for use_fts in (True, False):
             try:
-                where, params, order_sql, limit_n = self._build_bulk_query(
-                    crit, use_fts, noop_target=target_label_id
-                )
+                where, params, order_sql, limit_n = self._build_bulk_query(crit, use_fts)
+                if noop:
+                    noop_sql, noop_params = noop
+                    where, params = where + f" AND NOT ({noop_sql})", params + noop_params
                 total = conn.execute(
                     "SELECT COUNT(*) " + FROM + where, params
                 ).fetchone()[0]
@@ -3526,42 +3677,40 @@ class Handler(BaseHTTPRequestHandler):
                 raise
         raise last_err
 
-    def _bulk_target(self, conn, crit):
-        """(label_id|None, name|None) for the Set-Label-To target; None if the
-        target names a label that does not exist. Blank clears the label."""
-        t = str(crit.get("target") or "blank")
-        if t in ("blank", "", "none"):
-            return (None, None)
-        if not re.fullmatch(r"[0-9a-f]{32}", t):
-            return None
-        row = conn.execute("SELECT name FROM udb.labels WHERE id = ?", (t,)).fetchone()
-        if not row:
-            return None
-        return (t, row["name"])
-
-    def _bulk_write(self, conn, ids, target_label_id):
-        """Apply the target to `ids` — every id is a genuine change because the
-        no-op rows were already excluded by _bulk_select. IN clauses / executemany
-        are chunked to stay under SQLite's variable limit. The caller owns the
-        transaction (commit / rollback)."""
+    def _bulk_write(self, conn, ids, action_spec):
+        """Apply the action to `ids` — Added/Removed touch only the resolved
+        target labels (existing labels the batch already carries are left
+        alone), Cleared wipes every label the batch carries. IN clauses /
+        executemany are chunked to stay under SQLite's variable limit. The
+        caller owns the transaction (commit / rollback)."""
         if not ids:
             return
+        action, _mode, ids_names = action_spec
+        target_ids = [i for i, _ in ids_names]
         CH = 400
         now = time.time()
         for i in range(0, len(ids), CH):
             chunk = ids[i:i + CH]
             marks = ",".join("?" * len(chunk))
-            # Set-Label-To sets the batch to exactly the target, so any labels
-            # these conversations already carry are cleared first.
-            conn.execute(
-                f"DELETE FROM udb.conversation_labels WHERE conversation_id IN ({marks})",
-                tuple(chunk),
-            )
-            if target_label_id:
+            if action == "cleared":
+                conn.execute(
+                    f"DELETE FROM udb.conversation_labels WHERE conversation_id IN ({marks})",
+                    tuple(chunk),
+                )
+            elif action == "removed":
+                if not target_ids:
+                    continue
+                tmarks = ",".join("?" * len(target_ids))
+                conn.execute(
+                    f"DELETE FROM udb.conversation_labels WHERE conversation_id IN ({marks}) "
+                    f"AND label_id IN ({tmarks})",
+                    tuple(chunk) + tuple(target_ids),
+                )
+            elif action == "added" and target_ids:
                 conn.executemany(
                     "INSERT OR IGNORE INTO udb.conversation_labels"
                     "(conversation_id, label_id, assigned_at) VALUES (?, ?, ?)",
-                    [(cid, target_label_id, now) for cid in chunk],
+                    [(cid, lid, now) for cid in chunk for lid in target_ids],
                 )
 
     @staticmethod
@@ -3572,6 +3721,39 @@ class Handler(BaseHTTPRequestHandler):
             return f"{datetime.date(y, m, d):%b} {d}"
         except Exception:
             return str(s)
+
+    def _bulk_label_names(self, conn, labels):
+        """Resolve a list of label chip values (ids, or 'blank') to display
+        names, dropping ones with no meaning; a deleted label reads 'unknown'
+        rather than vanishing, so old runs/history stay honest about intent."""
+        out = []
+        for lab in labels if isinstance(labels, list) else []:
+            lab = str(lab)
+            if lab == "blank":
+                out.append("Blank")
+            elif re.fullmatch(r"[0-9a-f]{32}", lab):
+                r = conn.execute("SELECT name FROM udb.labels WHERE id = ?", (lab,)).fetchone()
+                if r is None:
+                    out.append("unknown")
+                else:
+                    out.append(str(r["name"] or "").strip() or "(unnamed)")
+        return out
+
+    def _bulk_folder_names(self, conn, folders):
+        out = []
+        for fol in folders if isinstance(folders, list) else []:
+            fol = str(fol)
+            if fol == "none":
+                out.append("No folder")
+            elif re.fullmatch(r"[0-9a-f]{32}", fol):
+                r = conn.execute("SELECT name FROM udb.folders WHERE id = ?", (fol,)).fetchone()
+                out.append(r["name"] if r else "unknown")
+        return out
+
+    _BULK_ORDER_LABELS = {
+        "started_asc": "Started oldest first", "started_desc": "Started newest first",
+        "updated_asc": "Last Message oldest first", "updated_desc": "Last Message newest first",
+    }
 
     def _bulk_describe(self, conn, crit):
         """The execution-time, human-readable filter+order summary stored with a
@@ -3595,36 +3777,70 @@ class Handler(BaseHTTPRequestHandler):
                         f"–{self._bulk_fmt_day(spec['date2'])}")
             return None
 
-        for p in (dpart(crit.get("started"), "Started"), dpart(crit.get("ended"), "Updated")):
+        for p in (dpart(crit.get("started"), "Started"), dpart(crit.get("ended"), "Last Message")):
             if p:
                 parts.append(p)
 
-        label = str(crit.get("label") or "any")
-        if label == "blank":
-            parts.append("Blank")
-        elif label != "any":
-            r = conn.execute("SELECT name FROM udb.labels WHERE id = ?", (label,)).fetchone()
-            parts.append(f"Label: {r['name'] if r else 'unknown'}")
+        label_names = self._bulk_label_names(conn, crit.get("labels"))
+        if label_names:
+            parts.append(f"Has Label: {', '.join(label_names)}")
 
-        folder = str(crit.get("folder") or "any")
-        if folder == "none":
-            parts.append("No folder")
-        elif folder != "any":
-            r = conn.execute("SELECT name FROM udb.folders WHERE id = ?", (folder,)).fetchone()
-            parts.append(f"Folder: {r['name'] if r else 'unknown'}")
+        folder_names = self._bulk_folder_names(conn, crit.get("folders"))
+        if folder_names:
+            parts.append(f"Folder: {', '.join(folder_names)}")
 
-        tag = str(crit.get("tag") or "").strip()
-        if tag:
-            parts.append(f"Tag: {tag}")
-        kw = str(crit.get("keyword") or "").strip()
-        if kw:
-            parts.append(f"“{kw}”")
+        tags = [str(t).strip() for t in (crit.get("tags") or []) if str(t).strip()]
+        if tags:
+            parts.append(f"Tag: {', '.join(tags)}")
+        keywords = [str(k).strip() for k in (crit.get("keywords") or []) if str(k).strip()]
+        if keywords:
+            parts.append(f"Keyword: {', '.join(keywords)}")
 
-        parts.append({
-            "started_asc": "Started oldest first", "started_desc": "Started newest first",
-            "updated_asc": "Updated oldest first", "updated_desc": "Updated newest first",
-        }.get(str(crit.get("order") or "started_asc"), "Started oldest first"))
+        parts.append(self._BULK_ORDER_LABELS.get(
+            str(crit.get("order") or "started_asc"), "Started oldest first"))
         return " · ".join(parts)
+
+    def _bulk_criteria_lines(self, conn, crit):
+        """A read-only "Criteria:" line list for a saved Unfinished Label Run,
+        frozen at creation time (label/folder names resolved then, so a later
+        rename or deletion never rewrites what the run says it selected)."""
+        lines = []
+        prov = str(crit.get("provider") or "all").lower()
+        lines.append(("Provider", {"claude": "Claude", "chatgpt": "ChatGPT"}.get(prov, "All")))
+
+        def dval(spec):
+            if not isinstance(spec, dict):
+                return "Any"
+            op = str(spec.get("op") or "any").lower()
+            if op == "before" and spec.get("date"):
+                return f"Before {self._bulk_fmt_day(spec['date'])}"
+            if op == "after" and spec.get("date"):
+                return f"After {self._bulk_fmt_day(spec['date'])}"
+            if op == "between" and spec.get("date") and spec.get("date2"):
+                return f"{self._bulk_fmt_day(spec['date'])} - {self._bulk_fmt_day(spec['date2'])}"
+            return "Any"
+
+        lines.append(("Started", dval(crit.get("started"))))
+        lines.append(("Last Message", dval(crit.get("ended"))))
+
+        label_names = self._bulk_label_names(conn, crit.get("labels"))
+        lines.append(("Has Label", ", ".join(label_names) if label_names else "Any"))
+
+        tags = [str(t).strip() for t in (crit.get("tags") or []) if str(t).strip()]
+        lines.append(("Tag", ", ".join(tags) if tags else "Any"))
+
+        folder_names = self._bulk_folder_names(conn, crit.get("folders"))
+        lines.append(("Folder", ", ".join(folder_names) if folder_names else "Any"))
+
+        keywords = [str(k).strip() for k in (crit.get("keywords") or []) if str(k).strip()]
+        lines.append(("Keyword", ", ".join(keywords) if keywords else "Any"))
+
+        lines.append(("Order", self._BULK_ORDER_LABELS.get(
+            str(crit.get("order") or "started_asc"), "Started oldest first")))
+
+        action, mode, ids_names = self._bulk_action_targets(conn, crit)
+        lines.append(("Labels should be", self._bulk_action_summary(action, mode, ids_names)))
+        return lines
 
     # Recent Bulk Changes: how many rows to keep/show. Default 5, user-adjustable.
     _BULK_HISTORY_DEFAULT = 5
@@ -3656,8 +3872,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _bulk_history_rows(self, conn, n):
         rows = conn.execute(
-            "SELECT id, created_at, criteria_json, description, target_label_id, "
-            "target_label_name, limit_used, order_json, eligible_count, changed_count "
+            "SELECT id, created_at, criteria_json, description, label_action, "
+            "action_summary, limit_used, order_json, eligible_count, changed_count "
             "FROM udb.label_bulk_history ORDER BY created_at DESC, id DESC LIMIT ?",
             (max(0, int(n)),),
         ).fetchall()
@@ -3670,8 +3886,10 @@ class Handler(BaseHTTPRequestHandler):
             out.append({
                 "id": r["id"], "created_at": r["created_at"],
                 "description": r["description"],
-                "target_label_id": r["target_label_id"],
-                "target_label_name": r["target_label_name"],
+                "label_action": r["label_action"],
+                # A row recorded before this action model existed has no
+                # frozen summary; fall back to something rather than blank.
+                "action_summary": r["action_summary"] or "(bulk change)",
                 "limit_used": r["limit_used"],
                 "eligible_count": r["eligible_count"],
                 "changed_count": r["changed_count"],
@@ -3679,28 +3897,37 @@ class Handler(BaseHTTPRequestHandler):
             })
         return out
 
+    def _bulk_validate_action(self, action, mode, ids_names):
+        """Error string, or None if the action is well-formed enough to run.
+        Added/Removed need at least one label actually resolved (either a
+        specific chip whose label still exists, or "All" with at least one
+        label defined) — an empty target can never change anything."""
+        if action != "cleared" and not ids_names:
+            return "Which labels it should apply to: choose at least one label, or All."
+        return None
+
     def _api_bulk_preview(self):
         """Count only — never mutates. Reports the three numbers the UI shows:
-        matching, not-already-at-target, and how many this run would change."""
+        matching, would-actually-change, and how many this run would change."""
         crit = self._read_json_body()
         conn = open_db(self.db_path)
         try:
-            target = self._bulk_target(conn, crit)
-            if target is None:
-                self.send_json({"error": "Unknown target label"}, 404); return
-            target_label_id, target_name = target
+            action_spec = self._bulk_action_targets(conn, crit)
+            err = self._bulk_validate_action(*action_spec)
+            if err:
+                self.send_json({"error": err}, 400); return
             try:
-                sel = self._bulk_select(conn, crit, target_label_id)
+                sel = self._bulk_select(conn, crit, action_spec)
             except sqlite3.Error:
                 self.send_json({"error": "Could not evaluate the criteria"}, 400); return
+            action, mode, ids_names = action_spec
             self.send_json({
                 "eligible": sel["eligible"],
                 "not_already": sel["not_already"],
                 "will_change": len(sel["batch_ids"]),
                 "limit_n": sel["limit_n"],
-                "target_label_id": target_label_id,
-                "target_label_name": target_name,
-                "target_blank": target_label_id is None,
+                "label_action": action,
+                "action_summary": self._bulk_action_summary(action, mode, ids_names),
             })
         finally:
             conn.close()
@@ -3725,14 +3952,9 @@ class Handler(BaseHTTPRequestHandler):
             offset = 0
         conn = open_db(self.db_path)
         try:
-            target = self._bulk_target(conn, crit)
-            if target is None:
-                self.send_json({"error": "Unknown target label"}, 404); return
-            target_label_id, _name = target
+            action_spec = self._bulk_action_targets(conn, crit)
             try:
-                rows, total = self._bulk_page(
-                    conn, crit, target_label_id, offset, limit
-                )
+                rows, total = self._bulk_page(conn, crit, action_spec, offset, limit)
             except sqlite3.Error:
                 self.send_json({"error": "Could not evaluate the criteria"}, 400); return
             prov = str(crit.get("provider") or "all").lower()
@@ -3744,31 +3966,73 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
 
     def _api_bulk_apply(self):
-        """Mutate only here, transactionally: the whole batch writes or nothing
-        does. Records one Recent-Bulk-Changes entry and prunes to retention."""
+        """Mutate only here, transactionally. A "First N" limit that doesn't
+        cover every eligible conversation saves an Unfinished Label Run instead
+        of logging straight to Recent Bulk Changes — see _api_bulk_run_continue
+        for how it is carried forward. Everything else (an "All matching" apply,
+        or a "First N" that happens to cover everything) completes in one shot
+        and logs directly, as before."""
         crit = self._read_json_body()
         conn = open_db(self.db_path)
         try:
-            target = self._bulk_target(conn, crit)
-            if target is None:
-                self.send_json({"error": "Unknown target label"}, 404); return
-            target_label_id, target_name = target
+            action_spec = self._bulk_action_targets(conn, crit)
+            err = self._bulk_validate_action(*action_spec)
+            if err:
+                self.send_json({"error": err}, 400); return
+            action, mode, ids_names = action_spec
+            action_summary = self._bulk_action_summary(action, mode, ids_names)
             try:
-                sel = self._bulk_select(conn, crit, target_label_id)
+                sel = self._bulk_select(conn, crit, action_spec)
             except sqlite3.Error:
                 self.send_json({"error": "Could not evaluate the criteria"}, 400); return
             ids = sel["batch_ids"]
             changed = len(ids)
             desc = self._bulk_describe(conn, crit)
+
+            if sel["limit_n"] is not None and changed < sel["eligible"]:
+                # Partial "First N": freeze the full ordered eligible set and
+                # save it as an Unfinished Label Run instead of completing.
+                try:
+                    all_ids = self._bulk_eligible_ids(conn, crit)
+                except sqlite3.Error:
+                    self.send_json({"error": "Could not evaluate the criteria"}, 400); return
+                rid = uuid.uuid4().hex
+                lines = self._bulk_criteria_lines(conn, crit)
+                order_desc = self._BULK_ORDER_LABELS.get(
+                    str(crit.get("order") or "started_asc"), "Started oldest first")
+                try:
+                    self._bulk_write(conn, ids, action_spec)
+                    conn.execute(
+                        "INSERT INTO udb.label_bulk_runs(id, created_at, criteria_json, "
+                        "criteria_lines_json, order_desc, label_action, action_summary, "
+                        "total_qualifying, completed_count, batch_size, ids_json) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (rid, time.time(), json.dumps(crit, ensure_ascii=False),
+                         json.dumps(lines, ensure_ascii=False), order_desc,
+                         action, action_summary, sel["eligible"], changed,
+                         sel["limit_n"], json.dumps(all_ids)),
+                    )
+                    conn.commit()
+                except sqlite3.Error:
+                    conn.rollback()
+                    self.send_json({"error": "The operation failed and was rolled back"}, 500)
+                    return
+                self.send_json({
+                    "eligible": sel["eligible"], "not_already": sel["not_already"],
+                    "changed": changed, "description": desc, "action_summary": action_summary,
+                    "run_id": rid, "run_complete": False,
+                })
+                return
+
             hid = uuid.uuid4().hex
             try:
-                self._bulk_write(conn, ids, target_label_id)
+                self._bulk_write(conn, ids, action_spec)
                 conn.execute(
                     "INSERT INTO udb.label_bulk_history(id, created_at, criteria_json, description, "
-                    "target_label_id, target_label_name, limit_used, order_json, "
+                    "label_action, action_summary, limit_used, order_json, "
                     "eligible_count, changed_count) VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (hid, time.time(), json.dumps(crit, ensure_ascii=False), desc,
-                     target_label_id, target_name, sel["limit_n"],
+                     action, action_summary, sel["limit_n"],
                      json.dumps(crit.get("order") or "started_asc"),
                      sel["eligible"], changed),
                 )
@@ -3781,7 +4045,126 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({
                 "eligible": sel["eligible"], "not_already": sel["not_already"],
                 "changed": changed, "history_id": hid, "description": desc,
+                "action_summary": action_summary, "run_complete": True,
             })
+        finally:
+            conn.close()
+
+    def _api_bulk_run_list(self):
+        """The saved Unfinished Label Runs, newest first."""
+        conn = open_db(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT id, created_at, criteria_lines_json, label_action, action_summary, "
+                "total_qualifying, completed_count, batch_size "
+                "FROM udb.label_bulk_runs ORDER BY created_at DESC, id DESC"
+            ).fetchall()
+            out = []
+            for r in rows:
+                try:
+                    lines = json.loads(r["criteria_lines_json"] or "[]")
+                except Exception:
+                    lines = []
+                out.append({
+                    "id": r["id"], "created_at": r["created_at"],
+                    "criteria_lines": lines,
+                    "label_action": r["label_action"],
+                    "action_summary": r["action_summary"] or "(bulk change)",
+                    "total_qualifying": r["total_qualifying"],
+                    "completed_count": r["completed_count"],
+                    "batch_size": r["batch_size"],
+                })
+            self.send_json({"runs": out})
+        finally:
+            conn.close()
+
+    def _api_bulk_run_continue(self):
+        """Process the run's next batch: the same saved action, applied
+        unconditionally to the next `batch_size` ids in the run's frozen
+        order, starting right after completed_count. Never re-evaluates the
+        original criteria or looks at the conversations' current labels —
+        only the frozen list and the completed count decide what happens
+        next. Target label ids are re-resolved from the frozen criteria each
+        time only so a rename or deletion since the run started doesn't break
+        the write (a vanished label is just dropped from the write, per
+        _bulk_action_targets); the frozen action_summary/criteria_lines shown
+        to the user never change. Finishing the list removes the run and logs
+        one Recent-Bulk-Changes entry for the whole thing."""
+        payload = self._read_json_body()
+        rid = str(payload.get("id") or "")
+        conn = open_db(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT * FROM udb.label_bulk_runs WHERE id = ?", (rid,)
+            ).fetchone()
+            if not row:
+                self.send_json({"error": "Run not found"}, 404); return
+            try:
+                batch_size = int(payload.get("batch_size"))
+                if batch_size < 1:
+                    raise ValueError
+            except (TypeError, ValueError):
+                batch_size = max(1, int(row["batch_size"] or 1))
+            try:
+                ids = json.loads(row["ids_json"] or "[]")
+            except Exception:
+                ids = []
+            try:
+                crit = json.loads(row["criteria_json"] or "{}")
+            except Exception:
+                crit = {}
+            action_spec = self._bulk_action_targets(conn, crit)
+            completed = int(row["completed_count"] or 0)
+            total = int(row["total_qualifying"] or len(ids))
+            batch = ids[completed:completed + batch_size]
+            changed = len(batch)
+            new_completed = completed + changed
+            try:
+                self._bulk_write(conn, batch, action_spec)
+                if new_completed >= total or not batch:
+                    desc = self._bulk_describe(conn, crit)
+                    hid = uuid.uuid4().hex
+                    conn.execute(
+                        "INSERT INTO udb.label_bulk_history(id, created_at, criteria_json, "
+                        "description, label_action, action_summary, limit_used, "
+                        "order_json, eligible_count, changed_count) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (hid, time.time(), row["criteria_json"], desc,
+                         row["label_action"], row["action_summary"], batch_size,
+                         json.dumps(crit.get("order") or "started_asc"), total, total),
+                    )
+                    conn.execute("DELETE FROM udb.label_bulk_runs WHERE id = ?", (rid,))
+                    self._prune_bulk_history(conn, self._bulk_retention(conn))
+                    conn.commit()
+                    self.send_json({
+                        "complete": True, "changed": changed, "history_id": hid,
+                        "completed_count": total, "total_qualifying": total,
+                    })
+                else:
+                    conn.execute(
+                        "UPDATE udb.label_bulk_runs SET completed_count = ?, batch_size = ? "
+                        "WHERE id = ?",
+                        (new_completed, batch_size, rid),
+                    )
+                    conn.commit()
+                    self.send_json({
+                        "complete": False, "changed": changed,
+                        "completed_count": new_completed, "total_qualifying": total,
+                        "batch_size": batch_size,
+                    })
+            except sqlite3.Error:
+                conn.rollback()
+                self.send_json({"error": "The operation failed and was rolled back"}, 500)
+        finally:
+            conn.close()
+
+    def _api_bulk_run_delete(self, run_id):
+        """Delete only the saved run/progress — never touches any conversation
+        or the labels already applied by batches this run already processed."""
+        conn = open_db(self.db_path)
+        try:
+            conn.execute("DELETE FROM udb.label_bulk_runs WHERE id = ?", (run_id,))
+            conn.commit()
+            self.send_json({"ok": True})
         finally:
             conn.close()
 

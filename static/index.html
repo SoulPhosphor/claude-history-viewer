@@ -803,13 +803,19 @@
             <section class="labels-section">
               <h3 class="labels-section-title">Bulk Label Conversations</h3>
               <p class="labels-section-hint">
-                Select conversations by criteria — all populated criteria are
-                combined with AND — then set one label on the batch, replacing
-                whatever labels those conversations already carry. The only
-                action is Set Label To; nothing here deletes, archives, or moves.
-                Preview temporarily filters the conversation list to the batch
-                so you can look through it. Preview is optional — Apply works on
-                its own.
+                Select conversations by criteria — different fields are combined
+                with AND, multiple values in the same field (Current label, Folder,
+                Tag, Keyword) are combined with OR — then choose whether the
+                chosen labels should be Added, Removed, or Cleared on the batch.
+                Added/Removed only touch the labels you pick, leaving any other
+                labels those conversations carry alone; Cleared removes every
+                label a conversation has. Nothing here deletes, archives, or
+                moves conversations. Preview temporarily filters the
+                conversation list to the batch so you can look through it.
+                Preview is optional — Apply works on its own. Choosing "First"
+                under Limit and applying fewer than everything that qualifies
+                saves the rest as an Unfinished Label Run below, so you can
+                pick up where it left off.
               </p>
               <div class="bulk-form">
                 <div class="bulk-row">
@@ -833,7 +839,7 @@
                   <input type="date" id="bulk-started-date2" hidden />
                 </div>
                 <div class="bulk-row">
-                  <label for="bulk-ended-op">Last updated</label>
+                  <label for="bulk-ended-op">Last Message</label>
                   <select id="bulk-ended-op" class="bulk-date-op">
                     <option value="any">Any</option>
                     <option value="before">Before</option>
@@ -844,41 +850,65 @@
                   <span id="bulk-ended-and" class="bulk-and" hidden>and</span>
                   <input type="date" id="bulk-ended-date2" hidden />
                 </div>
+                <div class="bulk-row bulk-chip-row">
+                  <span id="bulk-label-label" class="bulk-chip-row-label">Current label</span>
+                  <span
+                    id="bulk-label-chips"
+                    class="bulk-chip-strip"
+                    role="group"
+                    aria-labelledby="bulk-label-label"
+                  ></span>
+                </div>
+                <div class="bulk-row bulk-chip-row">
+                  <span id="bulk-folder-label" class="bulk-chip-row-label">Folder</span>
+                  <span
+                    id="bulk-folder-chips"
+                    class="bulk-chip-strip"
+                    role="group"
+                    aria-labelledby="bulk-folder-label"
+                  ></span>
+                </div>
+                <div class="bulk-row bulk-chip-row">
+                  <span id="bulk-tag-label" class="bulk-chip-row-label">Tag</span>
+                  <span
+                    id="bulk-tag-chips"
+                    class="bulk-chip-strip"
+                    role="group"
+                    aria-labelledby="bulk-tag-label"
+                  ></span>
+                </div>
+                <div class="bulk-row bulk-chip-row">
+                  <span id="bulk-keyword-label" class="bulk-chip-row-label">Keyword</span>
+                  <span
+                    id="bulk-keyword-chips"
+                    class="bulk-chip-strip"
+                    role="group"
+                    aria-labelledby="bulk-keyword-label"
+                  ></span>
+                </div>
+                <div class="bulk-row bulk-row-action">
+                  <span class="bulk-section-subtitle">
+                    What should happen to conversations with these criteria?
+                  </span>
+                </div>
                 <div class="bulk-row">
-                  <label for="bulk-label">Current label</label>
-                  <select id="bulk-label">
-                    <option value="any">Any</option>
-                    <option value="blank">Blank</option>
+                  <label for="bulk-label-action">Labels should be</label>
+                  <select id="bulk-label-action">
+                    <option value="added">Added</option>
+                    <option value="removed">Removed</option>
+                    <option value="cleared">Cleared</option>
                   </select>
                 </div>
-                <div class="bulk-row">
-                  <label for="bulk-folder">Folder</label>
-                  <select id="bulk-folder">
-                    <option value="any">Any</option>
-                    <option value="none">No folder</option>
-                  </select>
-                </div>
-                <div class="bulk-row">
-                  <label for="bulk-tag">Tag</label>
-                  <select id="bulk-tag"><option value="">Any</option></select>
-                </div>
-                <div class="bulk-row">
-                  <label for="bulk-keyword">Keyword</label>
-                  <input
-                    type="text"
-                    id="bulk-keyword"
-                    placeholder="Optional — same search as the sidebar"
-                    spellcheck="false"
-                  />
-                </div>
-                <div class="bulk-row">
-                  <label for="bulk-order">Order</label>
-                  <select id="bulk-order">
-                    <option value="started_asc">Started: oldest first</option>
-                    <option value="started_desc">Started: newest first</option>
-                    <option value="updated_asc">Last updated: oldest first</option>
-                    <option value="updated_desc">Last updated: newest first</option>
-                  </select>
+                <div class="bulk-row bulk-chip-row" id="bulk-target-labels-row">
+                  <span id="bulk-target-labels-label" class="bulk-chip-row-label">
+                    Which labels it should apply to
+                  </span>
+                  <span
+                    id="bulk-target-labels-chips"
+                    class="bulk-chip-strip"
+                    role="group"
+                    aria-labelledby="bulk-target-labels-label"
+                  ></span>
                 </div>
                 <div class="bulk-row">
                   <label>Limit</label>
@@ -892,9 +922,14 @@
                   </label>
                   <input type="number" id="bulk-limit-n" min="1" value="50" disabled />
                 </div>
-                <div class="bulk-row bulk-row-action">
-                  <label for="bulk-target">Set label to</label>
-                  <select id="bulk-target"><option value="blank">Blank</option></select>
+                <div class="bulk-row">
+                  <label for="bulk-order">Order</label>
+                  <select id="bulk-order">
+                    <option value="started_asc">Started: oldest first</option>
+                    <option value="started_desc">Started: newest first</option>
+                    <option value="updated_asc">Last Message: oldest first</option>
+                    <option value="updated_desc">Last Message: newest first</option>
+                  </select>
                 </div>
                 <div class="bulk-buttons">
                   <button type="button" id="bulk-preview-btn">Preview</button>
@@ -906,6 +941,35 @@
                 <div id="bulk-result" class="bulk-result" hidden></div>
                 <div id="bulk-error" class="labels-form-error" hidden></div>
               </div>
+            </section>
+
+            <!-- C2. Unfinished Label Runs ─────────────────────────────── -->
+            <section class="labels-section" id="bulk-runs-section">
+              <h3 class="labels-section-title">Unfinished Label Runs</h3>
+              <p class="labels-section-hint">
+                Saved bulk-label runs that have started but aren't finished yet.
+                Criteria are frozen from when the run began and can't be changed
+                here — the only thing you can edit is how many to process in the
+                next batch. Continue always picks up exactly where the run left
+                off in its original ordered set, no matter what labels, tags, or
+                folders those conversations have since had. A finished run moves
+                to Recent Bulk Changes below.
+              </p>
+              <div id="bulk-runs-table-wrap">
+                <table id="bulk-runs-table">
+                  <thead>
+                    <tr>
+                      <th>Criteria</th>
+                      <th>Total qualifying</th>
+                      <th>Completed</th>
+                      <th>Process at a time</th>
+                      <th aria-label="Actions"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="bulk-runs-table-body"></tbody>
+                </table>
+              </div>
+              <div id="bulk-runs-error" class="labels-form-error" hidden></div>
             </section>
 
             <!-- D. Safety Snapshots / Recent Bulk Changes ─────────────── -->
