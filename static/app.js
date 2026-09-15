@@ -2263,15 +2263,16 @@ async function openConversation(id, clickedEl, targetSeq = null) {
     roleEl.className = "message-role";
     roleEl.textContent = label;
     div.insertBefore(roleEl, div.firstChild);
-    div.appendChild(bodyEl);
 
     const timeText = formatMessageTime(msg.create_time);
     if (timeText) {
       const timeEl = document.createElement("div");
       timeEl.className = "message-time";
       timeEl.textContent = timeText;
-      div.appendChild(timeEl);
+      roleEl.after(timeEl);
     }
+
+    div.appendChild(bodyEl);
 
     // ── Assistant-generated file chips appear AFTER body (like Claude's UI) ──
     if (msg.role === "assistant" && msg.attachments?.length) {
