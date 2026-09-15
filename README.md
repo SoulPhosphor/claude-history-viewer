@@ -41,10 +41,12 @@ If you want to keep the starter completely clean, leave the placeholder `source/
 You do **not** need to stop and restart to pick up new code. While the app is
 running, just replace the files:
 
-- Replace `server.py` (or `build_db.py`) and the running server re-launches
-  itself within a second or two; the open browser tab reloads on its own.
-- Replace anything in `static/` (`app.js`, `index.html`, `style.css`) and the
-  tab reloads on its own — no server restart needed.
+- Replace any backend file (`server.py`, `build_db.py`, `labels.py`,
+  `bulk_labels.py`, `snapshots.py`, `api_common.py`) and the running server
+  re-launches itself within a second or two; the open browser tab reloads on
+  its own.
+- Replace anything in `static/` (`index.html`, `style.css`, `app.js` or the
+  feature modules) and the tab reloads on its own — no server restart needed.
 
 Your database is never touched by this — new tables are created automatically on
 startup, so you never have to delete or rebuild `history.db` just to get a new
@@ -187,10 +189,17 @@ find . -name '.DS_Store' -delete
 | `app.py`            | Entry point - builds index if needed, starts server, opens browser |
 | `claude_models.json`| Starting list of Claude models and the dates they were offered     |
 | `build_db.py`       | Parses `conversations.json` -> SQLite + FTS5 index                 |
-| `server.py`         | stdlib HTTP server with JSON APIs                                  |
+| `server.py`         | stdlib HTTP server: routing, rendering, JSON APIs                  |
+| `api_common.py`     | `ApiError` - how core logic signals an HTTP error status           |
+| `labels.py`         | Label definitions and conversation label assignment                |
+| `bulk_labels.py`    | Conditional bulk labeling: criteria, preview, apply, saved runs    |
+| `snapshots.py`      | Manual safety snapshots: capture, list, restore                    |
 | `static/index.html` | App shell                                                          |
 | `static/style.css`  | UI styles                                                          |
 | `static/app.js`     | Frontend state, rendering, tabs, quick views, interactions         |
+| `static/labels_screen.js` | Labels screen: settings and label definitions                |
+| `static/bulk_labels.js`   | Bulk-label tool UI and Unfinished Label Runs                 |
+| `static/snapshots.js`     | Snapshot UI and the restore-category dialog                  |
 
 ---
 

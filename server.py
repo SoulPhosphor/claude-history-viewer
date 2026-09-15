@@ -6,6 +6,12 @@ import importlib
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
 
+# Reusable business/data logic for the labeling features. server.py stays the
+# HTTP/routing shell; these modules own the SQL, validation, and transactions
+# and raise ApiError for error responses.
+import labels, bulk_labels, snapshots
+from api_common import ApiError
+
 # Set CHV_TIMING=1 to log each request's method, path, and duration to stderr.
 # Off by default so normal runs stay quiet; useful for spotting slow endpoints.
 _TIMING = os.environ.get("CHV_TIMING", "").strip() not in ("", "0", "false", "no")
@@ -30,7 +36,8 @@ def _code_signature() -> str:
     import hashlib
     here = Path(__file__).resolve().parent
     h = hashlib.sha256()
-    for name in ("server.py", "build_db.py"):
+    for name in ("server.py", "build_db.py", "api_common.py",
+                 "labels.py", "bulk_labels.py", "snapshots.py"):
         try:
             h.update((here / name).read_bytes())
         except OSError:
@@ -46,7 +53,8 @@ def _static_signature() -> str:
     import hashlib
     static_dir = Path(__file__).resolve().parent / "static"
     h = hashlib.sha256()
-    for name in ("index.html", "app.js", "style.css"):
+    for name in ("index.html", "app.js", "style.css",
+                 "labels_screen.js", "bulk_labels.js", "snapshots.js"):
         try:
             h.update((static_dir / name).read_bytes())
         except OSError:
@@ -1199,6 +1207,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _handle_db(self, fn):
+        """Run a core logic function that takes an open DB connection, returns a
+        JSON-able dict, and raises ApiError for error responses. Opens one
+        short-lived connection, sends the result (or the ApiError as a JSON
+        error with its status), and always closes the connection. Keeps the API
+        handlers thin wrappers around the reusable modules."""
+        conn = open_db(self.db_path)
+        try:
+            self.send_json(fn(conn))
+        except ApiError as e:
+            self.send_json({"error": e.message}, e.status)
+        finally:
+            conn.close()
+
     def do_POST(self):
         _, path = self._request_target()
         if path == "/api/upload-file":
@@ -1395,6 +1417,16 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_file(static_dir / "app.js")
         elif path in ("/style.css", "/static/style.css"):
             self._serve_file(static_dir / "style.css")
+        elif path.startswith("/static/") and path.endswith(".js"):
+            # Feature modules split out of app.js (labels_screen.js,
+            # bulk_labels.js, snapshots.js, and any future ones) live in the
+            # static dir. Restrict to a flat .js filename so this can never
+            # traverse outside it.
+            name = urllib.parse.unquote(path[len("/static/"):])
+            if re.fullmatch(r"[\w.-]+\.js", name):
+                self._serve_file(static_dir / name)
+            else:
+                self.send_error(404)
         elif path == "/api/conversations":
             self._api_conversations(qs)
         elif path.startswith("/api/conversation-labels/"):
@@ -1646,7 +1678,7 @@ class Handler(BaseHTTPRequestHandler):
         convs = [dict(r) for r in rows]
         # Attach each row's labels in one batched query so the sidebar can draw
         # its squares without a request per conversation (no N+1).
-        by_conv = self._labels_by_conv(conn, [c["id"] for c in convs])
+        by_conv = labels.labels_by_conv(conn, [c["id"] for c in convs])
         for c in convs:
             c["labels"] = by_conv.get(c["id"], [])
         claude_side = (provider == "claude") if provider else (self._dataset_format(conn) == "claude")
@@ -1952,7 +1984,7 @@ class Handler(BaseHTTPRequestHandler):
             conv_dict = dict(conv)
             # The current label rides along so opening a conversation stays one
             # request; the header square reads it directly.
-            conv_dict["labels"] = self._conv_labels(conn, conv_id)
+            conv_dict["labels"] = labels.conv_labels(conn, conv_id)
             self.send_json({"conversation": conv_dict,
                             "messages": [parse_msg(m) for m in msgs],
                             "artifacts": artifacts_meta,
@@ -2451,7 +2483,7 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchall()
             # Labels come from one batched query, not a join: a conversation can
             # carry several, and joining would duplicate its folder row.
-            folder_labels = self._labels_by_conv(conn, [r["id"] for r in rows])
+            folder_labels = labels.labels_by_conv(conn, [r["id"] for r in rows])
             by_folder: dict = {}
             for r in rows:
                 by_folder.setdefault(r["folder_id"], []).append({
@@ -3061,1401 +3093,93 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    # ── Conversation labels · bulk labeling · snapshots ──────────────────────
+    # The reusable business/data logic for these features lives in the labels,
+    # bulk_labels, and snapshots modules. The handlers below stay thin: read the
+    # request data, call the module function with an open connection, and send
+    # its result (ApiError → JSON error with its status, via _handle_db).
+
     # ── Conversation labels ──────────────────────────────────────────────────
-    # User-configurable labels stored in the persistent user-data DB (see
-    # `labels` / `conversation_labels` in _ensure_userdata_schema). A label is a
-    # definition here; a conversation can carry several, and the blank state is
-    # the absence of any assignment. Names have no built-in meaning — the user
-    # picks them, and a name is optional (an unnamed label is a colour-only
-    # square) — and stable ids mean a rename or recolour never moves any
-    # conversation off its labels.
-
-    # Colours are stored as #rgb / #rrggbb and validated before write, so the
-    # value can be dropped straight into an inline style on the client.
-    _LABEL_COLOR_RE = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
-
-    def _norm_label_color(self, value, default="#888888"):
-        s = str(value or "").strip()
-        return s if self._LABEL_COLOR_RE.match(s) else default
-
-    def _labels_with_counts(self, conn):
-        """Every label in cycle order, each with how many conversations use it."""
-        rows = conn.execute(
-            "SELECT l.id, l.name, l.color, l.sort_index, l.created_at, l.updated_at, "
-            "       COUNT(cl.conversation_id) AS count "
-            "FROM udb.labels l "
-            "LEFT JOIN udb.conversation_labels cl ON cl.label_id = l.id "
-            "GROUP BY l.id "
-            "ORDER BY l.sort_index ASC, LOWER(l.name) ASC"
-        ).fetchall()
-        return [{
-            "id":         r["id"],
-            "name":       r["name"],
-            "color":      r["color"],
-            "sort_index": r["sort_index"],
-            "created_at": r["created_at"],
-            "updated_at": r["updated_at"],
-            "count":      r["count"],
-        } for r in rows]
-
     def _api_labels_list(self):
-        conn = open_db(self.db_path)
-        try:
-            self.send_json({"labels": self._labels_with_counts(conn)})
-        finally:
-            conn.close()
+        self._handle_db(labels.list_labels)
 
     def _api_label_create(self):
         payload = self._read_json_body()
-        # The name is optional: a label can be a colour-only square. It only
-        # ever shows as text when the display mode is "Square + Label".
-        name = " ".join(str(payload.get("name") or "").split())[:60]
-        color = self._norm_label_color(payload.get("color"))
-        now = time.time()
-        conn = open_db(self.db_path)
-        try:
-            # New labels append to the end of the cycle order.
-            row = conn.execute(
-                "SELECT COALESCE(MAX(sort_index), -1) + 1 AS next FROM udb.labels"
-            ).fetchone()
-            sort_index = row["next"] if row else 0
-            lid = uuid.uuid4().hex
-            conn.execute(
-                "INSERT INTO udb.labels(id, name, color, sort_index, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (lid, name, color, sort_index, now, now),
-            )
-            conn.commit()
-            self.send_json({"labels": self._labels_with_counts(conn), "id": lid})
-        finally:
-            conn.close()
+        self._handle_db(lambda conn: labels.create_label(conn, payload))
 
     def _api_label_update(self, lid):
-        lid = (lid or "").strip()
         payload = self._read_json_body()
-        sets, params = [], []
-        if "name" in payload:
-            # Clearing a name back to blank is allowed — the square stays.
-            name = " ".join(str(payload.get("name") or "").split())[:60]
-            sets.append("name = ?"); params.append(name)
-        if "color" in payload:
-            sets.append("color = ?"); params.append(self._norm_label_color(payload.get("color")))
-        if not sets:
-            self.send_json({"error": "nothing to update"}, 400); return
-        conn = open_db(self.db_path)
-        try:
-            if not conn.execute("SELECT 1 FROM udb.labels WHERE id = ?", (lid,)).fetchone():
-                self.send_json({"error": "Unknown label"}, 404); return
-            sets.append("updated_at = ?"); params.append(time.time())
-            params.append(lid)
-            conn.execute(f"UPDATE udb.labels SET {', '.join(sets)} WHERE id = ?", params)
-            conn.commit()
-            self.send_json({"labels": self._labels_with_counts(conn)})
-        finally:
-            conn.close()
+        self._handle_db(lambda conn: labels.update_label(conn, lid, payload))
 
     def _api_label_delete(self, lid):
-        """Delete a label. Any conversation carrying it falls back to blank
-        (its assignment row is removed) — never silently reassigned to another
-        label."""
-        lid = (lid or "").strip()
-        conn = open_db(self.db_path)
-        try:
-            if not conn.execute("SELECT 1 FROM udb.labels WHERE id = ?", (lid,)).fetchone():
-                self.send_json({"error": "Unknown label"}, 404); return
-            cur = conn.execute(
-                "DELETE FROM udb.conversation_labels WHERE label_id = ?", (lid,)
-            )
-            cleared = cur.rowcount if cur.rowcount is not None else 0
-            conn.execute("DELETE FROM udb.labels WHERE id = ?", (lid,))
-            conn.commit()
-            self.send_json({"labels": self._labels_with_counts(conn), "cleared": cleared})
-        finally:
-            conn.close()
+        self._handle_db(lambda conn: labels.delete_label(conn, lid))
 
     def _api_labels_reorder(self):
-        """Set the cycle order from a full list of label ids. Ids not present
-        keep their existing order after the ones given."""
         payload = self._read_json_body()
-        order = payload.get("order")
-        if not isinstance(order, list):
-            self.send_json({"error": "order must be a list of label ids"}, 400); return
-        now = time.time()
-        conn = open_db(self.db_path)
-        try:
-            known = {r["id"] for r in conn.execute("SELECT id FROM udb.labels").fetchall()}
-            idx = 0
-            for lid in order:
-                lid = str(lid)
-                if lid not in known:
-                    continue
-                conn.execute(
-                    "UPDATE udb.labels SET sort_index = ?, updated_at = ? WHERE id = ?",
-                    (idx, now, lid),
-                )
-                idx += 1
-            conn.commit()
-            self.send_json({"labels": self._labels_with_counts(conn)})
-        finally:
-            conn.close()
-
-    def _conv_labels(self, conn, conv_id):
-        """Every label a conversation carries, in the user's configured order.
-        An empty list is the blank state. Shape matches what the sidebar and
-        header squares render."""
-        rows = conn.execute(
-            "SELECT l.id, l.name, l.color FROM udb.conversation_labels cl "
-            "JOIN udb.labels l ON l.id = cl.label_id "
-            "WHERE cl.conversation_id = ? "
-            "ORDER BY l.sort_index ASC, LOWER(l.name) ASC",
-            (conv_id,),
-        ).fetchall()
-        return [{"id": r["id"], "name": r["name"], "color": r["color"]} for r in rows]
-
-    def _labels_by_conv(self, conn, ids):
-        """Batched _conv_labels for a page of conversations: {conv_id: [label]}.
-        One query for the whole page, so the sidebar never does an N+1."""
-        out = {}
-        if not ids:
-            return out
-        CH = 400
-        for i in range(0, len(ids), CH):
-            chunk = list(ids[i:i + CH])
-            marks = ",".join("?" * len(chunk))
-            for r in conn.execute(
-                "SELECT cl.conversation_id AS cid, l.id AS id, l.name AS name, "
-                "       l.color AS color "
-                "FROM udb.conversation_labels cl "
-                "JOIN udb.labels l ON l.id = cl.label_id "
-                f"WHERE cl.conversation_id IN ({marks}) "
-                "ORDER BY l.sort_index ASC, LOWER(l.name) ASC",
-                tuple(chunk),
-            ).fetchall():
-                out.setdefault(r["cid"], []).append(
-                    {"id": r["id"], "name": r["name"], "color": r["color"]}
-                )
-        return out
+        self._handle_db(lambda conn: labels.reorder_labels(conn, payload))
 
     def _api_conversation_label_get(self, conv_id):
-        """The conversation's current labels. Lets the header re-read a single
-        conversation's assignments after a bulk/restore without refetching its
-        whole message list."""
-        conv_id = (conv_id or "").strip()
-        conn = open_db(self.db_path)
-        try:
-            self.send_json({"conv_id": conv_id,
-                            "labels": self._conv_labels(conn, conv_id)})
-        finally:
-            conn.close()
+        self._handle_db(lambda conn: labels.get_conv_label(conn, conv_id))
 
     def _api_conversation_label_set(self):
-        """Change which labels a conversation carries. The body names one of:
-
-          {label_id, action: "add" | "remove" | "toggle" | "only"}
-            act on that single label ("only" replaces the whole set with it),
-          {label_ids: [...]}
-            replace the whole set with exactly these,
-          {label_id: null}  /  {label_ids: []}
-            clear back to blank — the rows are removed, never swapped for a
-            placeholder label.
-
-        Always answers with the conversation's full label list."""
         payload = self._read_json_body()
-        conv_id = str(payload.get("conv_id") or "").strip()
-        if not conv_id:
-            self.send_json({"error": "conv_id is required"}, 400); return
-        raw = payload.get("label_id")
-        label_id = str(raw).strip() if raw else ""
-        action = str(payload.get("action") or "").strip().lower()
-        id_list = payload.get("label_ids")
-        conn = open_db(self.db_path)
-        try:
-            if not conn.execute(
-                "SELECT 1 FROM conversations WHERE id = ?", (conv_id,)
-            ).fetchone():
-                self.send_json({"error": "Unknown conversation"}, 404); return
-            known = {r["id"] for r in
-                     conn.execute("SELECT id FROM udb.labels").fetchall()}
-            now = time.time()
-
-            def add(lid):
-                conn.execute(
-                    "INSERT OR IGNORE INTO udb.conversation_labels"
-                    "(conversation_id, label_id, assigned_at) VALUES (?, ?, ?)",
-                    (conv_id, lid, now),
-                )
-
-            def clear():
-                conn.execute(
-                    "DELETE FROM udb.conversation_labels WHERE conversation_id = ?",
-                    (conv_id,),
-                )
-
-            if isinstance(id_list, list):
-                wanted = [str(x).strip() for x in id_list if str(x or "").strip()]
-                for lid in wanted:
-                    if lid not in known:
-                        self.send_json({"error": "Unknown label"}, 404); return
-                clear()
-                for lid in wanted:
-                    add(lid)
-            elif not label_id:
-                # No label named and no list: clear to blank.
-                clear()
-            else:
-                if label_id not in known:
-                    self.send_json({"error": "Unknown label"}, 404); return
-                has = conn.execute(
-                    "SELECT 1 FROM udb.conversation_labels "
-                    "WHERE conversation_id = ? AND label_id = ?",
-                    (conv_id, label_id),
-                ).fetchone() is not None
-                if action == "remove" or (action == "toggle" and has):
-                    conn.execute(
-                        "DELETE FROM udb.conversation_labels "
-                        "WHERE conversation_id = ? AND label_id = ?",
-                        (conv_id, label_id),
-                    )
-                elif action == "only":
-                    clear()
-                    add(label_id)
-                else:  # "add", "toggle" (not present), or no action given
-                    add(label_id)
-            conn.commit()
-            self.send_json({"conv_id": conv_id,
-                            "labels": self._conv_labels(conn, conv_id)})
-        finally:
-            conn.close()
+        self._handle_db(lambda conn: labels.set_conv_label(conn, payload))
 
     # ── Conditional bulk labeling ────────────────────────────────────────────
-    # A deliberately narrow selection tool: it can only Set Label To (a label,
-    # or Blank). It never deletes, archives, moves, or renames. All populated
-    # criteria are combined with AND. Batches are deterministic — a stable id
-    # tie-breaker is always appended to the ordering.
-
-    def _bulk_epoch_day(self, s):
-        """Local-midnight epoch for a YYYY-MM-DD string, else None. Dates are
-        interpreted in local time to match the dates the UI shows."""
-        s = str(s or "").strip()
-        if not _DATE_RE.match(s):
-            return None
-        try:
-            y, m, d = (int(x) for x in s.split("-"))
-            return datetime.datetime(y, m, d).timestamp()
-        except Exception:
-            return None
-
-    def _bulk_epoch_next_day(self, s):
-        """Local-midnight epoch of the day AFTER the given date, for building
-        half-open [start, end) day ranges."""
-        base = self._bulk_epoch_day(s)
-        if base is None:
-            return None
-        try:
-            y, m, d = (int(x) for x in str(s).split("-"))
-            nxt = datetime.date(y, m, d) + datetime.timedelta(days=1)
-            return datetime.datetime(nxt.year, nxt.month, nxt.day).timestamp()
-        except Exception:
-            return None
-
-    def _bulk_date_clause(self, where, params, col, spec):
-        """Append a date filter on `col` (create_time / update_time). Missing
-        timestamps (0/NULL) never match a date filter."""
-        if not isinstance(spec, dict):
-            return
-        op = str(spec.get("op") or "any").lower()
-        if op == "before":
-            e = self._bulk_epoch_day(spec.get("date"))
-            if e is not None:
-                where.append(f"({col} > 0 AND {col} < ?)"); params.append(e)
-        elif op == "after":
-            e = self._bulk_epoch_next_day(spec.get("date"))
-            if e is not None:
-                where.append(f"({col} > 0 AND {col} >= ?)"); params.append(e)
-        elif op == "between":
-            a = self._bulk_epoch_day(spec.get("date"))
-            an = self._bulk_epoch_next_day(spec.get("date"))
-            b = self._bulk_epoch_day(spec.get("date2"))
-            bn = self._bulk_epoch_next_day(spec.get("date2"))
-            if a is not None and b is not None:
-                start, end = min(a, b), max(an, bn)
-                where.append(f"({col} > 0 AND {col} >= ? AND {col} < ?)")
-                params += [start, end]
-
-    def _build_bulk_query(self, crit, use_fts=True):
-        """Turn a criteria dict into (where_sql, params, order_sql, limit_n)
-        for the full eligible set — every criterion is optional; populated
-        ones are ANDed together. Never excludes rows the action would treat as
-        a no-op; callers that need that (an "All matching" apply, so the limit
-        applies only to conversations the write would actually change) AND in
-        a clause from _bulk_noop_clause themselves."""
-        where = ["COALESCE(cm.deleted, 0) = 0"]
-        params = []
-
-        prov = str(crit.get("provider") or "all").lower()
-        if prov in ("claude", "chatgpt"):
-            where.append("c.provider = ?"); params.append(prov)
-
-        self._bulk_date_clause(where, params, "c.create_time", crit.get("started"))
-        self._bulk_date_clause(where, params, "c.update_time", crit.get("ended"))
-
-        # Labels/folders/tags/keywords are each a list of chip values, OR'd
-        # together within the field (any chip matches); an empty list means no
-        # filter on that field ("Any"). Fields are still ANDed with each other.
-        labels = crit.get("labels")
-        labels = labels if isinstance(labels, list) else []
-        if labels:
-            ors = []
-            for lab in labels:
-                lab = str(lab)
-                if lab == "blank":
-                    ors.append("c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels)")
-                elif re.fullmatch(r"[0-9a-f]{32}", lab):
-                    ors.append("c.id IN (SELECT conversation_id FROM udb.conversation_labels "
-                               "WHERE label_id = ?)"); params.append(lab)
-                else:
-                    ors.append("0")
-            where.append("(" + " OR ".join(ors) + ")")
-
-        folders = crit.get("folders")
-        folders = folders if isinstance(folders, list) else []
-        if folders:
-            ors = []
-            for fol in folders:
-                fol = str(fol)
-                if fol == "none":
-                    ors.append("c.id NOT IN (SELECT conversation_id FROM udb.folder_items)")
-                elif re.fullmatch(r"[0-9a-f]{32}", fol):
-                    ors.append("c.id IN (SELECT conversation_id FROM udb.folder_items "
-                               "WHERE folder_id = ?)"); params.append(fol)
-                else:
-                    ors.append("0")
-            where.append("(" + " OR ".join(ors) + ")")
-
-        tags = crit.get("tags")
-        tags = [str(t).strip() for t in tags if str(t).strip()] if isinstance(tags, list) else []
-        if tags:
-            marks = ",".join("?" * len(tags))
-            where.append("c.id IN (SELECT conversation_id FROM udb.conversation_tags "
-                         f"WHERE tag IN ({marks}))")
-            params += tags
-
-        # Keyword reuses the same FTS-then-LIKE behaviour as the main search so
-        # there is only one search implementation. len<3 or an FTS parse error
-        # falls back to a title/tag LIKE (see _bulk_run's retry). Multiple
-        # keyword chips are OR'd together.
-        keywords = crit.get("keywords")
-        keywords = [str(k).strip() for k in keywords if str(k).strip()] if isinstance(keywords, list) else []
-        if keywords:
-            ors = []
-            for q in keywords:
-                like = f"%{q}%"
-                if use_fts and len(q) >= 3:
-                    ors.append(
-                        "c.id IN ("
-                        "SELECT conversation_id FROM search_index WHERE search_index MATCH ? "
-                        "UNION SELECT c2.id FROM conversations c2 "
-                        "  LEFT JOIN conversation_meta cm2 ON cm2.conversation_id = c2.id "
-                        "  WHERE COALESCE(cm2.deleted,0)=0 "
-                        "    AND COALESCE(NULLIF(cm2.custom_title,''), c2.title) LIKE ? "
-                        "UNION SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?)"
-                    )
-                    params += [q, like, like]
-                else:
-                    ors.append(
-                        "(COALESCE(NULLIF(cm.custom_title,''), c.title) LIKE ? "
-                        "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?))"
-                    )
-                    params += [like, like]
-            where.append("(" + " OR ".join(ors) + ")")
-
-        col, direction = {
-            "started_asc":  ("c.create_time", "ASC"),
-            "started_desc": ("c.create_time", "DESC"),
-            "updated_asc":  ("c.update_time", "ASC"),
-            "updated_desc": ("c.update_time", "DESC"),
-        }.get(str(crit.get("order") or "started_asc"), ("c.create_time", "ASC"))
-        # Stable id tie-breaker makes batches deterministic when timestamps tie.
-        order_sql = f"ORDER BY {col} {direction}, c.id ASC"
-
-        limit_n = None
-        lim = crit.get("limit") or {}
-        if isinstance(lim, dict) and lim.get("mode") == "first":
-            try:
-                n = int(lim.get("n"))
-                if n > 0:
-                    limit_n = n
-            except Exception:
-                pass
-        return " AND ".join(where), params, order_sql, limit_n
-
-    def _bulk_action_targets(self, conn, crit):
-        """Resolve the criteria's action into (action, mode, ids_names):
-          action    — "added", "removed", or "cleared".
-          mode      — "all" (every current label def) or "specific".
-          ids_names — [(label_id, name), ...] the action actually touches;
-                      empty for "cleared" (it never targets specific labels).
-        Unknown/deleted label ids in label_targets are silently dropped rather
-        than failing — a saved Unfinished Label Run must keep working even if
-        a label it names is later renamed or deleted; the caller decides
-        whether an empty result is worth rejecting (only relevant when the
-        run/apply is first created, from live, user-picked ids)."""
-        action = str(crit.get("label_action") or "added").lower()
-        if action not in ("added", "removed", "cleared"):
-            action = "added"
-        if action == "cleared":
-            return action, "all", []
-        raw = crit.get("label_targets")
-        raw = raw if isinstance(raw, list) else []
-        if "all" in [str(t) for t in raw]:
-            rows = conn.execute("SELECT id, name FROM udb.labels").fetchall()
-            return action, "all", [(r["id"], r["name"]) for r in rows]
-        ids_names = []
-        for t in raw:
-            t = str(t)
-            if not re.fullmatch(r"[0-9a-f]{32}", t):
-                continue
-            row = conn.execute("SELECT name FROM udb.labels WHERE id = ?", (t,)).fetchone()
-            if row:
-                ids_names.append((t, row["name"]))
-        return action, "specific", ids_names
-
-    def _bulk_noop_clause(self, action, ids_names):
-        """(sql, params) that is true for a conversation the action would NOT
-        change — already in the target state — or None if there's nothing to
-        exclude (an Added/Removed with no resolved target labels can never
-        change anything, so every eligible row would be a no-op; callers treat
-        that as "nothing to skip" and just get zero out of the not-already
-        count naturally). Never has a leading AND — callers wrap it."""
-        ids = [i for i, _ in ids_names]
-        if action == "cleared":
-            return "c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels)", []
-        if not ids:
-            return None
-        marks = ",".join("?" * len(ids))
-        if action == "added":
-            # No-op: the conversation already carries every one of these.
-            return (
-                f"(SELECT COUNT(DISTINCT label_id) FROM udb.conversation_labels "
-                f"WHERE conversation_id = c.id AND label_id IN ({marks})) = {len(ids)}",
-                list(ids),
-            )
-        # action == "removed": no-op if the conversation carries none of these.
-        return (
-            f"c.id NOT IN (SELECT conversation_id FROM udb.conversation_labels "
-            f"WHERE label_id IN ({marks}))",
-            list(ids),
-        )
-
-    @staticmethod
-    def _bulk_action_summary(action, mode, ids_names):
-        """Frozen, human-readable "Labels should be" line — e.g. "Added:
-        Housing, Research", "Removed: All", "Cleared"."""
-        word = {"added": "Added", "removed": "Removed", "cleared": "Cleared"}[action]
-        if action == "cleared":
-            return word
-        if mode == "all":
-            return f"{word}: All"
-        names = [n for _, n in ids_names]
-        return f"{word}: {', '.join(names)}" if names else f"{word}: (none)"
-
-    def _bulk_select(self, conn, crit, action_spec):
-        """Resolve the criteria against the action into:
-          eligible    — conversations matching the conditions (action ignored),
-          not_already  — of those, how many the action would actually change,
-          batch_ids    — the rows Apply will actually write, in order,
-          limit_n      — the first-N limit, or None for "all".
-        A "First N" limit is a run-style batch: it takes the first N of the
-        full eligible set unconditionally, the same rows Continue would take
-        next, rather than skipping ones already in the target state — so
-        Preview matches what Apply/Continue actually do. "All matching" keeps
-        the old not-already-skip behaviour, since it always finishes in one
-        shot and skipping no-ops there is a pure efficiency win with no
-        behaviour difference for the caller. Retries once without FTS if the
-        keyword makes SQLite's MATCH raise."""
-        action, _mode, ids_names = action_spec
-        noop = self._bulk_noop_clause(action, ids_names)
-        FROM = ("FROM conversations c "
-                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id WHERE ")
-        last_err = None
-        for use_fts in (True, False):
-            try:
-                # Everything matching the conditions (action ignored).
-                w0, p0, order_sql, limit_n = self._build_bulk_query(crit, use_fts)
-                eligible = conn.execute("SELECT COUNT(*) " + FROM + w0, p0).fetchone()[0]
-                # Matching AND the action would actually change it.
-                if noop:
-                    noop_sql, noop_params = noop
-                    w1, p1 = w0 + f" AND NOT ({noop_sql})", p0 + noop_params
-                else:
-                    w1, p1 = w0, p0
-                not_already = conn.execute(
-                    "SELECT COUNT(*) " + FROM + w1, p1
-                ).fetchone()[0]
-                if limit_n is not None:
-                    sql = "SELECT c.id " + FROM + w0 + " " + order_sql + " LIMIT ?"
-                    batch_ids = [r[0] for r in conn.execute(sql, (*p0, limit_n)).fetchall()]
-                else:
-                    sql = "SELECT c.id " + FROM + w1 + " " + order_sql
-                    batch_ids = [r[0] for r in conn.execute(sql, p1).fetchall()]
-                return {
-                    "eligible": eligible, "not_already": not_already,
-                    "batch_ids": batch_ids, "limit_n": limit_n,
-                }
-            except sqlite3.OperationalError as e:
-                last_err = e
-                if use_fts:
-                    continue
-                raise
-        raise last_err
-
-    def _bulk_eligible_ids(self, conn, crit):
-        """The full ordered set of conversations matching the criteria, target
-        ignored — the frozen list an Unfinished Label Run is built from and
-        sliced against on every Continue. Retries once without FTS, like the
-        other bulk helpers, if the keyword makes SQLite's MATCH raise."""
-        FROM = ("FROM conversations c "
-                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id WHERE ")
-        last_err = None
-        for use_fts in (True, False):
-            try:
-                where, params, order_sql, _limit_n = self._build_bulk_query(crit, use_fts)
-                sql = "SELECT c.id " + FROM + where + " " + order_sql
-                return [r[0] for r in conn.execute(sql, params).fetchall()]
-            except sqlite3.OperationalError as e:
-                last_err = e
-                if use_fts:
-                    continue
-                raise
-        raise last_err
-
-    def _bulk_page(self, conn, crit, action_spec, offset, limit):
-        """One page of the batch, resolved entirely in SQL.
-
-        _bulk_select materializes every id because Apply needs them all. A
-        preview only ever shows a page at a time, so this counts with COUNT(*)
-        and fetches with LIMIT/OFFSET instead — otherwise each "Load more" would
-        re-materialize the whole history. Returns (rows, total), where total is
-        the size of the batch the run would change. Retries once without FTS,
-        like _bulk_select, if the keyword makes SQLite's MATCH raise."""
-        action, _mode, ids_names = action_spec
-        # A "First N" limit is a run-style batch: the page is the first N of
-        # the full eligible set (matches _bulk_select), not the
-        # would-actually-change set. "All matching" keeps the old
-        # not-already-skip behaviour.
-        noop = None if (crit.get("limit") or {}).get("mode") == "first" \
-            else self._bulk_noop_clause(action, ids_names)
-        FROM = ("FROM conversations c "
-                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id WHERE ")
-        last_err = None
-        for use_fts in (True, False):
-            try:
-                where, params, order_sql, limit_n = self._build_bulk_query(crit, use_fts)
-                if noop:
-                    noop_sql, noop_params = noop
-                    where, params = where + f" AND NOT ({noop_sql})", params + noop_params
-                total = conn.execute(
-                    "SELECT COUNT(*) " + FROM + where, params
-                ).fetchone()[0]
-                # A first-N limit caps the batch, and so the page too.
-                if limit_n is not None:
-                    total = min(total, limit_n)
-                page_n = min(limit, max(0, total - offset))
-                if page_n <= 0:
-                    return [], total
-                rows = conn.execute(
-                    "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
-                    "c.create_time, c.update_time, c.message_count, c.preview "
-                    + FROM + where + " " + order_sql + " LIMIT ? OFFSET ?",
-                    (*params, page_n, offset),
-                ).fetchall()
-                return [dict(r) for r in rows], total
-            except sqlite3.OperationalError as e:
-                last_err = e
-                if use_fts:
-                    continue
-                raise
-        raise last_err
-
-    def _bulk_write(self, conn, ids, action_spec):
-        """Apply the action to `ids` — Added/Removed touch only the resolved
-        target labels (existing labels the batch already carries are left
-        alone), Cleared wipes every label the batch carries. IN clauses /
-        executemany are chunked to stay under SQLite's variable limit. The
-        caller owns the transaction (commit / rollback)."""
-        if not ids:
-            return
-        action, _mode, ids_names = action_spec
-        target_ids = [i for i, _ in ids_names]
-        CH = 400
-        now = time.time()
-        for i in range(0, len(ids), CH):
-            chunk = ids[i:i + CH]
-            marks = ",".join("?" * len(chunk))
-            if action == "cleared":
-                conn.execute(
-                    f"DELETE FROM udb.conversation_labels WHERE conversation_id IN ({marks})",
-                    tuple(chunk),
-                )
-            elif action == "removed":
-                if not target_ids:
-                    continue
-                tmarks = ",".join("?" * len(target_ids))
-                conn.execute(
-                    f"DELETE FROM udb.conversation_labels WHERE conversation_id IN ({marks}) "
-                    f"AND label_id IN ({tmarks})",
-                    tuple(chunk) + tuple(target_ids),
-                )
-            elif action == "added" and target_ids:
-                conn.executemany(
-                    "INSERT OR IGNORE INTO udb.conversation_labels"
-                    "(conversation_id, label_id, assigned_at) VALUES (?, ?, ?)",
-                    [(cid, lid, now) for cid in chunk for lid in target_ids],
-                )
-
-    @staticmethod
-    def _bulk_fmt_day(s):
-        """YYYY-MM-DD → 'Apr 1' for the readable history summary."""
-        try:
-            y, m, d = (int(x) for x in str(s).split("-"))
-            return f"{datetime.date(y, m, d):%b} {d}"
-        except Exception:
-            return str(s)
-
-    def _bulk_label_names(self, conn, labels):
-        """Resolve a list of label chip values (ids, or 'blank') to display
-        names, dropping ones with no meaning; a deleted label reads 'unknown'
-        rather than vanishing, so old runs/history stay honest about intent."""
-        out = []
-        for lab in labels if isinstance(labels, list) else []:
-            lab = str(lab)
-            if lab == "blank":
-                out.append("Blank")
-            elif re.fullmatch(r"[0-9a-f]{32}", lab):
-                r = conn.execute("SELECT name FROM udb.labels WHERE id = ?", (lab,)).fetchone()
-                if r is None:
-                    out.append("unknown")
-                else:
-                    out.append(str(r["name"] or "").strip() or "(unnamed)")
-        return out
-
-    def _bulk_folder_names(self, conn, folders):
-        out = []
-        for fol in folders if isinstance(folders, list) else []:
-            fol = str(fol)
-            if fol == "none":
-                out.append("No folder")
-            elif re.fullmatch(r"[0-9a-f]{32}", fol):
-                r = conn.execute("SELECT name FROM udb.folders WHERE id = ?", (fol,)).fetchone()
-                out.append(r["name"] if r else "unknown")
-        return out
-
-    _BULK_ORDER_LABELS = {
-        "started_asc": "Started oldest first", "started_desc": "Started newest first",
-        "updated_asc": "Last Message oldest first", "updated_desc": "Last Message newest first",
-    }
-
-    def _bulk_describe(self, conn, crit):
-        """The execution-time, human-readable filter+order summary stored with a
-        bulk operation. Resolves label/folder ids to their *current* names and
-        stores the text, so the history row stays readable even if a label is
-        later renamed or deleted (it is never re-rendered from live ids)."""
-        parts = []
-        prov = str(crit.get("provider") or "all").lower()
-        parts.append({"claude": "Claude", "chatgpt": "ChatGPT"}.get(prov, "All providers"))
-
-        def dpart(spec, name):
-            if not isinstance(spec, dict):
-                return None
-            op = str(spec.get("op") or "any").lower()
-            if op == "before" and spec.get("date"):
-                return f"{name} before {self._bulk_fmt_day(spec['date'])}"
-            if op == "after" and spec.get("date"):
-                return f"{name} after {self._bulk_fmt_day(spec['date'])}"
-            if op == "between" and spec.get("date") and spec.get("date2"):
-                return (f"{name} {self._bulk_fmt_day(spec['date'])}"
-                        f"–{self._bulk_fmt_day(spec['date2'])}")
-            return None
-
-        for p in (dpart(crit.get("started"), "Started"), dpart(crit.get("ended"), "Last Message")):
-            if p:
-                parts.append(p)
-
-        label_names = self._bulk_label_names(conn, crit.get("labels"))
-        if label_names:
-            parts.append(f"Has Label: {', '.join(label_names)}")
-
-        folder_names = self._bulk_folder_names(conn, crit.get("folders"))
-        if folder_names:
-            parts.append(f"Folder: {', '.join(folder_names)}")
-
-        tags = [str(t).strip() for t in (crit.get("tags") or []) if str(t).strip()]
-        if tags:
-            parts.append(f"Tag: {', '.join(tags)}")
-        keywords = [str(k).strip() for k in (crit.get("keywords") or []) if str(k).strip()]
-        if keywords:
-            parts.append(f"Keyword: {', '.join(keywords)}")
-
-        parts.append(self._BULK_ORDER_LABELS.get(
-            str(crit.get("order") or "started_asc"), "Started oldest first"))
-        return " · ".join(parts)
-
-    def _bulk_criteria_lines(self, conn, crit):
-        """A read-only "Criteria:" line list for a saved Unfinished Label Run,
-        frozen at creation time (label/folder names resolved then, so a later
-        rename or deletion never rewrites what the run says it selected)."""
-        lines = []
-        prov = str(crit.get("provider") or "all").lower()
-        lines.append(("Provider", {"claude": "Claude", "chatgpt": "ChatGPT"}.get(prov, "All")))
-
-        def dval(spec):
-            if not isinstance(spec, dict):
-                return "Any"
-            op = str(spec.get("op") or "any").lower()
-            if op == "before" and spec.get("date"):
-                return f"Before {self._bulk_fmt_day(spec['date'])}"
-            if op == "after" and spec.get("date"):
-                return f"After {self._bulk_fmt_day(spec['date'])}"
-            if op == "between" and spec.get("date") and spec.get("date2"):
-                return f"{self._bulk_fmt_day(spec['date'])} - {self._bulk_fmt_day(spec['date2'])}"
-            return "Any"
-
-        lines.append(("Started", dval(crit.get("started"))))
-        lines.append(("Last Message", dval(crit.get("ended"))))
-
-        label_names = self._bulk_label_names(conn, crit.get("labels"))
-        lines.append(("Has Label", ", ".join(label_names) if label_names else "Any"))
-
-        tags = [str(t).strip() for t in (crit.get("tags") or []) if str(t).strip()]
-        lines.append(("Tag", ", ".join(tags) if tags else "Any"))
-
-        folder_names = self._bulk_folder_names(conn, crit.get("folders"))
-        lines.append(("Folder", ", ".join(folder_names) if folder_names else "Any"))
-
-        keywords = [str(k).strip() for k in (crit.get("keywords") or []) if str(k).strip()]
-        lines.append(("Keyword", ", ".join(keywords) if keywords else "Any"))
-
-        lines.append(("Order", self._BULK_ORDER_LABELS.get(
-            str(crit.get("order") or "started_asc"), "Started oldest first")))
-
-        action, mode, ids_names = self._bulk_action_targets(conn, crit)
-        lines.append(("Labels should be", self._bulk_action_summary(action, mode, ids_names)))
-        return lines
-
-    # Recent Bulk Changes: how many rows to keep/show. Default 5, user-adjustable.
-    _BULK_HISTORY_DEFAULT = 5
-
-    def _bulk_retention(self, conn):
-        """The Recent-Bulk-Changes retention count (clamped 0..50)."""
-        n = self._BULK_HISTORY_DEFAULT
-        try:
-            row = conn.execute(
-                "SELECT pref_value FROM ui_preferences WHERE pref_key = 'bulkHistoryRetention'"
-            ).fetchone()
-            if row and row[0] is not None:
-                try:
-                    n = int(json.loads(row[0]))
-                except Exception:
-                    n = int(row[0])
-        except (sqlite3.Error, ValueError, TypeError):
-            n = self._BULK_HISTORY_DEFAULT
-        return max(0, min(50, n))
-
-    def _prune_bulk_history(self, conn, n):
-        """Keep only the newest `n` history rows, dropping the oldest excess."""
-        conn.execute(
-            "DELETE FROM udb.label_bulk_history WHERE id NOT IN ("
-            "SELECT id FROM udb.label_bulk_history "
-            "ORDER BY created_at DESC, id DESC LIMIT ?)",
-            (max(0, int(n)),),
-        )
-
-    def _bulk_history_rows(self, conn, n):
-        rows = conn.execute(
-            "SELECT id, created_at, criteria_json, description, label_action, "
-            "action_summary, limit_used, order_json, eligible_count, changed_count "
-            "FROM udb.label_bulk_history ORDER BY created_at DESC, id DESC LIMIT ?",
-            (max(0, int(n)),),
-        ).fetchall()
-        out = []
-        for r in rows:
-            try:
-                crit = json.loads(r["criteria_json"] or "{}")
-            except Exception:
-                crit = {}
-            out.append({
-                "id": r["id"], "created_at": r["created_at"],
-                "description": r["description"],
-                "label_action": r["label_action"],
-                # A row recorded before this action model existed has no
-                # frozen summary; fall back to something rather than blank.
-                "action_summary": r["action_summary"] or "(bulk change)",
-                "limit_used": r["limit_used"],
-                "eligible_count": r["eligible_count"],
-                "changed_count": r["changed_count"],
-                "criteria": crit,
-            })
-        return out
-
-    def _bulk_validate_action(self, action, mode, ids_names):
-        """Error string, or None if the action is well-formed enough to run.
-        Added/Removed need at least one label actually resolved (either a
-        specific chip whose label still exists, or "All" with at least one
-        label defined) — an empty target can never change anything."""
-        if action != "cleared" and not ids_names:
-            return "Which labels it should apply to: choose at least one label, or All."
-        return None
-
     def _api_bulk_preview(self):
-        """Count only — never mutates. Reports the three numbers the UI shows:
-        matching, would-actually-change, and how many this run would change."""
         crit = self._read_json_body()
-        conn = open_db(self.db_path)
-        try:
-            action_spec = self._bulk_action_targets(conn, crit)
-            err = self._bulk_validate_action(*action_spec)
-            if err:
-                self.send_json({"error": err}, 400); return
-            try:
-                sel = self._bulk_select(conn, crit, action_spec)
-            except sqlite3.Error:
-                self.send_json({"error": "Could not evaluate the criteria"}, 400); return
-            action, mode, ids_names = action_spec
-            self.send_json({
-                "eligible": sel["eligible"],
-                "not_already": sel["not_already"],
-                "will_change": len(sel["batch_ids"]),
-                "limit_n": sel["limit_n"],
-                "label_action": action,
-                "action_summary": self._bulk_action_summary(action, mode, ids_names),
-            })
-        finally:
-            conn.close()
+        self._handle_db(lambda conn: bulk_labels.bulk_preview(conn, crit))
 
     def _api_bulk_preview_list(self):
-        """The batch itself, as conversation rows the sidebar can render.
-
-        This is what makes Preview *apply* the criteria: the sidebar shows the
-        exact conversations this run would change, in the order the run would
-        take them, instead of only a count. Never mutates. Body is the same
-        criteria object as bulk-preview, plus optional limit/offset for paging.
-        """
+        """The one bulk handler that is not a straight _handle_db wrapper: the
+        rows go out through the shared conversation-list renderer, so the
+        module returns the page and this sends it."""
         payload = self._read_json_body()
-        crit = payload.get("criteria") if isinstance(payload.get("criteria"), dict) else payload
-        try:
-            limit = max(1, min(200, int(payload.get("limit") or 50)))
-        except (TypeError, ValueError):
-            limit = 50
-        try:
-            offset = max(0, int(payload.get("offset") or 0))
-        except (TypeError, ValueError):
-            offset = 0
         conn = open_db(self.db_path)
         try:
-            action_spec = self._bulk_action_targets(conn, crit)
-            try:
-                rows, total = self._bulk_page(conn, crit, action_spec, offset, limit)
-            except sqlite3.Error:
-                self.send_json({"error": "Could not evaluate the criteria"}, 400); return
-            prov = str(crit.get("provider") or "all").lower()
-            self._send_conv_list(
-                conn, rows, total, offset, limit,
-                prov if prov in ("claude", "chatgpt") else None,
-            )
+            rows, total, offset, limit, provider = \
+                bulk_labels.bulk_preview_page(conn, payload)
+            self._send_conv_list(conn, rows, total, offset, limit, provider)
+        except ApiError as e:
+            self.send_json({"error": e.message}, e.status)
         finally:
             conn.close()
 
     def _api_bulk_apply(self):
-        """Mutate only here, transactionally. A "First N" limit that doesn't
-        cover every eligible conversation saves an Unfinished Label Run instead
-        of logging straight to Recent Bulk Changes — see _api_bulk_run_continue
-        for how it is carried forward. Everything else (an "All matching" apply,
-        or a "First N" that happens to cover everything) completes in one shot
-        and logs directly, as before."""
         crit = self._read_json_body()
-        conn = open_db(self.db_path)
-        try:
-            action_spec = self._bulk_action_targets(conn, crit)
-            err = self._bulk_validate_action(*action_spec)
-            if err:
-                self.send_json({"error": err}, 400); return
-            action, mode, ids_names = action_spec
-            action_summary = self._bulk_action_summary(action, mode, ids_names)
-            try:
-                sel = self._bulk_select(conn, crit, action_spec)
-            except sqlite3.Error:
-                self.send_json({"error": "Could not evaluate the criteria"}, 400); return
-            ids = sel["batch_ids"]
-            changed = len(ids)
-            desc = self._bulk_describe(conn, crit)
-
-            if sel["limit_n"] is not None and changed < sel["eligible"]:
-                # Partial "First N": freeze the full ordered eligible set and
-                # save it as an Unfinished Label Run instead of completing.
-                try:
-                    all_ids = self._bulk_eligible_ids(conn, crit)
-                except sqlite3.Error:
-                    self.send_json({"error": "Could not evaluate the criteria"}, 400); return
-                rid = uuid.uuid4().hex
-                lines = self._bulk_criteria_lines(conn, crit)
-                order_desc = self._BULK_ORDER_LABELS.get(
-                    str(crit.get("order") or "started_asc"), "Started oldest first")
-                try:
-                    self._bulk_write(conn, ids, action_spec)
-                    conn.execute(
-                        "INSERT INTO udb.label_bulk_runs(id, created_at, criteria_json, "
-                        "criteria_lines_json, order_desc, label_action, action_summary, "
-                        "total_qualifying, completed_count, batch_size, ids_json) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                        (rid, time.time(), json.dumps(crit, ensure_ascii=False),
-                         json.dumps(lines, ensure_ascii=False), order_desc,
-                         action, action_summary, sel["eligible"], changed,
-                         sel["limit_n"], json.dumps(all_ids)),
-                    )
-                    conn.commit()
-                except sqlite3.Error:
-                    conn.rollback()
-                    self.send_json({"error": "The operation failed and was rolled back"}, 500)
-                    return
-                self.send_json({
-                    "eligible": sel["eligible"], "not_already": sel["not_already"],
-                    "changed": changed, "description": desc, "action_summary": action_summary,
-                    "run_id": rid, "run_complete": False,
-                })
-                return
-
-            hid = uuid.uuid4().hex
-            try:
-                self._bulk_write(conn, ids, action_spec)
-                conn.execute(
-                    "INSERT INTO udb.label_bulk_history(id, created_at, criteria_json, description, "
-                    "label_action, action_summary, limit_used, order_json, "
-                    "eligible_count, changed_count) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (hid, time.time(), json.dumps(crit, ensure_ascii=False), desc,
-                     action, action_summary, sel["limit_n"],
-                     json.dumps(crit.get("order") or "started_asc"),
-                     sel["eligible"], changed),
-                )
-                self._prune_bulk_history(conn, self._bulk_retention(conn))
-                conn.commit()
-            except sqlite3.Error:
-                conn.rollback()
-                self.send_json({"error": "The operation failed and was rolled back"}, 500)
-                return
-            self.send_json({
-                "eligible": sel["eligible"], "not_already": sel["not_already"],
-                "changed": changed, "history_id": hid, "description": desc,
-                "action_summary": action_summary, "run_complete": True,
-            })
-        finally:
-            conn.close()
+        self._handle_db(lambda conn: bulk_labels.bulk_apply(conn, crit))
 
     def _api_bulk_run_list(self):
-        """The saved Unfinished Label Runs, newest first."""
-        conn = open_db(self.db_path)
-        try:
-            rows = conn.execute(
-                "SELECT id, created_at, criteria_lines_json, label_action, action_summary, "
-                "total_qualifying, completed_count, batch_size "
-                "FROM udb.label_bulk_runs ORDER BY created_at DESC, id DESC"
-            ).fetchall()
-            out = []
-            for r in rows:
-                try:
-                    lines = json.loads(r["criteria_lines_json"] or "[]")
-                except Exception:
-                    lines = []
-                out.append({
-                    "id": r["id"], "created_at": r["created_at"],
-                    "criteria_lines": lines,
-                    "label_action": r["label_action"],
-                    "action_summary": r["action_summary"] or "(bulk change)",
-                    "total_qualifying": r["total_qualifying"],
-                    "completed_count": r["completed_count"],
-                    "batch_size": r["batch_size"],
-                })
-            self.send_json({"runs": out})
-        finally:
-            conn.close()
+        self._handle_db(bulk_labels.bulk_run_list)
 
     def _api_bulk_run_continue(self):
-        """Process the run's next batch: the same saved action, applied
-        unconditionally to the next `batch_size` ids in the run's frozen
-        order, starting right after completed_count. Never re-evaluates the
-        original criteria or looks at the conversations' current labels —
-        only the frozen list and the completed count decide what happens
-        next. Target label ids are re-resolved from the frozen criteria each
-        time only so a rename or deletion since the run started doesn't break
-        the write (a vanished label is just dropped from the write, per
-        _bulk_action_targets); the frozen action_summary/criteria_lines shown
-        to the user never change. Finishing the list removes the run and logs
-        one Recent-Bulk-Changes entry for the whole thing."""
         payload = self._read_json_body()
-        rid = str(payload.get("id") or "")
-        conn = open_db(self.db_path)
-        try:
-            row = conn.execute(
-                "SELECT * FROM udb.label_bulk_runs WHERE id = ?", (rid,)
-            ).fetchone()
-            if not row:
-                self.send_json({"error": "Run not found"}, 404); return
-            try:
-                batch_size = int(payload.get("batch_size"))
-                if batch_size < 1:
-                    raise ValueError
-            except (TypeError, ValueError):
-                batch_size = max(1, int(row["batch_size"] or 1))
-            try:
-                ids = json.loads(row["ids_json"] or "[]")
-            except Exception:
-                ids = []
-            try:
-                crit = json.loads(row["criteria_json"] or "{}")
-            except Exception:
-                crit = {}
-            action_spec = self._bulk_action_targets(conn, crit)
-            completed = int(row["completed_count"] or 0)
-            total = int(row["total_qualifying"] or len(ids))
-            batch = ids[completed:completed + batch_size]
-            changed = len(batch)
-            new_completed = completed + changed
-            try:
-                self._bulk_write(conn, batch, action_spec)
-                if new_completed >= total or not batch:
-                    desc = self._bulk_describe(conn, crit)
-                    hid = uuid.uuid4().hex
-                    conn.execute(
-                        "INSERT INTO udb.label_bulk_history(id, created_at, criteria_json, "
-                        "description, label_action, action_summary, limit_used, "
-                        "order_json, eligible_count, changed_count) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                        (hid, time.time(), row["criteria_json"], desc,
-                         row["label_action"], row["action_summary"], batch_size,
-                         json.dumps(crit.get("order") or "started_asc"), total, total),
-                    )
-                    conn.execute("DELETE FROM udb.label_bulk_runs WHERE id = ?", (rid,))
-                    self._prune_bulk_history(conn, self._bulk_retention(conn))
-                    conn.commit()
-                    self.send_json({
-                        "complete": True, "changed": changed, "history_id": hid,
-                        "completed_count": total, "total_qualifying": total,
-                    })
-                else:
-                    conn.execute(
-                        "UPDATE udb.label_bulk_runs SET completed_count = ?, batch_size = ? "
-                        "WHERE id = ?",
-                        (new_completed, batch_size, rid),
-                    )
-                    conn.commit()
-                    self.send_json({
-                        "complete": False, "changed": changed,
-                        "completed_count": new_completed, "total_qualifying": total,
-                        "batch_size": batch_size,
-                    })
-            except sqlite3.Error:
-                conn.rollback()
-                self.send_json({"error": "The operation failed and was rolled back"}, 500)
-        finally:
-            conn.close()
+        self._handle_db(lambda conn: bulk_labels.bulk_run_continue(conn, payload))
 
     def _api_bulk_run_delete(self, run_id):
-        """Delete only the saved run/progress — never touches any conversation
-        or the labels already applied by batches this run already processed."""
-        conn = open_db(self.db_path)
-        try:
-            conn.execute("DELETE FROM udb.label_bulk_runs WHERE id = ?", (run_id,))
-            conn.commit()
-            self.send_json({"ok": True})
-        finally:
-            conn.close()
+        self._handle_db(lambda conn: bulk_labels.bulk_run_delete(conn, run_id))
 
     def _api_bulk_history(self):
-        conn = open_db(self.db_path)
-        try:
-            n = self._bulk_retention(conn)
-            self.send_json({"history": self._bulk_history_rows(conn, n), "retention": n})
-        finally:
-            conn.close()
+        self._handle_db(bulk_labels.bulk_history)
 
     def _api_bulk_retention_set(self):
-        """Set the retention count and prune immediately (reducing it drops the
-        oldest excess rows). Returns the updated history + retention."""
         payload = self._read_json_body()
-        try:
-            n = int(payload.get("retention"))
-        except (TypeError, ValueError):
-            self.send_json({"error": "retention must be an integer"}, 400); return
-        n = max(0, min(50, n))
-        conn = open_db(self.db_path)
-        try:
-            conn.execute(
-                "INSERT OR REPLACE INTO ui_preferences(pref_key, pref_value) "
-                "VALUES ('bulkHistoryRetention', ?)",
-                (json.dumps(n),),
-            )
-            self._prune_bulk_history(conn, n)
-            conn.commit()
-            self.send_json({"history": self._bulk_history_rows(conn, n), "retention": n})
-        finally:
-            conn.close()
+        self._handle_db(lambda conn: bulk_labels.bulk_retention_set(conn, payload))
 
     # ── Manual safety snapshots ──────────────────────────────────────────────
-    # A snapshot captures only user-owned mutable metadata (labels, folders,
-    # tags, titles, archive/delete state, pins) — never message content. They
-    # are created only by an explicit button press (never automatically), capped
-    # at 10, and deleted only by the user. Restore is transactional and skips —
-    # rather than inventing — conversations a snapshot references that no longer
-    # resolve. The payload is versioned so future categories can be added.
-
-    SNAPSHOT_SCHEMA_VERSION = 1
-    SNAPSHOT_MAX = 10
-    # The restorable categories, in display order, with human-readable names.
-    SNAPSHOT_CATEGORIES = [
-        ("labels", "Labels"),
-        ("folders", "Folders"),
-        ("tags", "Tags"),
-        ("titles", "Titles"),
-        ("meta_state", "Archive/Delete state"),
-        ("pins", "Pins"),
-    ]
-
-    def _capture_snapshot(self, conn):
-        """Gather the mutable-metadata payload and a per-category count map."""
-        def rows(sql):
-            return [dict(r) for r in conn.execute(sql).fetchall()]
-        label_defs = rows("SELECT id, name, color, sort_index, created_at, updated_at FROM udb.labels")
-        label_asg = rows("SELECT conversation_id, label_id, assigned_at FROM udb.conversation_labels")
-        folder_defs = rows("SELECT id, name, created_at, updated_at, provider FROM udb.folders")
-        folder_mem = rows("SELECT conversation_id, folder_id, added_at, pinned FROM udb.folder_items")
-        tags = rows("SELECT conversation_id, tag, added_at FROM udb.conversation_tags")
-        titles = rows("SELECT conversation_id, custom_title FROM conversation_meta "
-                      "WHERE custom_title IS NOT NULL AND custom_title <> ''")
-        meta_state = rows("SELECT conversation_id, archived, deleted FROM conversation_meta "
-                          "WHERE COALESCE(archived,0)=1 OR COALESCE(deleted,0)=1")
-        pins = rows("SELECT conversation_id, pinned_at, order_index FROM pinned_conversations")
-        data = {
-            "labels": {"definitions": label_defs, "assignments": label_asg},
-            "folders": {"definitions": folder_defs, "memberships": folder_mem},
-            "tags": tags,
-            "titles": titles,
-            "meta_state": meta_state,
-            "pins": pins,
-        }
-        counts = {
-            "labels": len(label_defs), "label_assignments": len(label_asg),
-            "folders": len(folder_defs), "folder_items": len(folder_mem),
-            "tags": len(tags), "titles": len(titles),
-            "meta_state": len(meta_state), "pins": len(pins),
-        }
-        return data, counts
-
-    def _snapshot_list(self, conn):
-        rows = conn.execute(
-            "SELECT id, name, created_at, schema_version, item_count, payload_size, summary "
-            "FROM udb.snapshots ORDER BY created_at DESC, id DESC"
-        ).fetchall()
-        out = []
-        for r in rows:
-            try:
-                summary = json.loads(r["summary"] or "{}")
-            except Exception:
-                summary = {}
-            out.append({
-                "id": r["id"], "name": r["name"], "created_at": r["created_at"],
-                "schema_version": r["schema_version"], "item_count": r["item_count"],
-                "payload_size": r["payload_size"], "summary": summary,
-            })
-        return out
-
     def _api_snapshot_list(self):
-        conn = open_db(self.db_path)
-        try:
-            self.send_json({"snapshots": self._snapshot_list(conn), "max": self.SNAPSHOT_MAX})
-        finally:
-            conn.close()
+        self._handle_db(snapshots.snapshot_list)
 
     def _api_snapshot_create(self):
-        payload_in = self._read_json_body()
-        name = str(payload_in.get("name") or "").strip()[:120]
-        conn = open_db(self.db_path)
-        try:
-            count = conn.execute("SELECT COUNT(*) FROM udb.snapshots").fetchone()[0]
-            if count >= self.SNAPSHOT_MAX:
-                # Never auto-delete the oldest; the user must make room.
-                self.send_json({
-                    "error": f"Maximum of {self.SNAPSHOT_MAX} snapshots reached. "
-                             "Delete a snapshot before creating another.",
-                }, 409)
-                return
-            data, counts = self._capture_snapshot(conn)
-            blob = json.dumps(
-                {"version": self.SNAPSHOT_SCHEMA_VERSION, "categories": counts, "data": data},
-                ensure_ascii=False,
-            )
-            if not name:
-                name = "Snapshot " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-            sid = uuid.uuid4().hex
-            conn.execute(
-                "INSERT INTO udb.snapshots(id, name, created_at, schema_version, payload, "
-                "item_count, payload_size, summary) VALUES (?,?,?,?,?,?,?,?)",
-                (sid, name, time.time(), self.SNAPSHOT_SCHEMA_VERSION, blob,
-                 sum(counts.values()), len(blob.encode("utf-8")),
-                 json.dumps(counts, ensure_ascii=False)),
-            )
-            conn.commit()
-            self.send_json({"snapshots": self._snapshot_list(conn), "max": self.SNAPSHOT_MAX})
-        finally:
-            conn.close()
+        payload = self._read_json_body()
+        self._handle_db(lambda conn: snapshots.snapshot_create(conn, payload))
 
     def _api_snapshot_delete(self, sid):
-        sid = (sid or "").strip()
-        conn = open_db(self.db_path)
-        try:
-            conn.execute("DELETE FROM udb.snapshots WHERE id = ?", (sid,))
-            conn.commit()
-            self.send_json({"snapshots": self._snapshot_list(conn), "max": self.SNAPSHOT_MAX})
-        finally:
-            conn.close()
-
-    def _restore_categories(self, conn, data, selected):
-        """Return each selected category to its recorded state. A conversation
-        the snapshot references that no longer exists is skipped (counted), never
-        recreated. Caller owns the transaction."""
-        valid = {r[0] for r in conn.execute("SELECT id FROM conversations").fetchall()}
-        skipped = 0
-
-        if "labels" in selected:
-            conn.execute("DELETE FROM udb.conversation_labels")
-            conn.execute("DELETE FROM udb.labels")
-            def_ids = set()
-            for d in (data.get("labels") or {}).get("definitions") or []:
-                conn.execute(
-                    "INSERT INTO udb.labels(id, name, color, sort_index, created_at, updated_at) "
-                    "VALUES (?,?,?,?,?,?)",
-                    (d.get("id"), d.get("name"), d.get("color"), d.get("sort_index") or 0,
-                     d.get("created_at"), d.get("updated_at")),
-                )
-                def_ids.add(d.get("id"))
-            for a in (data.get("labels") or {}).get("assignments") or []:
-                if a.get("conversation_id") not in valid or a.get("label_id") not in def_ids:
-                    skipped += 1; continue
-                conn.execute(
-                    "INSERT OR REPLACE INTO udb.conversation_labels(conversation_id, label_id, assigned_at) "
-                    "VALUES (?,?,?)",
-                    (a["conversation_id"], a["label_id"], a.get("assigned_at")),
-                )
-
-        if "folders" in selected:
-            conn.execute("DELETE FROM udb.folder_items")
-            conn.execute("DELETE FROM udb.folders")
-            fids = set()
-            for f in (data.get("folders") or {}).get("definitions") or []:
-                conn.execute(
-                    "INSERT INTO udb.folders(id, name, created_at, updated_at, provider) "
-                    "VALUES (?,?,?,?,?)",
-                    (f.get("id"), f.get("name"), f.get("created_at"), f.get("updated_at"),
-                     f.get("provider")),
-                )
-                fids.add(f.get("id"))
-            for m in (data.get("folders") or {}).get("memberships") or []:
-                if m.get("conversation_id") not in valid or m.get("folder_id") not in fids:
-                    skipped += 1; continue
-                conn.execute(
-                    "INSERT OR REPLACE INTO udb.folder_items(conversation_id, folder_id, added_at, pinned) "
-                    "VALUES (?,?,?,?)",
-                    (m["conversation_id"], m["folder_id"], m.get("added_at"), m.get("pinned") or 0),
-                )
-
-        if "tags" in selected:
-            conn.execute("DELETE FROM udb.conversation_tags")
-            for t in data.get("tags") or []:
-                if t.get("conversation_id") not in valid:
-                    skipped += 1; continue
-                conn.execute(
-                    "INSERT OR REPLACE INTO udb.conversation_tags(conversation_id, tag, added_at) "
-                    "VALUES (?,?,?)",
-                    (t["conversation_id"], t["tag"], t.get("added_at")),
-                )
-
-        if "titles" in selected:
-            # Reset every custom title, then reapply the recorded ones — so titles
-            # set after the snapshot are reverted too. Touches only custom_title.
-            conn.execute("UPDATE conversation_meta SET custom_title = NULL")
-            for ti in data.get("titles") or []:
-                cid = ti.get("conversation_id")
-                if cid not in valid:
-                    skipped += 1; continue
-                conn.execute(
-                    "INSERT INTO conversation_meta(conversation_id, custom_title, archived, deleted) "
-                    "VALUES (?,?,0,0) ON CONFLICT(conversation_id) DO UPDATE SET "
-                    "custom_title = excluded.custom_title",
-                    (cid, ti.get("custom_title")),
-                )
-
-        if "meta_state" in selected:
-            # Reset archive/delete everywhere, then reapply recorded flags. Touches
-            # only archived/deleted, never custom_title.
-            conn.execute("UPDATE conversation_meta SET archived = 0, deleted = 0")
-            for ms in data.get("meta_state") or []:
-                cid = ms.get("conversation_id")
-                if cid not in valid:
-                    skipped += 1; continue
-                conn.execute(
-                    "INSERT INTO conversation_meta(conversation_id, custom_title, archived, deleted) "
-                    "VALUES (?, NULL, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET "
-                    "archived = excluded.archived, deleted = excluded.deleted",
-                    (cid, int(bool(ms.get("archived"))), int(bool(ms.get("deleted")))),
-                )
-
-        if "pins" in selected:
-            conn.execute("DELETE FROM pinned_conversations")
-            for p in data.get("pins") or []:
-                cid = p.get("conversation_id")
-                if cid not in valid:
-                    skipped += 1; continue
-                conn.execute(
-                    "INSERT OR REPLACE INTO pinned_conversations(conversation_id, pinned_at, order_index) "
-                    "VALUES (?,?,?)",
-                    (cid, p.get("pinned_at"), p.get("order_index")),
-                )
-
-        return skipped
+        self._handle_db(lambda conn: snapshots.snapshot_delete(conn, sid))
 
     def _api_snapshot_restore(self, sid):
-        sid = (sid or "").strip()
         body = self._read_json_body()
-        valid_cats = {k for k, _ in self.SNAPSHOT_CATEGORIES}
-        req = body.get("categories")
-        if isinstance(req, list):
-            selected = [c for c in req if c in valid_cats]
-        else:
-            selected = list(valid_cats)  # default: all supported categories
-        if not selected:
-            self.send_json({"error": "Select at least one category to restore."}, 400); return
-        conn = open_db(self.db_path)
-        try:
-            row = conn.execute(
-                "SELECT payload, schema_version FROM udb.snapshots WHERE id = ?", (sid,)
-            ).fetchone()
-            if not row:
-                self.send_json({"error": "Unknown snapshot"}, 404); return
-            try:
-                parsed = json.loads(row["payload"] or "{}")
-            except Exception:
-                self.send_json({"error": "Snapshot payload is corrupt"}, 400); return
-            if int(parsed.get("version") or row["schema_version"] or 0) != self.SNAPSHOT_SCHEMA_VERSION:
-                self.send_json({"error": "Snapshot schema version is not supported"}, 400); return
-            data = parsed.get("data") or {}
-            try:
-                skipped = self._restore_categories(conn, data, selected)
-                conn.commit()
-            except sqlite3.Error:
-                conn.rollback()
-                self.send_json({"error": "The restore failed and was rolled back"}, 500)
-                return
-            self.send_json({"ok": True, "skipped": skipped, "restored": selected})
-        finally:
-            conn.close()
-
+        self._handle_db(lambda conn: snapshots.snapshot_restore(conn, sid, body))
     def _api_preferences(self):
         conn = open_db(self.db_path)
         try:
