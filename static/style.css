@@ -25,6 +25,8 @@
   --user-label: #b55a2e;
   --code-bg: #eeeae3;
   --user-bubble: #ede9e1;
+  --message-time-size: 11px;
+  --message-time-color: var(--muted);
   --mark-bg: rgba(217, 119, 87, 0.18);
   /* Warning copy (e.g. "enter labels or none will be applied"). Themable. */
   --warning-text: #c0392b;
@@ -1191,6 +1193,15 @@ kbd {
 }
 .message.assistant .message-role {
   color: var(--accent);
+}
+
+.message-time {
+  font-size: var(--message-time-size);
+  color: var(--message-time-color);
+  align-self: flex-start;
+}
+.message.user .message-time {
+  align-self: flex-end;
 }
 
 .message-body {

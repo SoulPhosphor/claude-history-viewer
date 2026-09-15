@@ -507,6 +507,25 @@ function formatDate(ts) {
   });
 }
 
+// Per-message metadata timestamp, e.g. "January 11, 2026 1:00 PM"
+function formatMessageTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000);
+  return (
+    d.toLocaleDateString("en-US", {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    }) +
+    " " +
+    d.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    })
+  );
+}
+
 // ── File icon helper ──────────────────────────────────────────────────────────
 
 function fileIcon(typeOrName) {
@@ -2245,6 +2264,14 @@ async function openConversation(id, clickedEl, targetSeq = null) {
     roleEl.textContent = label;
     div.insertBefore(roleEl, div.firstChild);
     div.appendChild(bodyEl);
+
+    const timeText = formatMessageTime(msg.create_time);
+    if (timeText) {
+      const timeEl = document.createElement("div");
+      timeEl.className = "message-time";
+      timeEl.textContent = timeText;
+      div.appendChild(timeEl);
+    }
 
     // ── Assistant-generated file chips appear AFTER body (like Claude's UI) ──
     if (msg.role === "assistant" && msg.attachments?.length) {
