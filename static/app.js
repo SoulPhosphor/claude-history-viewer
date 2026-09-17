@@ -35,6 +35,7 @@ const state = {
     labelDisplay: "square", // "square" | "square_label"
     includeCondensedSummary: false,
     showSummaryHints: true,
+    showSummaryAuthor: false,
   },
   labelRows: [], // label definitions (shared by the Labels screen and squares)
   // While the bulk tool's Preview is on, the conversation list is temporarily
@@ -1679,6 +1680,7 @@ async function loadUiPreferences() {
     p.labelDisplay === "square_label" ? "square_label" : "square";
   state.preferences.includeCondensedSummary = Boolean(p.includeCondensedSummary);
   state.preferences.showSummaryHints = p.showSummaryHints !== false;
+  state.preferences.showSummaryAuthor = Boolean(p.showSummaryAuthor);
   state.scrollByConversation =
     p.scrollByConversation && typeof p.scrollByConversation === "object"
       ? p.scrollByConversation
@@ -3922,6 +3924,8 @@ async function openSettings() {
   if (condensedToggle) condensedToggle.checked = state.preferences.includeCondensedSummary;
   const hintsToggle = $("setting-summary-hints");
   if (hintsToggle) hintsToggle.checked = state.preferences.showSummaryHints;
+  const authorToggle = $("setting-summary-author");
+  if (authorToggle) authorToggle.checked = state.preferences.showSummaryAuthor;
 }
 
 function saveCompareColors() {
@@ -3960,6 +3964,12 @@ $("setting-condensed-summary")?.addEventListener("change", (e) => {
 $("setting-summary-hints")?.addEventListener("change", (e) => {
   saveUiPreferences({ showSummaryHints: e.target.checked });
   loadConversations(false);
+});
+$("setting-summary-author")?.addEventListener("change", (e) => {
+  saveUiPreferences({ showSummaryAuthor: e.target.checked });
+  if (typeof updateSummaryAuthorVisibility === "function") {
+    updateSummaryAuthorVisibility();
+  }
 });
 
 // ── Label indicators + assignment (runtime) ──────────────────────────────────

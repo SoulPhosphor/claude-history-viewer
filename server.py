@@ -505,6 +505,8 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 conversation_id    TEXT PRIMARY KEY,
                 condensed_summary  TEXT,
                 summary            TEXT,
+                condensed_author   TEXT,
+                summary_author     TEXT,
                 updated_at         REAL
             );
             """
@@ -520,6 +522,12 @@ def _ensure_userdata_schema(db_path: Path) -> None:
             conn.execute("ALTER TABLE snapshots ADD COLUMN summary TEXT")
         except sqlite3.Error:
             pass
+        # Author-tracking columns for conversation summaries.
+        for col in ("condensed_author TEXT", "summary_author TEXT"):
+            try:
+                conn.execute(f"ALTER TABLE conversation_summaries ADD COLUMN {col}")
+            except sqlite3.Error:
+                pass
         # Bulk-label rows recorded before "Set label to" became Added/Removed/
         # Cleared carry the action in target_label_id/target_label_name
         # instead; label_action/action_summary just come back NULL for those.
@@ -3396,7 +3404,8 @@ class Handler(BaseHTTPRequestHandler):
         conn = open_db(self.db_path)
         try:
             row = conn.execute(
-                "SELECT condensed_summary, summary, updated_at "
+                "SELECT condensed_summary, summary, condensed_author, "
+                "summary_author, updated_at "
                 "FROM udb.conversation_summaries WHERE conversation_id = ?",
                 (conv_id,),
             ).fetchone()
@@ -3404,10 +3413,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"conversation_id": conv_id,
                                 "condensed_summary": row["condensed_summary"] or "",
                                 "summary": row["summary"] or "",
+                                "condensed_author": row["condensed_author"] or "",
+                                "summary_author": row["summary_author"] or "",
                                 "updated_at": row["updated_at"]})
             else:
                 self.send_json({"conversation_id": conv_id,
                                 "condensed_summary": "", "summary": "",
+                                "condensed_author": "", "summary_author": "",
                                 "updated_at": None})
         finally:
             conn.close()
@@ -3420,21 +3432,59 @@ class Handler(BaseHTTPRequestHandler):
         try:
             import time as _time
             now = _time.time()
+            author = payload.get("author", "personal")
+            if author not in ("personal", "ai"):
+                author = "personal"
+
+            cond_author = None
+            summ_author = None
+            if payload.get("condensed_summary") is not None:
+                cond_author = author
+            if payload.get("summary") is not None:
+                summ_author = author
+
+            existing = conn.execute(
+                "SELECT condensed_author, summary_author "
+                "FROM udb.conversation_summaries WHERE conversation_id = ?",
+                (conv_id,),
+            ).fetchone()
+            if existing:
+                if cond_author and existing["condensed_author"] \
+                        and existing["condensed_author"] != cond_author \
+                        and existing["condensed_author"] != "collaborative":
+                    cond_author = "collaborative"
+                if summ_author and existing["summary_author"] \
+                        and existing["summary_author"] != summ_author \
+                        and existing["summary_author"] != "collaborative":
+                    summ_author = "collaborative"
+
             conn.execute(
                 "INSERT INTO udb.conversation_summaries "
-                "(conversation_id, condensed_summary, summary, updated_at) "
-                "VALUES (?, ?, ?, ?) "
+                "(conversation_id, condensed_summary, summary, "
+                " condensed_author, summary_author, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(conversation_id) DO UPDATE SET "
                 "condensed_summary = COALESCE(excluded.condensed_summary, condensed_summary), "
                 "summary = COALESCE(excluded.summary, summary), "
+                "condensed_author = COALESCE(excluded.condensed_author, condensed_author), "
+                "summary_author = COALESCE(excluded.summary_author, summary_author), "
                 "updated_at = excluded.updated_at",
                 (conv_id,
                  payload.get("condensed_summary"),
                  payload.get("summary"),
+                 cond_author,
+                 summ_author,
                  now),
             )
             conn.commit()
-            self.send_json({"ok": True, "updated_at": now})
+            row = conn.execute(
+                "SELECT condensed_author, summary_author "
+                "FROM udb.conversation_summaries WHERE conversation_id = ?",
+                (conv_id,),
+            ).fetchone()
+            self.send_json({"ok": True, "updated_at": now,
+                            "condensed_author": (row["condensed_author"] or "") if row else "",
+                            "summary_author": (row["summary_author"] or "") if row else ""})
         finally:
             conn.close()
 

@@ -86,6 +86,12 @@
   --summary-popup-font-size: 13px;
   --summary-popup-color: var(--text);
   --summary-toggle-icon-size: 16px;
+  /* Summary author labels */
+  --summary-author-font-size: 11px;
+  --summary-author-color: var(--muted);
+  --summary-author-personal-color: var(--accent);
+  --summary-author-ai-color: #8b5cf6;
+  --summary-author-collaborative-color: #f59e0b;
 }
 
 html,
@@ -4656,4 +4662,29 @@ kbd {
 }
 .summary-hint-popup[hidden] {
   display: none;
+}
+
+/* ── Summary author labels ──────────────────────────────────────────────── */
+
+.summary-author-row {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+.summary-author-row[hidden] {
+  display: none;
+}
+.summary-author-label {
+  font-size: var(--summary-author-font-size);
+  color: var(--summary-author-color);
+  font-style: italic;
+}
+.summary-author-personal {
+  color: var(--summary-author-personal-color);
+}
+.summary-author-ai {
+  color: var(--summary-author-ai-color);
+}
+.summary-author-collaborative {
+  color: var(--summary-author-collaborative-color);
 }

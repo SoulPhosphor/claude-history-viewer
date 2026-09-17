@@ -490,6 +490,9 @@
                 rows="5"
                 placeholder=""
               ></textarea>
+              <div class="summary-author-row" id="condensed-author-row" hidden>
+                <span class="summary-author-label" id="condensed-author-label"></span>
+              </div>
             </section>
             <!-- Main Summary section -->
             <section class="summary-section">
@@ -505,6 +508,9 @@
                 class="summary-textarea summary-textarea-main"
                 placeholder=""
               ></textarea>
+              <div class="summary-author-row" id="summary-author-row" hidden>
+                <span class="summary-author-label" id="summary-author-label"></span>
+              </div>
             </section>
           </div>
           <!-- Artifact side panel (absolute, inside #thread) -->
@@ -731,6 +737,20 @@
                 <label class="settings-toggle-label">
                   <input type="checkbox" id="setting-summary-hints" checked />
                   <span>Enable sidebar summary hints</span>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <h3 class="settings-section-title">Show summary content author</h3>
+              <p class="settings-section-hint">
+                Display who last edited each summary field — Personal, AI, or
+                Collaborative.
+              </p>
+              <div class="settings-row">
+                <label class="settings-toggle-label">
+                  <input type="checkbox" id="setting-summary-author" />
+                  <span>Show author labels on summary fields</span>
                 </label>
               </div>
             </section>

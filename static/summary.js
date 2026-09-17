@@ -9,6 +9,8 @@
 let _summaryConvId = null;
 let _savedCondensed = "";
 let _savedSummary = "";
+let _condensedAuthor = "";
+let _summaryAuthor = "";
 
 // ── DOM refs ─────────────────────────────────────────────────────────────────
 const summaryBodyEl = $("summary-body");
@@ -19,6 +21,10 @@ const condensedSaveBtn = $("condensed-save-btn");
 const summaryInput = $("summary-input");
 const summaryRevertBtn = $("summary-revert-btn");
 const summarySaveBtn = $("summary-save-btn");
+const condensedAuthorRow = $("condensed-author-row");
+const condensedAuthorLabel = $("condensed-author-label");
+const summaryAuthorRow = $("summary-author-row");
+const summaryAuthorLabel = $("summary-author-label");
 const summaryUnsavedModal = $("summary-unsaved-modal");
 const summaryUnsavedCancel = $("summary-unsaved-cancel");
 const summaryUnsavedSave = $("summary-unsaved-save");
@@ -54,6 +60,39 @@ function updateSummaryButtons() {
 function updateSummaryCondensedVisibility() {
   if (!condensedSection) return;
   condensedSection.hidden = !state.preferences.includeCondensedSummary;
+}
+
+function authorDisplayText(val) {
+  if (val === "personal") return "Personal";
+  if (val === "ai") return "AI";
+  if (val === "collaborative") return "Collaborative";
+  return "";
+}
+
+function updateSummaryAuthorLabels() {
+  const show = state.preferences.showSummaryAuthor;
+  if (condensedAuthorRow) {
+    const text = authorDisplayText(_condensedAuthor);
+    condensedAuthorRow.hidden = !show || !text;
+    if (condensedAuthorLabel) {
+      condensedAuthorLabel.textContent = text;
+      condensedAuthorLabel.className = "summary-author-label";
+      if (_condensedAuthor) condensedAuthorLabel.classList.add(`summary-author-${_condensedAuthor}`);
+    }
+  }
+  if (summaryAuthorRow) {
+    const text = authorDisplayText(_summaryAuthor);
+    summaryAuthorRow.hidden = !show || !text;
+    if (summaryAuthorLabel) {
+      summaryAuthorLabel.textContent = text;
+      summaryAuthorLabel.className = "summary-author-label";
+      if (_summaryAuthor) summaryAuthorLabel.classList.add(`summary-author-${_summaryAuthor}`);
+    }
+  }
+}
+
+function updateSummaryAuthorVisibility() {
+  updateSummaryAuthorLabels();
 }
 
 // ── Toggle icon (book / forum) in the thread titlebar ────────────────────────
@@ -97,18 +136,22 @@ async function apiSaveSummary(convId, fields) {
 async function saveCondensedSummary() {
   if (!_summaryConvId) return;
   const text = condensedInput.value;
-  await apiSaveSummary(_summaryConvId, { condensed_summary: text });
+  const res = await apiSaveSummary(_summaryConvId, { condensed_summary: text, author: "personal" });
   _savedCondensed = text;
+  if (res.condensed_author) _condensedAuthor = res.condensed_author;
   updateCondensedButtons();
+  updateSummaryAuthorLabels();
   refreshSummaryHintForConv(_summaryConvId);
 }
 
 async function saveMainSummary() {
   if (!_summaryConvId) return;
   const text = summaryInput.value;
-  await apiSaveSummary(_summaryConvId, { summary: text });
+  const res = await apiSaveSummary(_summaryConvId, { summary: text, author: "personal" });
   _savedSummary = text;
+  if (res.summary_author) _summaryAuthor = res.summary_author;
   updateSummaryButtons();
+  updateSummaryAuthorLabels();
 }
 
 async function saveAllUnsaved() {
@@ -124,10 +167,14 @@ async function saveAllUnsaved() {
     _savedSummary = summaryInput.value;
   }
   if (Object.keys(fields).length) {
-    await apiSaveSummary(_summaryConvId, fields);
+    fields.author = "personal";
+    const res = await apiSaveSummary(_summaryConvId, fields);
+    if (res.condensed_author) _condensedAuthor = res.condensed_author;
+    if (res.summary_author) _summaryAuthor = res.summary_author;
   }
   updateCondensedButtons();
   updateSummaryButtons();
+  updateSummaryAuthorLabels();
   refreshSummaryHintForConv(_summaryConvId);
 }
 
@@ -180,11 +227,14 @@ async function openSummaryForConversation(convId) {
   const data = await apiGetSummary(convId);
   _savedCondensed = data.condensed_summary || "";
   _savedSummary = data.summary || "";
+  _condensedAuthor = data.condensed_author || "";
+  _summaryAuthor = data.summary_author || "";
   if (condensedInput) condensedInput.value = _savedCondensed;
   if (summaryInput) summaryInput.value = _savedSummary;
 
   updateCondensedButtons();
   updateSummaryButtons();
+  updateSummaryAuthorLabels();
 }
 
 function closeSummaryPanel() {
