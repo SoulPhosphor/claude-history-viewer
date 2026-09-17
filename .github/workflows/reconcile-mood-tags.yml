@@ -1,0 +1,75 @@
+name: Temporary Mood Tags reconciliation
+
+on:
+  push:
+    branches:
+      - integrate/mood-tags-current-main
+
+permissions:
+  contents: write
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out integration branch
+        uses: actions/checkout@v4
+        with:
+          ref: integrate/mood-tags-current-main
+          fetch-depth: 0
+
+      - name: Apply guarded reconciliation
+        run: python3 reconcile_mood_tags.py
+
+      - name: Validate Python syntax
+        run: python3 -m py_compile server.py
+
+      - name: Validate JavaScript syntax
+        run: node --check static/app.js
+
+      - name: Check diff whitespace
+        run: git diff --check
+
+      - name: Verify feature and gizmo invariants
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          server = Path('server.py').read_text()
+          app = Path('static/app.js').read_text()
+          css = Path('static/style.css').read_text()
+          required = {
+              'server': [
+                  'conversation_mood_tags',
+                  '/api/mood-tags',
+                  'mood_tags',
+                  'import labels, bulk_labels, snapshots, gizmos',
+                  '/api/gizmo-conversations',
+                  'gizmo_conversation_count',
+              ],
+              'app': [
+                  'allMoodTagsCache',
+                  'Mood Tags:',
+                  'renderGizmoThreadIdentity(conv);',
+                  'conv.gizmo_name || "Claude"',
+              ],
+              'css': [
+                  'grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)',
+                  '.tags-mood',
+                  'width: fit-content',
+                  '.thread-meta-gizmo',
+              ],
+          }
+          blobs = {'server': server, 'app': app, 'css': css}
+          for group, needles in required.items():
+              for needle in needles:
+                  assert needle in blobs[group], f'{group}: missing {needle}'
+          print('Mood Tags and gizmo invariants verified.')
+          PY
+
+      - name: Commit reconciled files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add server.py static/app.js static/style.css
+          git commit -m "Reconcile Mood Tags onto current main"
+          git push origin HEAD:integrate/mood-tags-current-main
