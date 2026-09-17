@@ -1519,9 +1519,6 @@ async function refreshPinnedList() {
   const pinned = data.pinned || [];
   state.pinnedIds = new Set(pinned.map((x) => x.conversation_id));
   if (pinnedTitleEl) pinnedTitleEl.textContent = `Pinned (${pinned.length})`;
-  // The pinned conversations now live in the "Pinned" filter view, not a
-  // separate top section. We still refresh state.pinnedIds above so the pin/
-  // unpin stars stay correct; there's no dedicated pinned list to render.
   if (!pinnedList) return;
   pinnedList.innerHTML = "";
   for (const p of pinned) {
