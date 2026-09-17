@@ -258,6 +258,14 @@
         <button
           class="sidebar-menu-item"
           role="menuitem"
+          data-action="gizmos"
+        >
+          <span class="sidebar-menu-item-icon" aria-hidden="true">🤖</span>
+          <span class="sidebar-menu-item-label">Custom GPTs</span>
+        </button>
+        <button
+          class="sidebar-menu-item"
+          role="menuitem"
           data-action="attachment-report"
         >
           <span class="sidebar-menu-item-icon" aria-hidden="true">🔗</span>
@@ -714,6 +722,18 @@
           <div id="att-report-content"></div>
         </div>
 
+        <div id="gizmos-panel" hidden>
+          <div class="thread-header">
+            <h2>Custom GPTs</h2>
+            <div class="panel-meta">
+              Name ChatGPT Custom GPTs, find every conversation that shares an
+              imported GPT ID, or move all of one GPT's chats into a folder.
+              Names are kept when history is rebuilt or re-imported.
+            </div>
+          </div>
+          <div id="gizmos-content"></div>
+        </div>
+
         <div id="labels-panel" hidden>
           <div class="thread-header">
             <h2>Labels</h2>
@@ -1109,6 +1129,7 @@
       </div>
     </div>
 
+    <script src="/static/gizmos.js"></script>
     <script src="/static/app.js"></script>
     <!-- Labeling feature modules: loaded after app.js, whose shared state and
          helpers they rely on. Order among these three does not matter. -->

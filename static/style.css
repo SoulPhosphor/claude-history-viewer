@@ -1133,9 +1133,25 @@ kbd {
 }
 
 #thread-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  width: 100%;
   font-size: 11.5px;
   color: var(--muted);
 }
+
+.thread-meta-gizmo {
+  margin-left: auto;
+  flex-shrink: 0;
+  max-width: 55%;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.thread-meta-gizmo .gizmo-name { cursor: text; }
+.thread-meta-gizmo .gizmo-name:hover { color: var(--text); }
 
 /* ── Messages ────────────────────────────────────────────────────────────── */
 #messages {
@@ -4291,3 +4307,123 @@ kbd {
   accent-color: var(--accent);
   cursor: pointer;
 }
+
+
+/* ── Custom GPT manager ─────────────────────────────────────────────────── */
+#gizmos-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#gizmos-panel[hidden] { display: none; }
+#gizmos-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 40px 60px;
+}
+.gizmo-list,
+.gizmo-conversation-list {
+  max-width: 760px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.gizmo-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--user-bubble);
+  padding: 14px 16px;
+}
+.gizmo-card.unnamed { background: var(--bg); }
+.gizmo-card-head {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+}
+.gizmo-name {
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+.gizmo-name:hover { color: var(--accent); }
+.gizmo-name-input {
+  min-width: 160px;
+  max-width: 100%;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+.gizmo-name-input:focus { outline: none; }
+.gizmo-id {
+  margin-top: 2px;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  word-break: break-all;
+}
+.gizmo-card-meta,
+.gizmo-samples,
+.gizmo-conversation-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+.gizmo-samples { margin-top: 6px; }
+.gizmo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.gizmo-btn {
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.gizmo-btn:hover {
+  background: var(--hover);
+  border-color: var(--accent);
+}
+.gizmo-detail-head {
+  max-width: 760px;
+  margin: 0 auto 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.gizmo-detail-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.gizmo-conversation {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--user-bubble);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.gizmo-conversation:hover {
+  background: var(--hover);
+  border-color: var(--accent);
+}
+.gizmo-conversation-title { font-weight: 500; }

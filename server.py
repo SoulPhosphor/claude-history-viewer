@@ -9,7 +9,7 @@ from pathlib import Path
 # Reusable business/data logic for the labeling features. server.py stays the
 # HTTP/routing shell; these modules own the SQL, validation, and transactions
 # and raise ApiError for error responses.
-import labels, bulk_labels, snapshots
+import labels, bulk_labels, snapshots, gizmos
 from api_common import ApiError
 
 # Set CHV_TIMING=1 to log each request's method, path, and duration to stderr.
@@ -37,7 +37,7 @@ def _code_signature() -> str:
     here = Path(__file__).resolve().parent
     h = hashlib.sha256()
     for name in ("server.py", "build_db.py", "api_common.py",
-                 "labels.py", "bulk_labels.py", "snapshots.py"):
+                 "labels.py", "bulk_labels.py", "snapshots.py", "gizmos.py"):
         try:
             h.update((here / name).read_bytes())
         except OSError:
@@ -54,7 +54,7 @@ def _static_signature() -> str:
     static_dir = Path(__file__).resolve().parent / "static"
     h = hashlib.sha256()
     for name in ("index.html", "app.js", "style.css",
-                 "labels_screen.js", "bulk_labels.js", "snapshots.js"):
+                 "labels_screen.js", "bulk_labels.js", "snapshots.js", "gizmos.js"):
         try:
             h.update((static_dir / name).read_bytes())
         except OSError:
@@ -166,6 +166,7 @@ def _ensure_runtime_schema(db_path: Path) -> None:
             "CREATE INDEX IF NOT EXISTS idx_conv_update ON conversations (update_time DESC, create_time DESC)",
             "CREATE INDEX IF NOT EXISTS idx_meta_flags  ON conversation_meta (deleted, archived)",
             "CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts (conv_id)",
+            "CREATE INDEX IF NOT EXISTS idx_conv_gizmo ON conversations (gizmo_id)",
         ):
             try:
                 conn.execute(idx_sql)
@@ -182,6 +183,10 @@ def _ensure_runtime_schema(db_path: Path) -> None:
             # column existed get it here and are backfilled below from the
             # dataset-wide format recorded at build time.
             "ALTER TABLE conversations ADD COLUMN provider TEXT",
+            # ChatGPT Custom GPT identity. Additive migration only; existing rows
+            # stay NULL until imported/rebuilt from a ChatGPT export.
+            "ALTER TABLE conversations ADD COLUMN gizmo_id TEXT",
+            "ALTER TABLE conversations ADD COLUMN gizmo_type TEXT",
             # Compare items carry their own provider for tab colouring.
             "ALTER TABLE workspace_tabs ADD COLUMN provider TEXT",
             # 1 only when the user explicitly added the chat to Compare.
@@ -355,6 +360,15 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 PRIMARY KEY (conversation_id, tag)
             );
             CREATE INDEX IF NOT EXISTS idx_conv_tags_tag ON conversation_tags (tag);
+
+            -- User-assigned names for ChatGPT Custom GPT ids. Kept outside
+            -- history.db so naming survives rebuilds and applies to every chat
+            -- carrying the same imported gizmo id.
+            CREATE TABLE IF NOT EXISTS gizmo_names (
+                gizmo_id     TEXT PRIMARY KEY,
+                display_name TEXT NOT NULL,
+                updated_at   REAL
+            );
 
             -- A lightweight tombstone left behind when a conversation is
             -- permanently deleted from the Recycle Bin. It holds no message
@@ -1245,6 +1259,11 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_model_dismiss()
         elif path == "/api/tags":
             self._api_tag_add()
+        elif path.startswith("/api/gizmos/") and path.endswith("/folder"):
+            inner = path[len("/api/gizmos/"):-len("/folder")]
+            gid = urllib.parse.unquote(inner.strip("/"))
+            payload = self._read_json_body()
+            self._handle_db(lambda conn: gizmos.move_to_folder(conn, gid, payload))
         elif path == "/api/labels":
             self._api_label_create()
         elif path == "/api/labels/reorder":
@@ -1291,6 +1310,10 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_update(urllib.parse.unquote(path[len("/api/conversation/"):]))
         elif path.startswith("/api/claude-models/"):
             self._api_claude_model_update(urllib.parse.unquote(path[len("/api/claude-models/"):]))
+        elif path.startswith("/api/gizmos/"):
+            gid = urllib.parse.unquote(path[len("/api/gizmos/"):])
+            payload = self._read_json_body()
+            self._handle_db(lambda conn: gizmos.rename_gizmo(conn, gid, payload))
         elif path.startswith("/api/labels/"):
             self._api_label_update(urllib.parse.unquote(path[len("/api/labels/"):]))
         else:
@@ -1462,6 +1485,11 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_models(qs)
         elif path == "/api/tags":
             self._api_tags_all()
+        elif path == "/api/gizmos":
+            self._handle_db(gizmos.list_gizmos)
+        elif path == "/api/gizmo-conversations":
+            gid = ((qs.get("gizmo_id") or [""])[0]).strip()
+            self._handle_db(lambda conn: gizmos.list_conversations(conn, gid))
         elif path == "/api/labels":
             self._api_labels_list()
         elif path == "/api/labels/bulk-history":
@@ -1936,7 +1964,8 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
                 "c.create_time, c.update_time, c.message_count, c.preview, "
                 "COALESCE(c.import_status, 'normal') AS import_status, "
-                "c.provider AS provider, "
+                "c.provider AS provider, c.gizmo_id, c.gizmo_type, "
+                "COALESCE(gn.display_name, '') AS gizmo_name, "
                 "COALESCE(cm.deleted, 0) AS deleted, "
                 # The conversation's own pin/folder state, so the thread menu is
                 # correct even for a Compare item from the opposite provider
@@ -1948,6 +1977,7 @@ class Handler(BaseHTTPRequestHandler):
                 "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                 "LEFT JOIN pinned_conversations pc ON pc.conversation_id = c.id "
                 "LEFT JOIN udb.folder_items fi ON fi.conversation_id = c.id "
+                "LEFT JOIN udb.gizmo_names gn ON gn.gizmo_id = c.gizmo_id "
                 # No deleted filter: soft-deleted means "kept out of the lists",
                 # not "unreadable". The import audit lists these deliberately,
                 # and refusing them here left it opening records it could not show.
@@ -1982,6 +2012,16 @@ class Handler(BaseHTTPRequestHandler):
             models = (self._conv_model_state(conn, conv_id)
                       if self._dataset_format(conn) == "claude" else None)
             conv_dict = dict(conv)
+            if conv_dict.get("gizmo_id"):
+                conv_dict["gizmo_conversation_count"] = conn.execute(
+                    "SELECT COUNT(*) FROM conversations c "
+                    "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                    "WHERE c.provider = 'chatgpt' AND c.gizmo_id = ? "
+                    "AND COALESCE(cm.deleted, 0) = 0",
+                    (conv_dict["gizmo_id"],),
+                ).fetchone()[0]
+            else:
+                conv_dict["gizmo_conversation_count"] = 0
             # The current label rides along so opening a conversation stays one
             # request; the header square reads it directly.
             conv_dict["labels"] = labels.conv_labels(conn, conv_id)

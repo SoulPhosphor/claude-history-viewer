@@ -772,6 +772,10 @@ def import_chatgpt_conversation(conv: dict, index: int) -> dict:
         "message_count": len(msgs),
         "preview":       preview,
         "import_status": status,
+        # ChatGPT Custom GPT identity. Keep the raw export values; user-facing
+        # names live separately in userdata.db and survive rebuilds.
+        "gizmo_id": (str(conv.get("gizmo_id")).strip() or None) if conv.get("gizmo_id") else None,
+        "gizmo_type": (str(conv.get("gizmo_type")).strip() or None) if conv.get("gizmo_type") else None,
     }
     return {
         "meta":      meta,
@@ -809,7 +813,10 @@ CREATE TABLE conversations (
     source_index  INTEGER,
     -- 'claude' | 'chatgpt'. Conversation identity is (id, provider): the
     -- original stable UUID plus the tool it came from.
-    provider      TEXT
+    provider      TEXT,
+    -- ChatGPT Custom GPT identity from the export (NULL for ordinary chats / Claude).
+    gizmo_id      TEXT,
+    gizmo_type    TEXT
 );
 
 CREATE TABLE conversation_meta (
@@ -1038,6 +1045,8 @@ def build(source: Path, db_path: Path) -> None:
         meta["source_index"] = best["index"]
         # Every conversation in one build shares the file's detected provider.
         meta["provider"] = fmt
+        meta.setdefault("gizmo_id", None)
+        meta.setdefault("gizmo_type", None)
         conv_rows.append(meta)
         msg_rows.extend(msgs)
         artifact_rows.extend(artifacts)
@@ -1049,8 +1058,8 @@ def build(source: Path, db_path: Path) -> None:
 
     db.executemany(
         "INSERT OR REPLACE INTO conversations "
-        "(id, title, create_time, update_time, message_count, preview, import_status, source_index, provider) "
-        "VALUES (:id, :title, :create_time, :update_time, :message_count, :preview, :import_status, :source_index, :provider)",
+        "(id, title, create_time, update_time, message_count, preview, import_status, source_index, provider, gizmo_id, gizmo_type) "
+        "VALUES (:id, :title, :create_time, :update_time, :message_count, :preview, :import_status, :source_index, :provider, :gizmo_id, :gizmo_type)",
         conv_rows,
     )
     db.executemany(
@@ -1280,12 +1289,13 @@ def _delete_conv_rows(conn, cid: str) -> None:
 def _insert_conv_rows(conn, meta: dict, msgs: list, artifacts: list, provider: str) -> None:
     conn.execute(
         "INSERT OR REPLACE INTO conversations "
-        "(id, title, create_time, update_time, message_count, preview, import_status, source_index, provider) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "(id, title, create_time, update_time, message_count, preview, import_status, source_index, provider, gizmo_id, gizmo_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             meta["id"], meta["title"], meta.get("create_time"), meta.get("update_time"),
             meta.get("message_count"), meta.get("preview"),
             meta.get("import_status", "normal"), meta.get("source_index"), provider,
+            meta.get("gizmo_id"), meta.get("gizmo_type"),
         ),
     )
     for m in msgs:
@@ -1348,7 +1358,7 @@ def reconcile_backup(conn, records: list, provider: str) -> dict:
             msgs = r["msgs"]
             artifacts = r["artifacts"]
             existing = conn.execute(
-                "SELECT title, update_time, message_count, provider FROM conversations WHERE id = ?",
+                "SELECT title, update_time, message_count, provider, gizmo_id, gizmo_type FROM conversations WHERE id = ?",
                 (cid,),
             ).fetchone()
             if existing is None:
@@ -1373,6 +1383,8 @@ def reconcile_backup(conn, records: list, provider: str) -> dict:
                 (existing[0] or "") == (meta["title"] or "")
                 and _ts_close(existing[1], meta.get("update_time"))
                 and (existing[2] or 0) == (meta.get("message_count") or 0)
+                and (existing[4] or None) == (meta.get("gizmo_id") or None)
+                and (existing[5] or None) == (meta.get("gizmo_type") or None)
             )
             if same:
                 counts["unchanged"] += 1
