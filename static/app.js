@@ -33,6 +33,8 @@ const state = {
     // renders anywhere, but the underlying label data is left untouched.
     labelsEnabled: false,
     labelDisplay: "square", // "square" | "square_label"
+    includeCondensedSummary: false,
+    showSummaryHints: true,
   },
   labelRows: [], // label definitions (shared by the Labels screen and squares)
   // While the bulk tool's Preview is on, the conversation list is temporarily
@@ -131,6 +133,7 @@ const importAuditContent = $("import-audit-content");
 const importNewPanel = $("import-new-panel");
 const settingsPanel = $("settings-panel");
 const labelsPanel = $("labels-panel");
+const summaryPanel = $("summary-panel");
 const artifactPanel = $("artifact-panel");
 const artifactPanelTitle = $("artifact-panel-title");
 const artifactPanelBody = $("artifact-panel-body");
@@ -1336,6 +1339,7 @@ function openConvItemMenu(c, anchorBtn) {
       },
     },
     { label: pinned ? "Unpin" : "Pin", fn: () => togglePinConversation(c) },
+    { label: "Summary", fn: () => openSummaryForConversation(c.id) },
     {
       label: archivedView || deletedView ? "Restore" : "Archive",
       fn: () => archiveOrRestoreConversation(c),
@@ -1452,6 +1456,14 @@ function appendListItems(convs, targetEl = convList) {
       el.querySelector(":scope > .conv-footer"),
     );
 
+    if (state.preferences.showSummaryHints && c.has_condensed_summary) {
+      const hintEl = document.createElement("span");
+      hintEl.className = "conv-summary-hint";
+      hintEl.textContent = "Summary";
+      hintEl.dataset.convId = c.id;
+      el.appendChild(hintEl);
+    }
+
     el.addEventListener("click", () => openConversation(c.id, el));
 
     // Append inside the current month section if one exists
@@ -1540,6 +1552,14 @@ async function refreshPinnedList() {
     ft.className = "conv-footer";
     ft.innerHTML = `<span>${formatDate(p.update_time)}</span><span>${p.message_count} msgs</span>`;
     el.appendChild(ft);
+
+    if (state.preferences.showSummaryHints && p.has_condensed_summary) {
+      const hintEl = document.createElement("span");
+      hintEl.className = "conv-summary-hint";
+      hintEl.textContent = "Summary";
+      hintEl.dataset.convId = p.conversation_id;
+      el.appendChild(hintEl);
+    }
 
     el.addEventListener("click", () => openConversation(p.conversation_id, el));
 
@@ -1657,6 +1677,8 @@ async function loadUiPreferences() {
   state.preferences.labelsEnabled = Boolean(p.labelsEnabled);
   state.preferences.labelDisplay =
     p.labelDisplay === "square_label" ? "square_label" : "square";
+  state.preferences.includeCondensedSummary = Boolean(p.includeCondensedSummary);
+  state.preferences.showSummaryHints = p.showSummaryHints !== false;
   state.scrollByConversation =
     p.scrollByConversation && typeof p.scrollByConversation === "object"
       ? p.scrollByConversation
@@ -2046,6 +2068,7 @@ async function loadConversations(append = false) {
 function hideAllPanels() {
   emptyState.hidden = true;
   thread.hidden = true;
+  if (summaryPanel) summaryPanel.hidden = true;
   galleryPanel.hidden = true;
   memoriesPanel.hidden = true;
   projectsPanel.hidden = true;
@@ -2190,6 +2213,12 @@ const EMPTY_CONV_NOTICE = {
 };
 
 async function openConversation(id, clickedEl, targetSeq = null) {
+  if (typeof summaryHasUnsavedChanges === "function" && summaryHasUnsavedChanges()) {
+    const r = await openSummaryUnsavedModal();
+    if (r === "cancel") return;
+    if (r === "save") await saveAllUnsaved();
+  }
+  if (typeof closeSummaryPanel === "function") closeSummaryPanel();
   state.activeSpecialView = null;
   // Update sidebar selection (main list and folder tree)
   document
@@ -2950,6 +2979,12 @@ function renderMediaHub(data) {
 }
 
 async function openGallery(fromButton = false) {
+  if (typeof summaryHasUnsavedChanges === "function" && summaryHasUnsavedChanges()) {
+    const r = await openSummaryUnsavedModal();
+    if (r === "cancel") return;
+    if (r === "save") await saveAllUnsaved();
+  }
+  if (typeof closeSummaryPanel === "function") closeSummaryPanel();
   if (fromButton && state.activeSpecialView === "gallery") {
     await returnFromSpecialView();
     return;
@@ -3862,6 +3897,12 @@ function _validHexColor(v) {
 }
 
 async function openSettings() {
+  if (typeof summaryHasUnsavedChanges === "function" && summaryHasUnsavedChanges()) {
+    const r = await openSummaryUnsavedModal();
+    if (r === "cancel") return;
+    if (r === "save") await saveAllUnsaved();
+  }
+  if (typeof closeSummaryPanel === "function") closeSummaryPanel();
   rememberReturnTab();
   state.activeSpecialView = "settings";
   state.activeTabId = null;
@@ -3876,6 +3917,10 @@ async function openSettings() {
   const claude = $("compare-color-claude");
   if (gpt) gpt.value = state.compareColors.chatgpt;
   if (claude) claude.value = state.compareColors.claude;
+  const condensedToggle = $("setting-condensed-summary");
+  if (condensedToggle) condensedToggle.checked = state.preferences.includeCondensedSummary;
+  const hintsToggle = $("setting-summary-hints");
+  if (hintsToggle) hintsToggle.checked = state.preferences.showSummaryHints;
 }
 
 function saveCompareColors() {
@@ -3903,6 +3948,17 @@ $("compare-color-reset")?.addEventListener("click", () => {
   if (gpt) gpt.value = state.compareColors.chatgpt;
   if (claude) claude.value = state.compareColors.claude;
   saveCompareColors();
+});
+
+$("setting-condensed-summary")?.addEventListener("change", (e) => {
+  saveUiPreferences({ includeCondensedSummary: e.target.checked });
+  if (typeof updateSummaryCondensedVisibility === "function") {
+    updateSummaryCondensedVisibility();
+  }
+});
+$("setting-summary-hints")?.addEventListener("change", (e) => {
+  saveUiPreferences({ showSummaryHints: e.target.checked });
+  loadConversations(false);
 });
 
 // ── Label indicators + assignment (runtime) ──────────────────────────────────
@@ -4373,6 +4429,12 @@ function syncImportDeletedSetting() {
 }
 
 async function openImportNew() {
+  if (typeof summaryHasUnsavedChanges === "function" && summaryHasUnsavedChanges()) {
+    const r = await openSummaryUnsavedModal();
+    if (r === "cancel") return;
+    if (r === "save") await saveAllUnsaved();
+  }
+  if (typeof closeSummaryPanel === "function") closeSummaryPanel();
   rememberReturnTab();
   state.activeSpecialView = "import_new";
   state.activeTabId = null;
@@ -4905,6 +4967,9 @@ modelReloadBtn?.addEventListener("click", async () => {
 function setThreadTitle(text) {
   threadTitle.textContent = text;
   threadTitlebarLabel.textContent = text;
+  const summaryToggleBtn = $("summary-toggle-btn");
+  if (summaryToggleBtn) summaryToggleBtn.hidden = !text;
+  updateSummaryToggleIcon(false);
 }
 
 function threadHeaderCollapsed() {
@@ -4999,6 +5064,12 @@ sidebarMenu.querySelectorAll(".sidebar-menu-item").forEach((item) => {
 // ── Memories ──────────────────────────────────────────────────────────────────
 
 async function openMemories(fromButton = false) {
+  if (typeof summaryHasUnsavedChanges === "function" && summaryHasUnsavedChanges()) {
+    const r = await openSummaryUnsavedModal();
+    if (r === "cancel") return;
+    if (r === "save") await saveAllUnsaved();
+  }
+  if (typeof closeSummaryPanel === "function") closeSummaryPanel();
   if (fromButton && state.activeSpecialView === "memories") {
     await returnFromSpecialView();
     return;
@@ -5047,6 +5118,12 @@ $("memories-btn").addEventListener("click", () => openMemories(true));
 // ── Projects ──────────────────────────────────────────────────────────────────
 
 async function openProjects(fromButton = false) {
+  if (typeof summaryHasUnsavedChanges === "function" && summaryHasUnsavedChanges()) {
+    const r = await openSummaryUnsavedModal();
+    if (r === "cancel") return;
+    if (r === "save") await saveAllUnsaved();
+  }
+  if (typeof closeSummaryPanel === "function") closeSummaryPanel();
   if (fromButton && state.activeSpecialView === "projects") {
     await returnFromSpecialView();
     return;
@@ -5405,6 +5482,13 @@ function renderFolders() {
           `<span class="folder-conv-title">${escHtml(c.title || "Untitled")}</span>`;
         // Label squares, placed by the same rule as the main list.
         paintRowLabels(item, c.id, c.labels || [], ".folder-conv-title", null);
+        if (state.preferences.showSummaryHints && c.has_condensed_summary) {
+          const hintEl = document.createElement("span");
+          hintEl.className = "conv-summary-hint";
+          hintEl.textContent = "Summary";
+          hintEl.dataset.convId = c.id;
+          item.appendChild(hintEl);
+        }
         item.addEventListener("click", () => openConversation(c.id, item));
         item.addEventListener("dragstart", (e) => {
           e.dataTransfer.effectAllowed = "move";
@@ -5727,6 +5811,8 @@ threadMoreMenu?.querySelectorAll(".thread-dropdown-item").forEach((item) => {
         await refreshPinnedList();
         await loadConversations(false);
       }
+    } else if (action === "summary") {
+      openSummaryForConversation(cid);
     } else if (action === "archive") {
       await apiUpdateConversationMeta(cid, { archived: true });
       await refreshPinnedList();

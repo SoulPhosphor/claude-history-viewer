@@ -497,6 +497,16 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 -- listing never has to parse the full payload.
                 summary        TEXT
             );
+
+            -- Per-conversation user-authored summaries. Both fields are
+            -- optional; hiding the condensed-summary setting does not delete
+            -- data — it only controls visibility.
+            CREATE TABLE IF NOT EXISTS conversation_summaries (
+                conversation_id    TEXT PRIMARY KEY,
+                condensed_summary  TEXT,
+                summary            TEXT,
+                updated_at         REAL
+            );
             """
         )
         # Add the folders.provider column on databases created before folders
@@ -1330,6 +1340,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_db(lambda conn: gizmos.rename_gizmo(conn, gid, payload))
         elif path.startswith("/api/labels/"):
             self._api_label_update(urllib.parse.unquote(path[len("/api/labels/"):]))
+        elif path.startswith("/api/summaries/"):
+            self._api_summary_update(urllib.parse.unquote(path[len("/api/summaries/"):]))
         else:
             self.send_error(404)
 
@@ -1520,6 +1532,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_bulk_run_list()
         elif path == "/api/snapshots":
             self._api_snapshot_list()
+        elif path.startswith("/api/summaries/"):
+            self._api_summary_get(urllib.parse.unquote(path[len("/api/summaries/"):]))
         elif path == "/api/version":
             self._api_version()
         elif path == "/api/preferences":
@@ -1731,6 +1745,21 @@ class Handler(BaseHTTPRequestHandler):
         by_conv = labels.labels_by_conv(conn, [c["id"] for c in convs])
         for c in convs:
             c["labels"] = by_conv.get(c["id"], [])
+        # Tag rows that have a non-empty condensed summary so the sidebar hint
+        # knows whether to show the hoverable "Summary" link.
+        cids = [c["id"] for c in convs]
+        has_summary = set()
+        if cids:
+            marks = ",".join("?" * len(cids))
+            for r in conn.execute(
+                "SELECT conversation_id FROM udb.conversation_summaries "
+                f"WHERE conversation_id IN ({marks}) "
+                "AND condensed_summary IS NOT NULL "
+                "AND TRIM(condensed_summary) != ''", tuple(cids),
+            ).fetchall():
+                has_summary.add(r["conversation_id"])
+        for c in convs:
+            c["has_condensed_summary"] = c["id"] in has_summary
         claude_side = (provider == "claude") if provider else (self._dataset_format(conn) == "claude")
         if claude_side:
             flags = _compute_conv_flags(
@@ -2561,6 +2590,18 @@ class Handler(BaseHTTPRequestHandler):
             # Labels come from one batched query, not a join: a conversation can
             # carry several, and joining would duplicate its folder row.
             folder_labels = labels.labels_by_conv(conn, [r["id"] for r in rows])
+            # Condensed summary flags for the sidebar hint.
+            folder_cids = [r["id"] for r in rows]
+            folder_has_sum = set()
+            if folder_cids:
+                marks = ",".join("?" * len(folder_cids))
+                for sr in conn.execute(
+                    "SELECT conversation_id FROM udb.conversation_summaries "
+                    f"WHERE conversation_id IN ({marks}) "
+                    "AND condensed_summary IS NOT NULL AND TRIM(condensed_summary) != ''",
+                    tuple(folder_cids),
+                ).fetchall():
+                    folder_has_sum.add(sr["conversation_id"])
             by_folder: dict = {}
             for r in rows:
                 by_folder.setdefault(r["folder_id"], []).append({
@@ -2571,6 +2612,7 @@ class Handler(BaseHTTPRequestHandler):
                     "message_count": r["message_count"],
                     "pinned":        bool(r["pinned"]),
                     "labels":        folder_labels.get(r["id"], []),
+                    "has_condensed_summary": r["id"] in folder_has_sum,
                 })
             out = [{
                 "id":            f["id"],
@@ -3346,6 +3388,56 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             conn.close()
 
+    # ── Conversation summaries ──────────────────────────────────────────────
+
+    def _api_summary_get(self, conv_id):
+        if not conv_id:
+            self.send_json({"error": "missing conversation id"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT condensed_summary, summary, updated_at "
+                "FROM udb.conversation_summaries WHERE conversation_id = ?",
+                (conv_id,),
+            ).fetchone()
+            if row:
+                self.send_json({"conversation_id": conv_id,
+                                "condensed_summary": row["condensed_summary"] or "",
+                                "summary": row["summary"] or "",
+                                "updated_at": row["updated_at"]})
+            else:
+                self.send_json({"conversation_id": conv_id,
+                                "condensed_summary": "", "summary": "",
+                                "updated_at": None})
+        finally:
+            conn.close()
+
+    def _api_summary_update(self, conv_id):
+        if not conv_id:
+            self.send_json({"error": "missing conversation id"}, 400); return
+        payload = self._read_json_body()
+        conn = open_db(self.db_path)
+        try:
+            import time as _time
+            now = _time.time()
+            conn.execute(
+                "INSERT INTO udb.conversation_summaries "
+                "(conversation_id, condensed_summary, summary, updated_at) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(conversation_id) DO UPDATE SET "
+                "condensed_summary = COALESCE(excluded.condensed_summary, condensed_summary), "
+                "summary = COALESCE(excluded.summary, summary), "
+                "updated_at = excluded.updated_at",
+                (conv_id,
+                 payload.get("condensed_summary"),
+                 payload.get("summary"),
+                 now),
+            )
+            conn.commit()
+            self.send_json({"ok": True, "updated_at": now})
+        finally:
+            conn.close()
+
     def _api_pinned_list(self, qs=None):
         # Scope the loose Pinned list to the toggled side so a Claude pin does not
         # linger in the ChatGPT sidebar (and vice versa). `provider` is validated
@@ -3366,7 +3458,21 @@ class Handler(BaseHTTPRequestHandler):
                 "WHERE COALESCE(cm.deleted, 0) = 0" + prov_sql + " "
                 "ORDER BY p.order_index ASC, p.pinned_at DESC"
             ).fetchall()
-            self.send_json({"pinned": [dict(r) for r in rows]})
+            pinned = [dict(r) for r in rows]
+            cids = [p["conversation_id"] for p in pinned]
+            has_sum = set()
+            if cids:
+                marks = ",".join("?" * len(cids))
+                for r in conn.execute(
+                    "SELECT conversation_id FROM udb.conversation_summaries "
+                    f"WHERE conversation_id IN ({marks}) "
+                    "AND condensed_summary IS NOT NULL AND TRIM(condensed_summary) != ''",
+                    tuple(cids),
+                ).fetchall():
+                    has_sum.add(r["conversation_id"])
+            for p in pinned:
+                p["has_condensed_summary"] = p["conversation_id"] in has_sum
+            self.send_json({"pinned": pinned})
         finally:
             conn.close()
 
