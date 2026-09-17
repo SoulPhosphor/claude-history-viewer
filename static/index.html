@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Claude History</title>
     <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/static/settings.css" />
     <link
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
@@ -404,11 +405,11 @@
           </div>
           <div class="thread-header" id="thread-header">
             <div class="thread-header-main">
-              <div class="thread-title-row">
-                <span id="thread-title-square"></span>
-                <h2 id="thread-title"></h2>
-              </div>
-              <div id="thread-meta"></div>
+              <h2 id="thread-title"></h2>
+              <!-- Label squares for the open conversation. With the "Show Labels
+                   in Chat Header" setting on they render on their own line
+                   under the title; with it off no line is rendered at all. -->
+              <div id="thread-title-square"></div>
             </div>
             <div id="thread-actions">
               <div class="thread-menu-wrap">
@@ -693,6 +694,76 @@
           </div>
           <div id="settings-content">
             <section class="settings-section">
+              <h3 class="settings-section-title">Sidebar Preferences</h3>
+              <div class="settings-setting">
+                <div class="settings-setting-text">
+                  <label class="settings-setting-title" for="setting-chat-snippet">Show Chat Snippet</label>
+                  <p class="settings-setting-subtext">Display the beginning of the chat text under conversation titles.</p>
+                </div>
+                <label class="settings-switch">
+                  <input type="checkbox" role="switch" id="setting-chat-snippet" />
+                  <span class="settings-switch-track" aria-hidden="true">
+                    <span class="settings-switch-thumb"></span>
+                  </span>
+                </label>
+              </div>
+              <div class="settings-setting">
+                <div class="settings-setting-text">
+                  <label class="settings-setting-title" for="setting-summary-hints">Show Condensed Summary Hint</label>
+                  <p class="settings-setting-subtext">Conversations with available condensed summaries will have a hoverable link to show them.</p>
+                </div>
+                <label class="settings-switch">
+                  <input type="checkbox" role="switch" id="setting-summary-hints" checked />
+                  <span class="settings-switch-track" aria-hidden="true">
+                    <span class="settings-switch-thumb"></span>
+                  </span>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <h3 class="settings-section-title">Chat Header Settings</h3>
+              <div class="settings-setting">
+                <div class="settings-setting-text">
+                  <label class="settings-setting-title" for="setting-header-labels">Show Labels in Chat Header</label>
+                </div>
+                <label class="settings-switch">
+                  <input type="checkbox" role="switch" id="setting-header-labels" />
+                  <span class="settings-switch-track" aria-hidden="true">
+                    <span class="settings-switch-thumb"></span>
+                  </span>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <h3 class="settings-section-title">Summaries</h3>
+              <div class="settings-setting">
+                <div class="settings-setting-text">
+                  <label class="settings-setting-title" for="setting-condensed-summary">Include Condensed Summary</label>
+                  <p class="settings-setting-subtext">Shows the Condensed Summary on the summary screen. Turning this off will not remove any entered descriptions.</p>
+                </div>
+                <label class="settings-switch">
+                  <input type="checkbox" role="switch" id="setting-condensed-summary" />
+                  <span class="settings-switch-track" aria-hidden="true">
+                    <span class="settings-switch-thumb"></span>
+                  </span>
+                </label>
+              </div>
+              <div class="settings-setting">
+                <div class="settings-setting-text">
+                  <label class="settings-setting-title" for="setting-summary-author">Show Summary Content Author</label>
+                </div>
+                <label class="settings-switch">
+                  <input type="checkbox" role="switch" id="setting-summary-author" />
+                  <span class="settings-switch-track" aria-hidden="true">
+                    <span class="settings-switch-thumb"></span>
+                  </span>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-section">
               <h3 class="settings-section-title">Compare Tab Model Identifier</h3>
               <p class="settings-section-hint">
                 The colour each provider's Compare tab is outlined in. An active
@@ -713,44 +784,6 @@
               <button type="button" id="compare-color-reset" class="settings-reset-btn">
                 Reset to defaults
               </button>
-            </section>
-
-            <section class="settings-section">
-              <h3 class="settings-section-title">Include condensed summary</h3>
-              <div class="settings-row">
-                <label class="settings-toggle-label">
-                  <input type="checkbox" id="setting-condensed-summary" />
-                  <span>Show the condensed summary field on the Summary screen</span>
-                </label>
-              </div>
-            </section>
-
-            <section class="settings-section">
-              <h3 class="settings-section-title">Show condensed summary hints</h3>
-              <p class="settings-section-hint">
-                Show a hoverable condensed summary link beneath conversation
-                titles when available.
-              </p>
-              <div class="settings-row">
-                <label class="settings-toggle-label">
-                  <input type="checkbox" id="setting-summary-hints" checked />
-                  <span>Enable sidebar summary hints</span>
-                </label>
-              </div>
-            </section>
-
-            <section class="settings-section">
-              <h3 class="settings-section-title">Show summary content author</h3>
-              <p class="settings-section-hint">
-                Display who last edited each summary field — Personal, AI, or
-                Collaborative.
-              </p>
-              <div class="settings-row">
-                <label class="settings-toggle-label">
-                  <input type="checkbox" id="setting-summary-author" />
-                  <span>Show author labels on summary fields</span>
-                </label>
-              </div>
             </section>
           </div>
         </div>

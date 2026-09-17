@@ -36,6 +36,11 @@ const state = {
     includeCondensedSummary: false,
     showSummaryHints: true,
     showSummaryAuthor: false,
+    // Chat Snippet in sidebar rows and Labels in the chat header. Default
+    // state only applies when the user has not chosen otherwise (the loaded
+    // preference overwrites these on startup, and the choice persists).
+    showChatSnippet: false,
+    showHeaderLabels: false,
   },
   labelRows: [], // label definitions (shared by the Labels screen and squares)
   // While the bulk tool's Preview is on, the conversation list is temporarily
@@ -1439,8 +1444,9 @@ function appendListItems(convs, targetEl = convList) {
     }
     top.appendChild(buildConvActions(c));
 
+    const showSnippet = snippet && state.preferences.showChatSnippet;
     el.innerHTML = `
-      ${snippet ? `<div class="conv-snippet">${snippet}</div>` : ""}
+      ${showSnippet ? `<div class="conv-snippet">${snippet}</div>` : ""}
       <div class="conv-footer">
         <span>${formatDate(c.update_time || c.create_time)}</span>
         <span>${c.message_count} msg${c.message_count !== 1 ? "s" : ""}</span>
@@ -1543,7 +1549,7 @@ async function refreshPinnedList() {
     top.innerHTML = `<div class="conv-title">${escHtml(p.title)}</div>`;
     top.appendChild(buildConvActions(c));
     el.appendChild(top);
-    if (snippet) {
+    if (snippet && state.preferences.showChatSnippet) {
       const sn = document.createElement("div");
       sn.className = "conv-snippet";
       sn.textContent = snippet;
@@ -1681,6 +1687,8 @@ async function loadUiPreferences() {
   state.preferences.includeCondensedSummary = Boolean(p.includeCondensedSummary);
   state.preferences.showSummaryHints = p.showSummaryHints !== false;
   state.preferences.showSummaryAuthor = Boolean(p.showSummaryAuthor);
+  state.preferences.showChatSnippet = Boolean(p.showChatSnippet);
+  state.preferences.showHeaderLabels = Boolean(p.showHeaderLabels);
   state.scrollByConversation =
     p.scrollByConversation && typeof p.scrollByConversation === "object"
       ? p.scrollByConversation
@@ -3926,6 +3934,14 @@ async function openSettings() {
   if (hintsToggle) hintsToggle.checked = state.preferences.showSummaryHints;
   const authorToggle = $("setting-summary-author");
   if (authorToggle) authorToggle.checked = state.preferences.showSummaryAuthor;
+  const headerLabelsToggle = $("setting-header-labels");
+  if (headerLabelsToggle) {
+    headerLabelsToggle.checked = state.preferences.showHeaderLabels;
+  }
+  const chatSnippetToggle = $("setting-chat-snippet");
+  if (chatSnippetToggle) {
+    chatSnippetToggle.checked = state.preferences.showChatSnippet;
+  }
 }
 
 function saveCompareColors() {
@@ -3970,6 +3986,21 @@ $("setting-summary-author")?.addEventListener("change", (e) => {
   if (typeof updateSummaryAuthorVisibility === "function") {
     updateSummaryAuthorVisibility();
   }
+});
+$("setting-chat-snippet")?.addEventListener("change", (e) => {
+  saveUiPreferences({ showChatSnippet: e.target.checked });
+  loadConversations(false);
+  refreshPinnedList();
+  renderFolders();
+});
+$("setting-summary-hints")?.addEventListener("change", (e) => {
+  saveUiPreferences({ showSummaryHints: e.target.checked });
+  loadConversations(false);
+  renderFolders();
+});
+$("setting-header-labels")?.addEventListener("change", (e) => {
+  saveUiPreferences({ showHeaderLabels: e.target.checked });
+  renderHeaderLabel(state.activeId, state.activeLabels);
 });
 
 // ── Label indicators + assignment (runtime) ──────────────────────────────────
@@ -4212,6 +4243,7 @@ function renderHeaderLabel(convId, labels, target) {
   if (!holder) return;
   holder.innerHTML = "";
   if (!labelsFeatureOn() || !convId) return;
+  if (!state.preferences.showHeaderLabels) return;
   holder.appendChild(labelIndicatorEl(convId, labels || []));
 }
 
@@ -5488,9 +5520,13 @@ function renderFolders() {
           "folder-conv-item" + (c.id === state.activeId ? " active" : "");
         item.dataset.id = c.id;
         item.draggable = true;
+        const folderSnippet = (c.preview || "").trim();
         item.innerHTML =
           (c.pinned ? '<span class="folder-pin-dot" title="Pinned">★</span>' : "") +
-          `<span class="folder-conv-title">${escHtml(c.title || "Untitled")}</span>`;
+          `<span class="folder-conv-title">${escHtml(c.title || "Untitled")}</span>` +
+          (folderSnippet && state.preferences.showChatSnippet
+            ? `<div class="conv-snippet">${folderSnippet}</div>`
+            : "");
         // Label squares, placed by the same rule as the main list.
         paintRowLabels(item, c.id, c.labels || [], ".folder-conv-title", null);
         if (state.preferences.showSummaryHints && c.has_condensed_summary) {

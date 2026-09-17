@@ -1480,13 +1480,13 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_file(static_dir / "app.js")
         elif path in ("/style.css", "/static/style.css"):
             self._serve_file(static_dir / "style.css")
-        elif path.startswith("/static/") and path.endswith(".js"):
+        elif path.startswith("/static/") and path.endswith((".js", ".css")):
             # Feature modules split out of app.js (labels_screen.js,
-            # bulk_labels.js, snapshots.js, and any future ones) live in the
-            # static dir. Restrict to a flat .js filename so this can never
-            # traverse outside it.
+            # bulk_labels.js, snapshots.js, and any future ones) plus split
+            # stylesheets (settings.css) live in the static dir. Restrict to a
+            # flat filename so this can never traverse outside it.
             name = urllib.parse.unquote(path[len("/static/"):])
-            if re.fullmatch(r"[\w.-]+\.js", name):
+            if re.fullmatch(r"[\w.-]+\.(?:js|css)", name):
                 self._serve_file(static_dir / name)
             else:
                 self.send_error(404)
@@ -2587,7 +2587,7 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT fi.folder_id AS folder_id, fi.pinned AS pinned, "
                 "c.id AS id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
                 "c.create_time AS create_time, c.update_time AS update_time, "
-                "c.message_count AS message_count "
+                "c.message_count AS message_count, c.preview AS preview "
                 "FROM udb.folder_items fi "
                 "JOIN conversations c ON c.id = fi.conversation_id "
                 "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
@@ -2619,6 +2619,7 @@ class Handler(BaseHTTPRequestHandler):
                     "update_time":   r["update_time"],
                     "message_count": r["message_count"],
                     "pinned":        bool(r["pinned"]),
+                    "preview":       r["preview"] or "",
                     "labels":        folder_labels.get(r["id"], []),
                     "has_condensed_summary": r["id"] in folder_has_sum,
                 })

@@ -1,0 +1,127 @@
+/* ── Settings page: setting rows + switches ────────────────────────────────
+   Every visual value here comes from the CSS variables declared on :root in
+   style.css, so the whole look rethemes from one place. This file loads after
+   style.css; a few #settings-content-scoped overrides replace rules that only
+   applied to the old settings markup. */
+
+/* Section boxes: keep the title plus its settings together, with consistent
+   spacing between category boxes. */
+#settings-content .settings-section + .settings-section {
+  margin-top: var(--settings-section-gap);
+}
+#settings-content .settings-section-title {
+  margin: 0 0 12px;
+}
+
+/* One setting row: text on the left, switch pinned to the right edge of the
+   box. The text block keeps a fixed minimum width so every switch on the page
+   starts at the same place regardless of its label's length. A title-only
+   setting centers its switch on the title line; a title + subtext setting
+   centers it across the whole text block. */
+.settings-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--settings-setting-gap);
+}
+.settings-setting + .settings-setting {
+  margin-top: var(--settings-setting-gap-y);
+}
+.settings-setting-text {
+  flex: 0 1 auto;
+  min-width: var(--settings-text-min-width);
+}
+.settings-setting-title {
+  display: block;
+  font-weight: var(--settings-setting-title-weight);
+  color: var(--text);
+  cursor: pointer;
+}
+.settings-setting-subtext {
+  margin: var(--settings-setting-subtext-gap) 0 0;
+  color: var(--settings-setting-subtext-color);
+  font-size: var(--settings-setting-subtext-size);
+}
+
+/* ── Switch control ────────────────────────────────────────────────────────
+   The native checkbox is the semantic control (keyboard, focus, form state,
+   role="switch" in the markup); the track/thumb pair draws the requested
+   oval-and-circle switch entirely with CSS. The thumb rides inside the track,
+   left = off, right = on, with inner shading for depth. */
+.settings-switch {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.settings-switch input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+.settings-switch .settings-switch-track {
+  display: inline-flex;
+  align-items: center;
+  width: var(--switch-width);
+  height: var(--switch-height);
+  padding: var(--switch-padding);
+  box-sizing: border-box;
+  border-radius: var(--switch-radius);
+  background: var(--switch-off-bg);
+  border: 1px solid var(--switch-off-border);
+  box-shadow: var(--switch-track-shadow);
+  transition:
+    background var(--switch-transition),
+    border-color var(--switch-transition);
+}
+.settings-switch .settings-switch-thumb {
+  width: var(--switch-thumb-size);
+  height: var(--switch-thumb-size);
+  border-radius: var(--switch-radius);
+  background: var(--switch-thumb-off-color);
+  box-shadow: var(--switch-thumb-shadow);
+  transform: translateX(0);
+  transition: transform var(--switch-transition);
+}
+.settings-switch input:checked + .settings-switch-track {
+  background: var(--switch-on-bg);
+  border-color: var(--switch-on-border);
+}
+.settings-switch input:checked + .settings-switch-track .settings-switch-thumb {
+  transform: translateX(
+    calc(
+      var(--switch-width) - var(--switch-height) - var(--switch-thumb-size) -
+        2 * var(--switch-padding) - 2px
+    )
+  );
+  background: var(--switch-thumb-color);
+}
+/* Keyboard focus ring drawn on the track, keeping the real input hidden. */
+.settings-switch input:focus-visible + .settings-switch-track {
+  outline: var(--switch-focus-width) solid var(--switch-focus-ring);
+  outline-offset: var(--switch-focus-offset);
+}
+
+/* ── Chat-header label placement ─────────────────────────────────────────── */
+/* "Show Labels in Chat Header" on: the header squares sit on their own line
+   under the title, starting where the title does. Off: the holder stays empty
+   and the :empty rule in style.css collapses it, so no blank line appears and
+   the header keeps its current layout. */
+#thread-title-square {
+  display: block;
+  margin: var(--header-label-row-gap) 0 0 var(--thread-title-square-margin);
+}
+#thread-title-square .label-indicator {
+  margin-right: 0;
+  flex-wrap: wrap;
+}
+/* Folder rows are wrapping flex rows: the snippet takes its own full line
+   under the title, the way the main list shows it. Rendered only when the
+   Show Chat Snippet setting is on; nothing is emitted when it is off. */
+.folder-conv-item > .conv-snippet {
+  flex-basis: 100%;
+  margin: 0;
+}
