@@ -1,13 +1,9 @@
 "use strict";
 
 // ── Summary feature ──────────────────────────────────────────────────────────
-// Per-conversation summaries: a condensed summary (optional, toggle-gated) and
-// a main summary. Both are user-authored free text, persisted per conversation
-// and independent of each other. The design anticipates later search integration
-// (the summary data lives in its own table, ready to be indexed).
-//
-// Feature module (classic script, no bundler): shares the global `state` object
-// and helpers from app.js. Loaded after app.js.
+// The summary view lives inside #thread, sharing its titlebar and header.
+// Toggling between chat and summary just swaps #messages and #summary-body
+// visibility. The only visual change in the titlebar is the book/forum icon.
 
 // ── State ────────────────────────────────────────────────────────────────────
 let _summaryConvId = null;
@@ -15,7 +11,7 @@ let _savedCondensed = "";
 let _savedSummary = "";
 
 // ── DOM refs ─────────────────────────────────────────────────────────────────
-const summaryPanelEl = $("summary-panel");
+const summaryBodyEl = $("summary-body");
 const condensedSection = $("summary-condensed-section");
 const condensedInput = $("condensed-summary-input");
 const condensedRevertBtn = $("condensed-revert-btn");
@@ -23,14 +19,15 @@ const condensedSaveBtn = $("condensed-save-btn");
 const summaryInput = $("summary-input");
 const summaryRevertBtn = $("summary-revert-btn");
 const summarySaveBtn = $("summary-save-btn");
-const summaryTitleEl = $("summary-panel-title");
-const summaryMetaEl = $("summary-panel-meta");
-const summaryTitlebarLabel = $("summary-titlebar-label");
 const summaryUnsavedModal = $("summary-unsaved-modal");
 const summaryUnsavedCancel = $("summary-unsaved-cancel");
 const summaryUnsavedSave = $("summary-unsaved-save");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+function summaryIsOpen() {
+  return summaryBodyEl && !summaryBodyEl.hidden;
+}
 
 function summaryHasUnsavedChanges() {
   if (!_summaryConvId) return false;
@@ -148,47 +145,38 @@ function refreshSummaryHintForConv(convId) {
         hintEl.className = "conv-summary-hint";
         hintEl.textContent = "Summary";
         hintEl.dataset.convId = convId;
-        row.appendChild(hintEl);
+        const anchor = row.querySelector(".conv-top-row") || row.querySelector(".folder-conv-title");
+        if (anchor) anchor.after(hintEl);
+        else row.appendChild(hintEl);
       }
     });
   }
 }
 
-// ── Open summary screen ──────────────────────────────────────────────────────
+// ── Open / close summary view ───────────────────────────────────────────────
 
 async function openSummaryForConversation(convId) {
   if (!convId) return;
 
-  // If there's already a summary open with unsaved changes, guard first.
   if (_summaryConvId && _summaryConvId !== convId && summaryHasUnsavedChanges()) {
     const result = await openSummaryUnsavedModal();
     if (result === "cancel") return;
     if (result === "save") await saveAllUnsaved();
   }
 
-  // If this conversation isn't the active one, open it first (for header context).
   if (state.activeId !== convId) {
     await openConversation(convId, findConvItemEl(convId));
   }
 
   _summaryConvId = convId;
 
-  // Show the summary panel, hide messages.
-  if (thread) thread.hidden = true;
-  if (summaryPanelEl) summaryPanelEl.hidden = false;
+  // Swap messages for summary body (both inside #thread).
+  if (messagesEl) messagesEl.hidden = true;
+  if (summaryBodyEl) summaryBodyEl.hidden = false;
 
-  // Copy header info from the conversation.
-  if (summaryTitleEl) summaryTitleEl.textContent = threadTitle.textContent || "Summary";
-  if (summaryMetaEl) summaryMetaEl.textContent = threadMeta.textContent || "";
-  if (summaryTitlebarLabel) summaryTitlebarLabel.textContent = threadTitle.textContent || "";
-
-  // Update condensed visibility from setting.
   updateSummaryCondensedVisibility();
-
-  // Update toggle icon to forum (return to chat).
   updateSummaryToggleIcon(true);
 
-  // Load summary data.
   const data = await apiGetSummary(convId);
   _savedCondensed = data.condensed_summary || "";
   _savedSummary = data.summary || "";
@@ -201,18 +189,19 @@ async function openSummaryForConversation(convId) {
 
 function closeSummaryPanel() {
   _summaryConvId = null;
-  if (summaryPanelEl) summaryPanelEl.hidden = true;
+  if (summaryBodyEl) summaryBodyEl.hidden = true;
+  if (messagesEl) messagesEl.hidden = false;
   updateSummaryToggleIcon(false);
 }
 
 function returnFromSummaryToChat() {
-  if (summaryPanelEl) summaryPanelEl.hidden = true;
-  if (thread) thread.hidden = false;
+  _summaryConvId = null;
+  if (summaryBodyEl) summaryBodyEl.hidden = true;
+  if (messagesEl) messagesEl.hidden = false;
   updateSummaryToggleIcon(false);
 }
 
 // ── Unsaved changes modal ────────────────────────────────────────────────────
-// Returns a promise resolving to "cancel" or "save".
 
 let _unsavedResolve = null;
 
@@ -234,12 +223,10 @@ function closeSummaryUnsavedModal(result) {
 summaryUnsavedCancel?.addEventListener("click", () => closeSummaryUnsavedModal("cancel"));
 summaryUnsavedSave?.addEventListener("click", () => closeSummaryUnsavedModal("save"));
 
-// Backdrop click = cancel.
 summaryUnsavedModal?.addEventListener("click", (e) => {
   if (e.target === summaryUnsavedModal) closeSummaryUnsavedModal("cancel");
 });
 
-// Escape = cancel.
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && summaryUnsavedModal && !summaryUnsavedModal.hidden) {
     closeSummaryUnsavedModal("cancel");
@@ -247,8 +234,6 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ── Navigation guard ─────────────────────────────────────────────────────────
-// Wraps any navigation action so unsaved summary changes get a save/cancel gate.
-// The caller passes the action to run after the guard resolves.
 
 async function summaryNavigationGuard(proceedFn) {
   if (summaryHasUnsavedChanges()) {
@@ -290,8 +275,7 @@ summarySaveBtn?.addEventListener("click", () => saveMainSummary());
 // ── Header icon toggle ──────────────────────────────────────────────────────
 
 $("summary-toggle-btn")?.addEventListener("click", async () => {
-  if (summaryPanelEl && !summaryPanelEl.hidden) {
-    // Currently showing summary → go back to chat.
+  if (summaryIsOpen()) {
     if (summaryHasUnsavedChanges()) {
       const result = await openSummaryUnsavedModal();
       if (result === "cancel") return;
@@ -300,31 +284,6 @@ $("summary-toggle-btn")?.addEventListener("click", async () => {
     returnFromSummaryToChat();
   } else if (state.activeId) {
     openSummaryForConversation(state.activeId);
-  }
-});
-
-// Forum icon inside the summary panel titlebar → back to chat.
-$("summary-panel-toggle-btn")?.addEventListener("click", async () => {
-  if (summaryHasUnsavedChanges()) {
-    const result = await openSummaryUnsavedModal();
-    if (result === "cancel") return;
-    if (result === "save") await saveAllUnsaved();
-  }
-  returnFromSummaryToChat();
-});
-
-// Summary panel collapse button.
-$("summary-collapse-btn")?.addEventListener("click", () => {
-  const panel = summaryPanelEl;
-  if (!panel) return;
-  const header = $("summary-header");
-  const btn = $("summary-collapse-btn");
-  const collapsed = !panel.classList.contains("header-collapsed");
-  panel.classList.toggle("header-collapsed", collapsed);
-  if (header) header.hidden = collapsed;
-  if (btn) {
-    btn.setAttribute("aria-expanded", String(!collapsed));
-    btn.title = collapsed ? "Expand header" : "Collapse header";
   }
 });
 
@@ -370,7 +329,6 @@ function hideSummaryPopup() {
   }, 200);
 }
 
-// Delegated hover events on the sidebar for .conv-summary-hint elements.
 document.addEventListener("mouseover", async (e) => {
   const hint = e.target.closest(".conv-summary-hint");
   if (!hint) return;
@@ -386,7 +344,7 @@ document.addEventListener("mouseover", async (e) => {
     if (_hintLoadAbort?.signal.aborted) return;
     const text = (data.condensed_summary || "").trim();
     if (text) showSummaryPopup(hint, text);
-  } catch { /* aborted or network error — silently ignore */ }
+  } catch { /* aborted or network error */ }
 });
 
 document.addEventListener("mouseout", (e) => {

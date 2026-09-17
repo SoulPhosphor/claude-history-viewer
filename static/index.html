@@ -473,61 +473,8 @@
             <div id="thread-tags"></div>
           </div>
           <div id="messages"></div>
-          <!-- Artifact side panel (absolute, inside #thread) -->
-          <div id="artifact-panel" hidden>
-            <div id="artifact-panel-resize"></div>
-            <div class="artifact-panel-header">
-              <span id="artifact-panel-title"></span>
-              <button id="artifact-panel-close" title="Close">✕</button>
-            </div>
-            <div id="artifact-panel-body"></div>
-          </div>
-        </div>
-
-        <div id="summary-panel" hidden>
-          <!-- Reuses the same titlebar + header as the thread so the user
-               gets the same collapse/chevron/title experience. Populated by
-               JS from the active conversation's data. -->
-          <div class="thread-titlebar" id="summary-titlebar">
-            <button
-              id="summary-panel-toggle-btn"
-              type="button"
-              title="Back to chat"
-              aria-label="Back to chat"
-            >
-              <svg class="summary-toggle-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z" stroke="currentColor" stroke-width="1.4" fill="none"/>
-                <path d="M7 9h10M7 13h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
-              </svg>
-            </button>
-            <button
-              id="summary-collapse-btn"
-              type="button"
-              title="Collapse header"
-              aria-label="Collapse header"
-              aria-expanded="true"
-            >
-              <svg class="thread-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <path
-                  d="M6 4l4 4-4 4"
-                  stroke="currentColor"
-                  stroke-width="1.6"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </button>
-            <span id="summary-titlebar-label"></span>
-          </div>
-          <div class="thread-header" id="summary-header">
-            <div class="thread-header-main">
-              <div class="thread-title-row">
-                <h2 id="summary-panel-title"></h2>
-              </div>
-              <div id="summary-panel-meta"></div>
-            </div>
-          </div>
-          <div id="summary-body">
+          <!-- Summary body (replaces messages when the summary view is active) -->
+          <div id="summary-body" hidden>
             <!-- Condensed Summary section (hidden when setting is off) -->
             <section id="summary-condensed-section" class="summary-section" hidden>
               <div class="summary-section-header">
@@ -559,6 +506,15 @@
                 placeholder=""
               ></textarea>
             </section>
+          </div>
+          <!-- Artifact side panel (absolute, inside #thread) -->
+          <div id="artifact-panel" hidden>
+            <div id="artifact-panel-resize"></div>
+            <div class="artifact-panel-header">
+              <span id="artifact-panel-title"></span>
+              <button id="artifact-panel-close" title="Close">✕</button>
+            </div>
+            <div id="artifact-panel-body"></div>
           </div>
         </div>
 

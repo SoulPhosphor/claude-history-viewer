@@ -4509,60 +4509,7 @@ kbd {
 }
 .gizmo-conversation-title { font-weight: 500; }
 
-/* ── Summary panel ───────────────────────────────────────────────────────── */
-
-#summary-panel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-#summary-panel[hidden] {
-  display: none;
-}
-
-#summary-panel.header-collapsed #summary-header {
-  display: none;
-}
-#summary-panel.header-collapsed .thread-titlebar {
-  padding-bottom: 3px;
-  border-bottom: 1px solid var(--border);
-}
-
-#summary-titlebar-label {
-  min-width: 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  order: 1;
-}
-
-#summary-panel-toggle-btn,
-#summary-collapse-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-}
-#summary-panel-toggle-btn:hover,
-#summary-collapse-btn:hover {
-  background: var(--hover);
-  color: var(--text);
-}
-#summary-collapse-btn {
-  order: 2;
-  margin-left: auto;
-}
+/* ── Summary body (inside #thread, swaps with #messages) ─────────────────── */
 
 #summary-body {
   flex: 1;

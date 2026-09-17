@@ -133,7 +133,7 @@ const importAuditContent = $("import-audit-content");
 const importNewPanel = $("import-new-panel");
 const settingsPanel = $("settings-panel");
 const labelsPanel = $("labels-panel");
-const summaryPanel = $("summary-panel");
+const summaryBodyPanel = $("summary-body");
 const artifactPanel = $("artifact-panel");
 const artifactPanelTitle = $("artifact-panel-title");
 const artifactPanelBody = $("artifact-panel-body");
@@ -1461,7 +1461,7 @@ function appendListItems(convs, targetEl = convList) {
       hintEl.className = "conv-summary-hint";
       hintEl.textContent = "Summary";
       hintEl.dataset.convId = c.id;
-      el.appendChild(hintEl);
+      top.after(hintEl);
     }
 
     el.addEventListener("click", () => openConversation(c.id, el));
@@ -1558,7 +1558,7 @@ async function refreshPinnedList() {
       hintEl.className = "conv-summary-hint";
       hintEl.textContent = "Summary";
       hintEl.dataset.convId = p.conversation_id;
-      el.appendChild(hintEl);
+      top.after(hintEl);
     }
 
     el.addEventListener("click", () => openConversation(p.conversation_id, el));
@@ -2068,7 +2068,7 @@ async function loadConversations(append = false) {
 function hideAllPanels() {
   emptyState.hidden = true;
   thread.hidden = true;
-  if (summaryPanel) summaryPanel.hidden = true;
+  if (summaryBodyPanel) summaryBodyPanel.hidden = true;
   galleryPanel.hidden = true;
   memoriesPanel.hidden = true;
   projectsPanel.hidden = true;
@@ -3637,8 +3637,9 @@ function tagAddButton(group, convId) {
   return addBtn;
 }
 
-function renderThreadTags() {
-  threadTags.innerHTML = "";
+function renderThreadTags(target) {
+  const container = target || threadTags;
+  container.innerHTML = "";
   if (!state.activeId) return;
   const convId = state.activeId;
 
@@ -3664,7 +3665,7 @@ function renderThreadTags() {
   strip.appendChild(tagAddButton("mood", convId));
   right.appendChild(strip);
 
-  threadTags.append(left, right);
+  container.append(left, right);
 }
 
 async function showTagInput(group, convId, addBtn) {
@@ -4196,8 +4197,8 @@ function refreshFolderRowLabel(convId, labels) {
 }
 
 // The squares shown next to the open conversation's title in the header.
-function renderHeaderLabel(convId, labels) {
-  const holder = $("thread-title-square");
+function renderHeaderLabel(convId, labels, target) {
+  const holder = target || $("thread-title-square");
   if (!holder) return;
   holder.innerHTML = "";
   if (!labelsFeatureOn() || !convId) return;
@@ -5487,7 +5488,9 @@ function renderFolders() {
           hintEl.className = "conv-summary-hint";
           hintEl.textContent = "Summary";
           hintEl.dataset.convId = c.id;
-          item.appendChild(hintEl);
+          const titleSpan = item.querySelector(".folder-conv-title");
+          if (titleSpan) titleSpan.after(hintEl);
+          else item.appendChild(hintEl);
         }
         item.addEventListener("click", () => openConversation(c.id, item));
         item.addEventListener("dragstart", (e) => {
