@@ -85,7 +85,13 @@
   --summary-popup-padding: 10px 12px;
   --summary-popup-font-size: 13px;
   --summary-popup-color: var(--text);
-  --summary-toggle-icon-size: 18px;
+  --summary-toggle-icon-size: 22px;
+  /* Titlebar Book (summary) button + collapse chevron sizing. Icon size is the
+     visible glyph; hit size is the clickable target around it. */
+  --summary-toggle-hit-size: 32px;
+  --thread-chevron-size: 20px;
+  --thread-chevron-hit-size: 32px;
+  --thread-chevron-stroke: 2;
   /* Summary author labels */
   --summary-author-font-size: 11px;
   --summary-author-color: var(--muted);
@@ -3121,7 +3127,8 @@ kbd {
 }
 
 #thread-titlebar-label {
-  order: 1;
+  flex: 1;
+  min-width: 0;
 }
 
 /* Expanded, the bar and the header read as one box, so only the header carries
@@ -3138,16 +3145,15 @@ kbd {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: var(--thread-chevron-hit-size);
+  height: var(--thread-chevron-hit-size);
   padding: 0;
   border: none;
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  order: 2;
-  margin-left: auto;
+  flex-shrink: 0;
 }
 
 #thread-collapse-btn:hover {
@@ -3158,8 +3164,9 @@ kbd {
 /* Points right when collapsed, down when open — an outline chevron, not a
    filled triangle. */
 .thread-chevron {
-  width: 13px;
-  height: 13px;
+  width: var(--thread-chevron-size);
+  height: var(--thread-chevron-size);
+  stroke-width: var(--thread-chevron-stroke);
   transform: rotate(90deg);
   transition: transform 0.12s ease;
 }
@@ -4611,16 +4618,16 @@ kbd {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: var(--summary-toggle-hit-size);
+  height: var(--summary-toggle-hit-size);
   padding: 0;
   border: none;
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  order: 3;
-  margin-left: 2px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 #summary-toggle-btn[hidden] {
   display: none;
