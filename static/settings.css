@@ -10,7 +10,12 @@
   margin-top: var(--settings-section-gap);
 }
 #settings-content .settings-section-title {
-  margin: 0 0 12px;
+  margin: 0 0 var(--settings-section-title-gap);
+}
+/* A second category title inside one box (Compare Tab Model Identifier inside
+   Summaries) needs the same separation from the row above it. */
+.settings-setting + .settings-section-title {
+  margin-top: var(--settings-setting-gap-y);
 }
 
 /* One setting row: text on the left, switch pinned to the right edge of the
@@ -71,7 +76,9 @@
   box-sizing: border-box;
   border-radius: var(--switch-radius);
   background: var(--switch-off-bg);
-  border: 1px solid var(--switch-off-border);
+  border-width: var(--switch-border-width);
+  border-style: solid;
+  border-color: var(--switch-off-border);
   box-shadow: var(--switch-track-shadow);
   transition:
     background var(--switch-transition),
@@ -94,7 +101,7 @@
   transform: translateX(
     calc(
       var(--switch-width) - var(--switch-height) - var(--switch-thumb-size) -
-        2 * var(--switch-padding) - 2px
+        2 * var(--switch-padding) - 2 * var(--switch-border-width)
     )
   );
   background: var(--switch-thumb-color);

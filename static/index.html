@@ -405,11 +405,15 @@
           </div>
           <div class="thread-header" id="thread-header">
             <div class="thread-header-main">
-              <h2 id="thread-title"></h2>
+              <div class="thread-title-row">
+                <h2 id="thread-title"></h2>
+              </div>
               <!-- Label squares for the open conversation. With the "Show Labels
                    in Chat Header" setting on they render on their own line
-                   under the title; with it off no line is rendered at all. -->
+                   between the title and the metadata line; with it off no line
+                   is rendered at all. -->
               <div id="thread-title-square"></div>
+              <div id="thread-meta"></div>
             </div>
             <div id="thread-actions">
               <div class="thread-menu-wrap">
@@ -761,9 +765,7 @@
                   </span>
                 </label>
               </div>
-            </section>
 
-            <section class="settings-section">
               <h3 class="settings-section-title">Compare Tab Model Identifier</h3>
               <p class="settings-section-hint">
                 The colour each provider's Compare tab is outlined in. An active
