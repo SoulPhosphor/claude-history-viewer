@@ -2510,21 +2510,32 @@ kbd {
 }
 
 /* ── Thread header actions (Move to / more) ──────────────────────────────── */
+/* Title/meta and the action buttons share the upper row; the tag strip
+   sits beneath them as a full-width second row. That way the right half
+   of the tag grid measures against the whole header width, not just the
+   space left of the Move-to buttons, so the Mood Tags group anchors to
+   the true right edge. */
 #thread > .thread-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "main actions"
+    "tags tags";
+  align-items: start;
+  column-gap: 12px;
 }
 .thread-header-main {
+  grid-area: main;
   min-width: 0;
-  flex: 1;
 }
 #thread-actions {
+  grid-area: actions;
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-shrink: 0;
+}
+#thread-tags {
+  grid-area: tags;
 }
 .thread-menu-wrap {
   position: relative;
