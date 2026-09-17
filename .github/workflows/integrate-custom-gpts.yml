@@ -1,0 +1,117 @@
+name: Integrate Custom GPT feature
+
+on:
+  push:
+    branches:
+      - integrate/custom-gpt-gizmos
+
+permissions:
+  contents: write
+
+jobs:
+  integrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify branch is based on current main
+        run: |
+          git fetch origin main
+          test "$(git merge-base HEAD origin/main)" = "$(git rev-parse origin/main)"
+
+      - name: Apply guarded port
+        run: python tools/port_custom_gpts.py
+
+      - name: Syntax checks
+        run: |
+          python -m py_compile server.py build_db.py gizmos.py
+          node --check static/app.js
+          node --check static/gizmos.js
+          git diff --check
+
+      - name: Smoke-test import, naming, grouping, and folder move
+        run: |
+          python - <<'PY'
+          import json
+          import tempfile
+          from pathlib import Path
+
+          import build_db
+          import gizmos
+          import server
+
+          with tempfile.TemporaryDirectory() as td:
+              root = Path(td)
+              src = root / "conversations.json"
+              db = root / "history.db"
+              src.write_text(json.dumps([{
+                  "id": "chat-1",
+                  "title": "First GPT chat",
+                  "create_time": 1,
+                  "update_time": 2,
+                  "mapping": {},
+                  "gizmo_id": "g-test",
+                  "gizmo_type": "gpt",
+              }]), encoding="utf-8")
+              build_db.build(src, db)
+              server._ensure_runtime_schema(db)
+              server._ensure_userdata_schema(db)
+              conn = server.open_db(db)
+              try:
+                  row = conn.execute(
+                      "SELECT provider, gizmo_id, gizmo_type FROM conversations WHERE id='chat-1'"
+                  ).fetchone()
+                  assert tuple(row) == ("chatgpt", "g-test", "gpt"), tuple(row)
+
+                  listing = gizmos.list_gizmos(conn)["gizmos"]
+                  assert len(listing) == 1 and listing[0]["conversation_count"] == 1
+                  assert listing[0]["gizmo_id"] == "g-test"
+
+                  renamed = gizmos.rename_gizmo(conn, "g-test", {"display_name": "My GPT"})
+                  assert renamed["display_name"] == "My GPT"
+
+                  second = {
+                      "id": "chat-2",
+                      "title": "Second GPT chat",
+                      "create_time": 3,
+                      "update_time": 4,
+                      "mapping": {},
+                      "gizmo_id": "g-test",
+                      "gizmo_type": "gpt",
+                  }
+                  records = build_db.dedup_records(build_db.parse_backup([second], "chatgpt"))
+                  counts = build_db.reconcile_backup(conn, records, "chatgpt")
+                  conn.commit()
+                  assert counts["added"] == 1, counts
+                  listing = gizmos.list_gizmos(conn)["gizmos"]
+                  assert listing[0]["conversation_count"] == 2, listing
+                  assert listing[0]["display_name"] == "My GPT", listing
+
+                  moved = gizmos.move_to_folder(conn, "g-test", {"folder_name": "My GPT"})
+                  assert moved["moved"] == 2, moved
+                  folder = conn.execute(
+                      "SELECT provider FROM udb.folders WHERE id = ?", (moved["folder_id"],)
+                  ).fetchone()
+                  assert folder[0] == "chatgpt"
+                  n = conn.execute(
+                      "SELECT COUNT(*) FROM udb.folder_items WHERE folder_id = ?",
+                      (moved["folder_id"],),
+                  ).fetchone()[0]
+                  assert n == 2, n
+              finally:
+                  conn.close()
+          print("Custom GPT smoke test passed")
+          PY
+
+      - name: Commit only the integrated feature
+        run: |
+          git rm tools/port_custom_gpts.py .github/workflows/integrate-custom-gpts.yml
+          git add build_db.py server.py gizmos.py static/app.js static/gizmos.js static/index.html static/style.css
+          git status --short
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Restore Custom GPT identity and manager on current main"
+          git push origin HEAD:integrate/custom-gpt-gizmos
