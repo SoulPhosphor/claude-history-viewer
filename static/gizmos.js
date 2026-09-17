@@ -4,6 +4,14 @@
 // are only touched when these functions are called after app.js has initialized.
 let _activeGizmo = null;
 
+// The gizmo feature makes #thread-meta flex only when a gizmo identity is
+// present. Keep every ordinary/Claude header on main's original block layout so
+// the newer Claude model strip is not changed merely by installing this feature.
+const _gizmoLayoutGuard = document.createElement("style");
+_gizmoLayoutGuard.textContent =
+  "#thread-meta:not(.has-gizmo){display:block;width:auto;}";
+document.head.appendChild(_gizmoLayoutGuard);
+
 function _gizmoPanel() { return document.getElementById("gizmos-panel"); }
 function _gizmoContent() { return document.getElementById("gizmos-content"); }
 
@@ -89,15 +97,19 @@ function _beginGizmoRename(el, g, onSaved) {
   input.focus();
   input.select();
   let settled = false;
+  let pending = false;
   const restore = () => {
     if (settled) return;
     settled = true;
     if (input.parentNode) input.parentNode.replaceChild(_gizmoNameEl(g, onSaved), input);
   };
   const save = async () => {
-    if (settled) return;
+    if (settled || pending) return;
     const next = input.value.trim();
     if (next === (g.display_name || "")) { restore(); return; }
+    // Focusing the confirmation dialog blurs this input. Mark the save pending
+    // first so that blur cannot start a second confirmation/save in parallel.
+    pending = true;
     const ok = await _gizmoConfirmRename(next, g.conversation_count || 0);
     if (!ok) { restore(); return; }
     settled = true;
@@ -113,14 +125,16 @@ function _beginGizmoRename(el, g, onSaved) {
     if (e.key === "Enter") { e.preventDefault(); save(); }
     else if (e.key === "Escape") { e.preventDefault(); restore(); }
   });
-  input.addEventListener("blur", () => { if (!settled) save(); });
+  input.addEventListener("blur", () => { if (!settled && !pending) save(); });
 }
 
 function renderGizmoThreadIdentity(conv) {
   const meta = document.getElementById("thread-meta");
   meta?.querySelector(".thread-meta-gizmo")?.remove();
+  meta?.classList.remove("has-gizmo");
   _activeGizmo = null;
   if (!meta || !conv?.gizmo_id) return;
+  meta.classList.add("has-gizmo");
   const g = {
     gizmo_id: conv.gizmo_id,
     gizmo_type: conv.gizmo_type || "",
