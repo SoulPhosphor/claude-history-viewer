@@ -52,6 +52,8 @@ const state = {
   unverifiedCount: 0,
   tags: [], // tags on the open conversation
   allTagsCache: null, // every tag in use, for the add-tag autocomplete
+  moodTags: [], // mood tags on the open conversation (independent of tags)
+  allMoodTagsCache: null, // every mood tag in use, for mood-tag autocomplete
   // Compare-tab outline colours, per provider. CSS-driven, editable in Settings.
   compareColors: { chatgpt: "#4169E1", claude: "#2E7D32" },
   importNew: {
@@ -1125,6 +1127,30 @@ async function apiAddTag(convId, tag) {
 async function apiRemoveTag(convId, tag) {
   const r = await fetch(
     `/api/tags/${encodeURIComponent(convId)}/${encodeURIComponent(tag)}`,
+    { method: "DELETE" },
+  );
+  return r.json();
+}
+
+// Mood tags: a second, independent tag set with its own API and vocabulary.
+async function apiAllMoodTags() {
+  const r = await fetch("/api/mood-tags");
+  const data = await r.json();
+  return data.tags || [];
+}
+
+async function apiAddMoodTag(convId, tag) {
+  const r = await fetch("/api/mood-tags", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conv_id: convId, tag }),
+  });
+  return r.json();
+}
+
+async function apiRemoveMoodTag(convId, tag) {
+  const r = await fetch(
+    `/api/mood-tags/${encodeURIComponent(convId)}/${encodeURIComponent(tag)}`,
     { method: "DELETE" },
   );
   return r.json();
@@ -2210,6 +2236,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   renderModelStrip();
   renderGizmoThreadIdentity(conv);
   state.tags = data.tags || [];
+  state.moodTags = data.mood_tags || [];
   renderThreadTags();
 
   messagesEl.innerHTML = "";
@@ -3517,49 +3544,98 @@ function renderModelStrip() {
 }
 
 // ── Conversation tags ────────────────────────────────────────────────────────
-// "Tags: [chip ×] [chip ×] [+]" under the thread meta line. Works the same on
-// both a Claude and a ChatGPT export, unlike the model strip above.
+// Two independent tag sets share this row. Ordinary Tags occupy the left half;
+// Mood Tags occupy the right half and are anchored at the right edge.
+
+const TAG_GROUPS = {
+  tag: {
+    chips: () => state.tags,
+    setChips: (v) => { state.tags = v; },
+    cache: () => state.allTagsCache,
+    setCache: (v) => { state.allTagsCache = v; },
+    loadAll: () => apiAllTags(),
+    add: (convId, tag) => apiAddTag(convId, tag),
+    remove: (convId, tag) => apiRemoveTag(convId, tag),
+    datalistId: "tag-suggestions",
+    addTitle: "Add tag",
+    placeholder: "Tag name",
+  },
+  mood: {
+    chips: () => state.moodTags,
+    setChips: (v) => { state.moodTags = v; },
+    cache: () => state.allMoodTagsCache,
+    setCache: (v) => { state.allMoodTagsCache = v; },
+    loadAll: () => apiAllMoodTags(),
+    add: (convId, tag) => apiAddMoodTag(convId, tag),
+    remove: (convId, tag) => apiRemoveMoodTag(convId, tag),
+    datalistId: "mood-tag-suggestions",
+    addTitle: "Add mood tag",
+    placeholder: "Mood tag",
+  },
+};
+
+function tagChip(group, convId, tag) {
+  const chip = document.createElement("span");
+  chip.className = "tag-chip";
+  const name = document.createElement("span");
+  name.className = "tag-chip-name";
+  name.textContent = tag;
+  const x = document.createElement("button");
+  x.className = "tag-chip-x";
+  x.type = "button";
+  x.title = `Remove ${tag}`;
+  x.setAttribute("aria-label", `Remove ${tag}`);
+  x.textContent = "✕";
+  x.addEventListener("click", () => removeConvTag(group, convId, tag));
+  chip.append(name, x);
+  return chip;
+}
+
+function tagAddButton(group, convId) {
+  const addBtn = document.createElement("button");
+  addBtn.className = "tag-add-btn";
+  addBtn.type = "button";
+  addBtn.title = TAG_GROUPS[group].addTitle;
+  addBtn.setAttribute("aria-label", TAG_GROUPS[group].addTitle);
+  addBtn.textContent = "+";
+  addBtn.addEventListener("click", () => showTagInput(group, convId, addBtn));
+  return addBtn;
+}
 
 function renderThreadTags() {
   threadTags.innerHTML = "";
   if (!state.activeId) return;
   const convId = state.activeId;
 
-  const label = document.createElement("span");
-  label.className = "tags-label";
-  label.textContent = "Tags:";
-  threadTags.appendChild(label);
+  const left = document.createElement("div");
+  left.className = "tags-left";
+  const leftLabel = document.createElement("span");
+  leftLabel.className = "tags-label";
+  leftLabel.textContent = "Tags:";
+  left.appendChild(leftLabel);
+  for (const tag of state.tags) left.appendChild(tagChip("tag", convId, tag));
+  left.appendChild(tagAddButton("tag", convId));
 
-  for (const tag of state.tags) {
-    const chip = document.createElement("span");
-    chip.className = "tag-chip";
-    const name = document.createElement("span");
-    name.className = "tag-chip-name";
-    name.textContent = tag;
-    const x = document.createElement("button");
-    x.className = "tag-chip-x";
-    x.type = "button";
-    x.title = `Remove ${tag}`;
-    x.setAttribute("aria-label", `Remove ${tag}`);
-    x.textContent = "✕";
-    x.addEventListener("click", () => removeThreadTag(convId, tag));
-    chip.append(name, x);
-    threadTags.appendChild(chip);
-  }
+  const right = document.createElement("div");
+  right.className = "tags-right";
+  const strip = document.createElement("div");
+  strip.className = "tags-mood";
+  const rightLabel = document.createElement("span");
+  rightLabel.className = "tags-label";
+  rightLabel.textContent = "Mood Tags:";
+  strip.appendChild(rightLabel);
+  for (const tag of state.moodTags)
+    strip.appendChild(tagChip("mood", convId, tag));
+  strip.appendChild(tagAddButton("mood", convId));
+  right.appendChild(strip);
 
-  const addBtn = document.createElement("button");
-  addBtn.className = "tag-add-btn";
-  addBtn.type = "button";
-  addBtn.title = "Add tag";
-  addBtn.setAttribute("aria-label", "Add tag");
-  addBtn.textContent = "+";
-  addBtn.addEventListener("click", () => showTagInput(convId, addBtn));
-  threadTags.appendChild(addBtn);
+  threadTags.append(left, right);
 }
 
-async function showTagInput(convId, addBtn) {
-  if (state.allTagsCache === null) {
-    state.allTagsCache = await apiAllTags().catch(() => []);
+async function showTagInput(group, convId, addBtn) {
+  const g = TAG_GROUPS[group];
+  if (g.cache() === null) {
+    g.setCache(await g.loadAll().catch(() => []));
   }
   const form = document.createElement("form");
   form.className = "tag-add-form";
@@ -3567,17 +3643,17 @@ async function showTagInput(convId, addBtn) {
   input.className = "tag-add-input";
   input.type = "text";
   input.maxLength = 40;
-  input.placeholder = "Tag name";
-  input.setAttribute("list", "tag-suggestions");
-  if (!$("tag-suggestions")) {
+  input.placeholder = g.placeholder;
+  input.setAttribute("list", g.datalistId);
+  if (!$(g.datalistId)) {
     const datalist = document.createElement("datalist");
-    datalist.id = "tag-suggestions";
+    datalist.id = g.datalistId;
     document.body.appendChild(datalist);
   }
-  const datalist = $("tag-suggestions");
+  const datalist = $(g.datalistId);
   datalist.innerHTML = "";
-  for (const t of state.allTagsCache) {
-    if (state.tags.includes(t)) continue;
+  for (const t of g.cache()) {
+    if (g.chips().includes(t)) continue;
     const opt = document.createElement("option");
     opt.value = t;
     datalist.appendChild(opt);
@@ -3591,7 +3667,7 @@ async function showTagInput(convId, addBtn) {
     if (settled) return;
     settled = true;
     const tag = input.value.trim();
-    if (tag) await addThreadTag(convId, tag);
+    if (tag) await addConvTag(group, convId, tag);
     else renderThreadTags();
   };
   form.addEventListener("submit", (e) => {
@@ -3607,23 +3683,25 @@ async function showTagInput(convId, addBtn) {
   });
 }
 
-async function addThreadTag(convId, tag) {
+async function addConvTag(group, convId, tag) {
+  const g = TAG_GROUPS[group];
   try {
-    const data = await apiAddTag(convId, tag);
+    const data = await g.add(convId, tag);
     if (state.activeId !== convId) return;
-    state.tags = data.tags || state.tags;
-    state.allTagsCache = null; // pick up the new tag next time the list opens
+    g.setChips(data.tags || g.chips());
+    g.setCache(null);
     renderThreadTags();
   } catch {
     renderThreadTags();
   }
 }
 
-async function removeThreadTag(convId, tag) {
+async function removeConvTag(group, convId, tag) {
+  const g = TAG_GROUPS[group];
   try {
-    const data = await apiRemoveTag(convId, tag);
+    const data = await g.remove(convId, tag);
     if (state.activeId !== convId) return;
-    state.tags = data.tags || state.tags.filter((t) => t !== tag);
+    g.setChips(data.tags || g.chips().filter((t) => t !== tag));
     renderThreadTags();
   } catch {
     /* leave the chip as-is if the write failed */
