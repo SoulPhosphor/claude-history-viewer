@@ -156,6 +156,12 @@ function renderGizmoThreadIdentity(conv) {
 }
 
 async function openGizmos() {
+  if (typeof summaryHasUnsavedChanges === "function" && summaryHasUnsavedChanges()) {
+    const r = await openSummaryUnsavedModal();
+    if (r === "cancel") return;
+    if (r === "save") await saveAllUnsaved();
+  }
+  if (typeof closeSummaryPanel === "function") closeSummaryPanel();
   rememberReturnTab();
   state.activeSpecialView = "gizmos";
   state.activeTabId = null;

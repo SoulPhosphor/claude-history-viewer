@@ -368,6 +368,24 @@
                the top of the pane is one slim line. -->
           <div class="thread-titlebar">
             <button
+              id="summary-toggle-btn"
+              type="button"
+              title="Summary"
+              aria-label="Open summary"
+              hidden
+            >
+              <!-- Google Book 5 icon (default: open summary) -->
+              <svg class="summary-toggle-icon" id="summary-icon-book" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M21 4.5C19.5 3.5 16.5 3 14 3c-1.74 0-3.41.29-4.97.82L12 5.17V19l-1.5-.76C11.16 18.08 12.55 18 14 18c2.28 0 4.44.43 6 1.24V4.5z" stroke="currentColor" stroke-width="1.4" fill="none"/>
+                <path d="M3 4.5C4.5 3.5 7.5 3 10 3c1.74 0 3.41.29 4.97.82L12 5.17V19l1.5-.76C12.84 18.08 11.45 18 10 18c-2.28 0-4.44.43-6 1.24V4.5z" stroke="currentColor" stroke-width="1.4" fill="none"/>
+              </svg>
+              <!-- Google Forum icon (shown when summary is open: return to chat) -->
+              <svg class="summary-toggle-icon" id="summary-icon-forum" viewBox="0 0 24 24" fill="none" aria-hidden="true" hidden>
+                <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z" stroke="currentColor" stroke-width="1.4" fill="none"/>
+                <path d="M7 9h10M7 13h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+            </button>
+            <button
               id="thread-collapse-btn"
               type="button"
               title="Collapse header"
@@ -440,6 +458,9 @@
                   <button class="thread-dropdown-item" data-action="pin">
                     Pin
                   </button>
+                  <button class="thread-dropdown-item" data-action="summary">
+                    Summary
+                  </button>
                   <button class="thread-dropdown-item" data-action="archive">
                     Archive
                   </button>
@@ -452,6 +473,46 @@
             <div id="thread-tags"></div>
           </div>
           <div id="messages"></div>
+          <!-- Summary body (replaces messages when the summary view is active) -->
+          <div id="summary-body" hidden>
+            <!-- Condensed Summary section (hidden when setting is off) -->
+            <section id="summary-condensed-section" class="summary-section" hidden>
+              <div class="summary-section-header">
+                <h3 class="summary-section-title">Condensed Summary</h3>
+                <div class="summary-section-actions">
+                  <button type="button" class="summary-btn" id="condensed-revert-btn" disabled>Revert</button>
+                  <button type="button" class="summary-btn summary-btn-primary" id="condensed-save-btn" disabled>Save</button>
+                </div>
+              </div>
+              <textarea
+                id="condensed-summary-input"
+                class="summary-textarea summary-textarea-condensed"
+                rows="5"
+                placeholder=""
+              ></textarea>
+              <div class="summary-author-row" id="condensed-author-row" hidden>
+                <span class="summary-author-label" id="condensed-author-label"></span>
+              </div>
+            </section>
+            <!-- Main Summary section -->
+            <section class="summary-section">
+              <div class="summary-section-header">
+                <h3 class="summary-section-title">Summary</h3>
+                <div class="summary-section-actions">
+                  <button type="button" class="summary-btn" id="summary-revert-btn" disabled>Revert</button>
+                  <button type="button" class="summary-btn summary-btn-primary" id="summary-save-btn" disabled>Save</button>
+                </div>
+              </div>
+              <textarea
+                id="summary-input"
+                class="summary-textarea summary-textarea-main"
+                placeholder=""
+              ></textarea>
+              <div class="summary-author-row" id="summary-author-row" hidden>
+                <span class="summary-author-label" id="summary-author-label"></span>
+              </div>
+            </section>
+          </div>
           <!-- Artifact side panel (absolute, inside #thread) -->
           <div id="artifact-panel" hidden>
             <div id="artifact-panel-resize"></div>
@@ -654,6 +715,44 @@
               <button type="button" id="compare-color-reset" class="settings-reset-btn">
                 Reset to defaults
               </button>
+            </section>
+
+            <section class="settings-section">
+              <h3 class="settings-section-title">Include condensed summary</h3>
+              <div class="settings-row">
+                <label class="settings-toggle-label">
+                  <input type="checkbox" id="setting-condensed-summary" />
+                  <span>Show the condensed summary field on the Summary screen</span>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <h3 class="settings-section-title">Show condensed summary hints</h3>
+              <p class="settings-section-hint">
+                Show a hoverable condensed summary link beneath conversation
+                titles when available.
+              </p>
+              <div class="settings-row">
+                <label class="settings-toggle-label">
+                  <input type="checkbox" id="setting-summary-hints" checked />
+                  <span>Enable sidebar summary hints</span>
+                </label>
+              </div>
+            </section>
+
+            <section class="settings-section">
+              <h3 class="settings-section-title">Show summary content author</h3>
+              <p class="settings-section-hint">
+                Display who last edited each summary field — Personal, AI, or
+                Collaborative.
+              </p>
+              <div class="settings-row">
+                <label class="settings-toggle-label">
+                  <input type="checkbox" id="setting-summary-author" />
+                  <span>Show author labels on summary fields</span>
+                </label>
+              </div>
             </section>
           </div>
         </div>
@@ -1048,6 +1147,17 @@
       </main>
     </div>
 
+    <!-- Unsaved summary changes dialog -->
+    <div id="summary-unsaved-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true">
+        <div class="modal-title">You have unsaved changes. Save before leaving?</div>
+        <div class="modal-buttons">
+          <button id="summary-unsaved-cancel" class="modal-btn">Cancel</button>
+          <button id="summary-unsaved-save" class="modal-btn modal-btn-primary">Save</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Reusable naming dialog: create folder, rename chat, rename folder -->
     <div id="name-modal" class="modal-overlay" hidden>
       <div class="modal" role="dialog" aria-modal="true">
@@ -1136,6 +1246,7 @@
     <script src="/static/labels_screen.js"></script>
     <script src="/static/bulk_labels.js"></script>
     <script src="/static/snapshots.js"></script>
+    <script src="/static/summary.js"></script>
     <script
       src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
       crossorigin="anonymous"

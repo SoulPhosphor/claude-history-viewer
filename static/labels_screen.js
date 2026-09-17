@@ -23,6 +23,12 @@ const labelListEl = $("label-list");
 
 
 async function openLabels() {
+  if (typeof summaryHasUnsavedChanges === "function" && summaryHasUnsavedChanges()) {
+    const r = await openSummaryUnsavedModal();
+    if (r === "cancel") return;
+    if (r === "save") await saveAllUnsaved();
+  }
+  if (typeof closeSummaryPanel === "function") closeSummaryPanel();
   rememberReturnTab();
   state.activeSpecialView = "labels";
   state.activeTabId = null;
