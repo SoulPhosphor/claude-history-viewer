@@ -102,14 +102,17 @@ function updateSummaryToggleIcon(isSummaryOpen) {
   const forumIcon = $("summary-icon-forum");
   const toggleBtn = $("summary-toggle-btn");
   if (!bookIcon || !forumIcon || !toggleBtn) return;
+  // The icons are <svg> elements: `el.hidden = ...` is not reflected on
+  // SVGElement, so the hidden attribute must be set explicitly or both
+  // icons render at once.
   if (isSummaryOpen) {
-    bookIcon.hidden = true;
-    forumIcon.hidden = false;
+    bookIcon.setAttribute("hidden", "");
+    forumIcon.removeAttribute("hidden");
     toggleBtn.title = "Back to chat";
     toggleBtn.setAttribute("aria-label", "Back to chat");
   } else {
-    bookIcon.hidden = false;
-    forumIcon.hidden = true;
+    bookIcon.removeAttribute("hidden");
+    forumIcon.setAttribute("hidden", "");
     toggleBtn.title = "Summary";
     toggleBtn.setAttribute("aria-label", "Open summary");
   }

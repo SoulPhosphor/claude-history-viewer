@@ -4637,8 +4637,15 @@ kbd {
   color: var(--text);
 }
 .summary-toggle-icon {
+  display: block;
   width: var(--summary-toggle-icon-size);
   height: var(--summary-toggle-icon-size);
+}
+
+/* A class display value beats the UA [hidden] rule, so restore it explicitly.
+   Without this, both toggle icons would render at once. */
+.summary-toggle-icon[hidden] {
+  display: none;
 }
 
 /* ── Sidebar condensed-summary hint ──────────────────────────────────────── */
