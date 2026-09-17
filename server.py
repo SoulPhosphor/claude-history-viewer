@@ -356,6 +356,19 @@ def _ensure_userdata_schema(db_path: Path) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_conv_tags_tag ON conversation_tags (tag);
 
+            -- Mood tags: a second, independent per-conversation tag set. Same
+            -- shape as conversation_tags (stable conversation IDs make both
+            -- survive a history.db rebuild), but never mixed with it: separate
+            -- vocabulary, separate autocomplete, separate API.
+            CREATE TABLE IF NOT EXISTS conversation_mood_tags (
+                conversation_id TEXT NOT NULL,
+                tag             TEXT NOT NULL,
+                added_at        REAL,
+                PRIMARY KEY (conversation_id, tag)
+            );
+            CREATE INDEX IF NOT EXISTS idx_conv_mood_tags_tag
+                ON conversation_mood_tags (tag);
+
             -- A lightweight tombstone left behind when a conversation is
             -- permanently deleted from the Recycle Bin. It holds no message
             -- content — only enough identity/metadata for a later import to
@@ -1158,6 +1171,7 @@ def _purge_conversation(conn, cid: str) -> bool:
     for stmt in (
         "DELETE FROM udb.folder_items WHERE conversation_id = ?",
         "DELETE FROM udb.conversation_tags WHERE conversation_id = ?",
+        "DELETE FROM udb.conversation_mood_tags WHERE conversation_id = ?",
         "DELETE FROM udb.conversation_models WHERE conversation_id = ?",
         "DELETE FROM udb.conversation_model_flags WHERE conversation_id = ?",
         # The label assignment is viewer metadata too: drop it so a purged
@@ -1245,6 +1259,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_model_dismiss()
         elif path == "/api/tags":
             self._api_tag_add()
+        elif path == "/api/mood-tags":
+            self._api_mood_tag_add()
         elif path == "/api/labels":
             self._api_label_create()
         elif path == "/api/labels/reorder":
@@ -1318,6 +1334,12 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) != 2:
                 self.send_error(404); return
             self._api_tag_remove(parts[0], parts[1])
+        elif path.startswith("/api/mood-tags/"):
+            parts = [urllib.parse.unquote(p) for p
+                     in path[len("/api/mood-tags/"):].split("/") if p]
+            if len(parts) != 2:
+                self.send_error(404); return
+            self._api_mood_tag_remove(parts[0], parts[1])
         elif path.startswith("/api/labels/bulk-runs/"):
             self._api_bulk_run_delete(urllib.parse.unquote(path[len("/api/labels/bulk-runs/"):]))
         elif path.startswith("/api/labels/"):
@@ -1462,6 +1484,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_conversation_models(qs)
         elif path == "/api/tags":
             self._api_tags_all()
+        elif path == "/api/mood-tags":
+            self._api_mood_tags_all()
         elif path == "/api/labels":
             self._api_labels_list()
         elif path == "/api/labels/bulk-history":
@@ -1843,10 +1867,12 @@ class Handler(BaseHTTPRequestHandler):
                             "  WHERE COALESCE(cm2.deleted, 0) = 0 AND COALESCE(NULLIF(cm2.custom_title, ''), c2.title) LIKE ?"
                             "  UNION "
                             "  SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?"
+                            "  UNION "
+                            "  SELECT conversation_id FROM udb.conversation_mood_tags WHERE tag LIKE ?"
                             ") "
                             + order_sql + " "
                             "LIMIT ? OFFSET ?",
-                            (q, like, like, limit, offset),
+                            (q, like, like, like, limit, offset),
                         ).fetchall()
                         total = conn.execute(
                             "SELECT COUNT(*) FROM conversations c "
@@ -1859,8 +1885,10 @@ class Handler(BaseHTTPRequestHandler):
                             "  WHERE COALESCE(cm2.deleted, 0) = 0 AND COALESCE(NULLIF(cm2.custom_title, ''), c2.title) LIKE ?"
                             "  UNION "
                             "  SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?"
+                            "  UNION "
+                            "  SELECT conversation_id FROM udb.conversation_mood_tags WHERE tag LIKE ?"
                             ")",
-                            (q, like, like),
+                            (q, like, like, like),
                         ).fetchone()[0]
                     except Exception:
                         order_sql = (
@@ -1873,16 +1901,16 @@ class Handler(BaseHTTPRequestHandler):
                             "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                             "LEFT JOIN pinned_conversations p ON p.conversation_id = c.id "
                             "WHERE " + where_sql + " AND (COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ? "
-                            "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?)) "
+                            "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?) OR c.id IN (SELECT conversation_id FROM udb.conversation_mood_tags WHERE tag LIKE ?)) "
                             + order_sql + " LIMIT ? OFFSET ?",
-                            (like, like, limit, offset),
+                            (like, like, like, limit, offset),
                         ).fetchall()
                         total = conn.execute(
                             "SELECT COUNT(*) FROM conversations c "
                             "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                             "WHERE " + where_sql + " AND (COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ? "
-                            "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?))",
-                            (like, like)
+                            "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?) OR c.id IN (SELECT conversation_id FROM udb.conversation_mood_tags WHERE tag LIKE ?))",
+                            (like, like, like)
                         ).fetchone()[0]
                 else:
                     order_sql = (
@@ -1895,16 +1923,16 @@ class Handler(BaseHTTPRequestHandler):
                         "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                         "LEFT JOIN pinned_conversations p ON p.conversation_id = c.id "
                         "WHERE " + where_sql + " AND (COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ? "
-                            "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?)) "
+                            "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?) OR c.id IN (SELECT conversation_id FROM udb.conversation_mood_tags WHERE tag LIKE ?)) "
                         + order_sql + " LIMIT ? OFFSET ?",
-                        (like, like, limit, offset),
+                        (like, like, like, limit, offset),
                     ).fetchall()
                     total = conn.execute(
                         "SELECT COUNT(*) FROM conversations c "
                         "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
                         "WHERE " + where_sql + " AND (COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ? "
-                        "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?))",
-                        (like, like)
+                        "OR c.id IN (SELECT conversation_id FROM udb.conversation_tags WHERE tag LIKE ?) OR c.id IN (SELECT conversation_id FROM udb.conversation_mood_tags WHERE tag LIKE ?))",
+                        (like, like, like)
                     ).fetchone()[0]
             else:
                 order_sql = (
@@ -1989,7 +2017,8 @@ class Handler(BaseHTTPRequestHandler):
                             "messages": [parse_msg(m) for m in msgs],
                             "artifacts": artifacts_meta,
                             "models": models,
-                            "tags": self._conv_tags(conn, conv_id)})
+                            "tags": self._conv_tags(conn, conv_id),
+                            "mood_tags": self._conv_mood_tags(conn, conv_id)})
         finally:
             conn.close()
 
@@ -2020,9 +2049,15 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchall():
                 if r[0] not in conv_ids_set:
                     conv_ids.append(r[0]); conv_ids_set.add(r[0])
-            # And tag matches
+            # And tag matches (ordinary tags and mood tags both count)
             for r in conn.execute(
                 "SELECT DISTINCT conversation_id FROM udb.conversation_tags WHERE tag LIKE ? LIMIT 15",
+                (f"%{q}%",)
+            ).fetchall():
+                if r[0] not in conv_ids_set:
+                    conv_ids.append(r[0]); conv_ids_set.add(r[0])
+            for r in conn.execute(
+                "SELECT DISTINCT conversation_id FROM udb.conversation_mood_tags WHERE tag LIKE ? LIMIT 15",
                 (f"%{q}%",)
             ).fetchall():
                 if r[0] not in conv_ids_set:
@@ -3090,6 +3125,69 @@ class Handler(BaseHTTPRequestHandler):
             )
             conn.commit()
             self.send_json({"tags": self._conv_tags(conn, conv_id)})
+        finally:
+            conn.close()
+
+    # ── Mood tags ─────────────────────────────────────────────────────────────
+    # A second, independent per-conversation tag set with the same rules as
+    # ordinary tags (same validation/normalization, same persistence rules),
+    # but its own table, its own vocabulary, and its own API. It joins the
+    # ordinary tags only where both are searched (see the search paths).
+
+    def _conv_mood_tags(self, conn, conv_id):
+        rows = conn.execute(
+            "SELECT tag FROM udb.conversation_mood_tags WHERE conversation_id = ? "
+            "ORDER BY added_at", (conv_id,),
+        ).fetchall()
+        return [r["tag"] for r in rows]
+
+    def _api_mood_tags_all(self):
+        """Every distinct mood tag in use, for the add-mood-tag autocomplete.
+        Deliberately separate from the ordinary-tag vocabulary."""
+        conn = open_db(self.db_path)
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT tag FROM udb.conversation_mood_tags "
+                "ORDER BY tag COLLATE NOCASE"
+            ).fetchall()
+            self.send_json({"tags": [r["tag"] for r in rows]})
+        finally:
+            conn.close()
+
+    def _api_mood_tag_add(self):
+        payload = self._read_json_body()
+        conv_id = str(payload.get("conv_id") or "").strip()
+        # Same normalization as ordinary tags: trim, collapse internal
+        # whitespace, cap the length.
+        tag = " ".join(str(payload.get("tag") or "").split())[:40]
+        if not conv_id or not tag:
+            self.send_json({"error": "conv_id and tag are required"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            if not conn.execute(
+                "SELECT 1 FROM conversations WHERE id = ?", (conv_id,)
+            ).fetchone():
+                self.send_json({"error": "Unknown conversation"}, 404); return
+            conn.execute(
+                "INSERT OR IGNORE INTO udb.conversation_mood_tags"
+                "(conversation_id, tag, added_at) VALUES (?, ?, ?)",
+                (conv_id, tag, time.time()),
+            )
+            conn.commit()
+            self.send_json({"tags": self._conv_mood_tags(conn, conv_id)})
+        finally:
+            conn.close()
+
+    def _api_mood_tag_remove(self, conv_id, tag):
+        conn = open_db(self.db_path)
+        try:
+            conn.execute(
+                "DELETE FROM udb.conversation_mood_tags "
+                "WHERE conversation_id = ? AND tag = ?",
+                (conv_id, tag),
+            )
+            conn.commit()
+            self.send_json({"tags": self._conv_mood_tags(conn, conv_id)})
         finally:
             conn.close()
 

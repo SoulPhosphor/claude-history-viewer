@@ -27,6 +27,8 @@
   --user-bubble: #ede9e1;
   --message-time-size: 11px;
   --message-time-color: var(--muted);
+  --tag-row-font-size: 11.5px;
+  --tag-row-gap: 6px;
   --mark-bg: rgba(217, 119, 87, 0.18);
   /* Warning copy (e.g. "enter labels or none will be applied"). Themable. */
   --warning-text: #c0392b;
@@ -2743,15 +2745,48 @@ kbd {
    on both a Claude and a ChatGPT export. */
 #thread-tags {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--tag-row-gap);
   margin-top: 4px;
-  font-size: 11.5px;
+  font-size: var(--tag-row-font-size);
 }
 
 #thread-tags:empty {
   display: none;
+}
+
+/* Left half: ordinary Tags stay fully inside the left 50%. */
+#thread-tags .tags-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tag-row-gap);
+  flex: 0 1 50%;
+  min-width: 0;
+}
+
+/* Right half: anchors the mood group against the right edge. The group grows
+   leftward as mood tags are added. */
+#thread-tags .tags-right {
+  display: flex;
+  justify-content: flex-end;
+  flex: 1 1 50%;
+  min-width: 0;
+}
+
+/* Inner mood strip: shrink-to-content wrapping. NOT a full-width flex row
+   with right justification (that would re-right-align each wrapped line);
+   wrapping here starts from the strip's own left edge, so a wrapped chip
+   begins under the group's left edge rather than jumping to the far right. */
+#thread-tags .tags-mood {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--tag-row-gap);
+  justify-content: flex-start;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .tags-label {
