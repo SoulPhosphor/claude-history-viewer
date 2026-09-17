@@ -85,7 +85,7 @@
   --summary-popup-padding: 10px 12px;
   --summary-popup-font-size: 13px;
   --summary-popup-color: var(--text);
-  --summary-toggle-icon-size: 16px;
+  --summary-toggle-icon-size: 18px;
   /* Summary author labels */
   --summary-author-font-size: 11px;
   --summary-author-color: var(--muted);
@@ -4525,6 +4525,9 @@ kbd {
   flex-direction: column;
   gap: var(--summary-section-gap);
 }
+#summary-body[hidden] {
+  display: none;
+}
 
 .summary-section {
   display: flex;
@@ -4608,14 +4611,19 @@ kbd {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
-  height: 18px;
+  width: 22px;
+  height: 22px;
   padding: 0;
   border: none;
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  order: 3;
+  margin-left: 2px;
+}
+#summary-toggle-btn[hidden] {
+  display: none;
 }
 #summary-toggle-btn:hover {
   background: var(--hover);
