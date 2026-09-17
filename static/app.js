@@ -118,6 +118,7 @@ const attReportPanel = $("att-report-panel");
 const attReportContent = $("att-report-content");
 const attReportMeta = $("att-report-meta");
 const importAuditPanel = $("import-audit-panel");
+const gizmosPanel = $("gizmos-panel");
 const claudeModelsPanel = $("claude-models-panel");
 const claudeModelsMenuItem = $("claude-models-menu-item");
 const modelTableBody = $("model-table-body");
@@ -1961,6 +1962,7 @@ async function activateActiveTab() {
   if (state.activeSpecialView === "claude_models") return openClaudeModels();
   if (state.activeSpecialView === "labels") return openLabels();
   if (state.activeSpecialView === "import_audit") return openImportAudit(false);
+  if (state.activeSpecialView === "gizmos") return openGizmos();
   if (state.activeSpecialView === "import_new") return openImportNew();
   if (state.activeSpecialView === "settings") return openSettings();
   const cid = returnConversationId();
@@ -2023,6 +2025,7 @@ function hideAllPanels() {
   projectsPanel.hidden = true;
   attReportPanel.hidden = true;
   importAuditPanel.hidden = true;
+  gizmosPanel.hidden = true;
   importNewPanel.hidden = true;
   settingsPanel.hidden = true;
   claudeModelsPanel.hidden = true;
@@ -2205,6 +2208,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   threadMeta.appendChild(metaText);
   state.models = data.models || null;
   renderModelStrip();
+  renderGizmoThreadIdentity(conv);
   state.tags = data.tags || [];
   renderThreadTags();
 
@@ -2227,7 +2231,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
       msg.role === "user"
         ? "You"
         : msg.role === "assistant"
-          ? "Claude"
+          ? (conv.gizmo_name || "Claude")
           : msg.role;
 
     // ── User file chips appear BEFORE message body ───────────────────────────
@@ -4904,7 +4908,8 @@ sidebarMenu.querySelectorAll(".sidebar-menu-item").forEach((item) => {
   item.addEventListener("click", () => {
     const action = item.dataset.action;
     closeSidebarMenu();
-    if (action === "attachment-report") openAttReport(false);
+    if (action === "gizmos") openGizmos();
+    else if (action === "attachment-report") openAttReport(false);
     else if (action === "import-audit") openImportAudit(false);
     else if (action === "import-new") openImportNew();
     else if (action === "settings") openSettings();
