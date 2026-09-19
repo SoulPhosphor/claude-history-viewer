@@ -66,12 +66,16 @@
   }
 
   function visibleContent(line) {
+    // Each block's visible text is the trailing capture group, so its source
+    // offset is always the line end minus that text's length. This stays correct
+    // for indented lists and extra spacing after a marker, where counting marker
+    // lengths by hand would drift and mis-map edits back into the source.
     const heading = line.text.match(/^(#{1,3})\s+(.*)$/);
-    if (heading) return { text: heading[2], start: line.start + heading[1].length + 1, block: "heading", level: heading[1].length };
+    if (heading) return { text: heading[2], start: line.start + line.text.length - heading[2].length, block: "heading", level: heading[1].length };
     const bullet = line.text.match(/^(\s*)([-*+])\s+(.*)$/);
-    if (bullet) return { text: bullet[3], start: line.start + bullet[1].length + bullet[2].length + 1, block: "bullet" };
+    if (bullet) return { text: bullet[3], start: line.start + line.text.length - bullet[3].length, block: "bullet" };
     const numbered = line.text.match(/^(\s*)\d+[.)]\s+(.*)$/);
-    if (numbered) return { text: numbered[2], start: line.start + numbered[1].length + numbered[0].indexOf(numbered[2]), block: "numbered" };
+    if (numbered) return { text: numbered[2], start: line.start + line.text.length - numbered[2].length, block: "numbered" };
     return { text: line.text, start: line.start, block: "paragraph" };
   }
 

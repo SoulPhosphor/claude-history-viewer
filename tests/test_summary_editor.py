@@ -186,6 +186,29 @@ class SummaryEditorBehaviorTests(unittest.TestCase):
         self.assertEqual(bullet, "- First\n- Second\n- Third")
         self.assertEqual(numbered, "1. First\n2. Second\n3. Third")
 
+    def test_block_content_maps_to_source_with_indentation_and_spacing(self):
+        # The visible text of a heading, bullet, or numbered item must map back to
+        # the exact source character where that text begins, even when the line is
+        # indented or has extra spaces after the marker. A drifted offset would
+        # patch the wrong source range and silently corrupt the Markdown.
+        cases = [
+            "## Heading",
+            "##   Heading",
+            "- Item",
+            "  - Item",
+            "-   Item",
+            "1. Second",
+            "  1. Second",
+            "1.   Second",
+        ]
+        for source in cases:
+            content = run_node(
+                f"const line=c.sourceLines({json.dumps(source)})[0];"
+                f"process.stdout.write(JSON.stringify(c.visibleContent(line)));"
+            )
+            self.assertEqual(source[content["start"]], content["text"][0], source)
+            self.assertTrue(source.endswith(content["text"]), source)
+
     def test_block_conversion_preserves_surrounding_lines(self):
         source = "before\nFirst\nSecond\nafter"
         start = source.index("First")
