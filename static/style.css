@@ -5110,7 +5110,7 @@ kbd {
   --gb-title-weight: 600;
   --gb-title-color: var(--text);
   --gb-title-hover-color: var(--accent);
-  --gb-head-gap: 6px;
+  --gb-head-gap: 2px;
   --gb-chevron-size: 15px;
   --gb-chevron-color: var(--muted);
   --gb-chevron-hover-color: var(--text);
@@ -5120,6 +5120,10 @@ kbd {
      bookmarks still read as one group. Nudge this to taste. */
   --gb-bookmarks-indent: 24px;
   --gb-inner-gap: 8px;
+  /* Distance from a title down to its first bookmark. Kept smaller than the
+     between-bookmark gap so the first bookmark hugs its title and the group
+     reads as one. */
+  --gb-title-gap: 3px;
   /* Bookmarks never drop below the base 15px body text, and stay smaller than
      the title above. */
   --gb-bookmark-size: 15px;
@@ -5215,8 +5219,8 @@ kbd {
   white-space: nowrap;
 }
 .gb-caps {
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  /* Title Case is the HTML text itself ("Collapse Bookmarks"); no
+     transform — uppercasing it here would shout the whole label. */
   font-weight: 600;
 }
 #gb-sort {
@@ -5316,7 +5320,7 @@ kbd {
   flex-direction: column;
   gap: var(--gb-inner-gap);
   padding-left: var(--gb-bookmarks-indent);
-  margin-top: var(--gb-inner-gap);
+  margin-top: var(--gb-title-gap);
 }
 .gb-conv:not(.expanded) .gb-bookmarks {
   display: none;
