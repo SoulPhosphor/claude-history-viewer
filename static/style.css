@@ -5101,9 +5101,12 @@ kbd {
   --gb-field-height: 34px;
   --gb-field-color: var(--text);
   --gb-list-padding: 10px 40px 64px;
-  /* Paragraph space between one conversation group and the next. */
+  /* Paragraph space between one conversation group and the next. Kept well
+     larger than --gb-inner-gap below so a group reads as one block while
+     neighbouring conversations stay clearly apart. */
   --gb-conv-gap: 22px;
-  --gb-title-size: 15px;
+  /* Titles sit a step above the base 15px text so they lead each group. */
+  --gb-title-size: 17px;
   --gb-title-weight: 600;
   --gb-title-color: var(--text);
   --gb-title-hover-color: var(--accent);
@@ -5111,11 +5114,15 @@ kbd {
   --gb-chevron-size: 15px;
   --gb-chevron-color: var(--muted);
   --gb-chevron-hover-color: var(--text);
-  /* Indent of the bookmark list under its title, and the tight gap that keeps
-     a title and its own bookmarks together as one block. */
+  /* Indent of the bookmark list under its title, and the gentle gap that
+     separates the bookmarks from their title and from each other — just enough
+     to breathe for readability, never a full line break, so the title and its
+     bookmarks still read as one group. Nudge this to taste. */
   --gb-bookmarks-indent: 24px;
-  --gb-inner-gap: 5px;
-  --gb-bookmark-size: 13px;
+  --gb-inner-gap: 8px;
+  /* Bookmarks never drop below the base 15px body text, and stay smaller than
+     the title above. */
+  --gb-bookmark-size: 15px;
   --gb-bookmark-color: var(--muted);
   --gb-bookmark-hover-color: var(--accent);
   --gb-bookmark-radius: 5px;
