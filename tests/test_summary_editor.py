@@ -77,8 +77,8 @@ class SummaryEditorBehaviorTests(unittest.TestCase):
             self.assertEqual(result, expected)
 
     def test_partial_format_removal_keeps_unselected_text_formatted(self):
-        self.assertEqual(run_node("process.stdout.write(JSON.stringify(c.removeHighlightRange('==important text==', 2, 11)));"), "important== text==")
-        self.assertEqual(run_node("process.stdout.write(JSON.stringify(c.toggleInlineFormat('**important text**', 2, 11, 'bold')));"), "important** text**")
+        self.assertEqual(run_node("process.stdout.write(JSON.stringify(c.removeHighlightRange('==important text==', 2, 11)));"), "important ==text==")
+        self.assertEqual(run_node("process.stdout.write(JSON.stringify(c.toggleInlineFormat('**important text**', 2, 11, 'bold')));"), "important **text**")
 
     def test_highlight_color_replacement_does_not_nest(self):
         cases = [
@@ -219,6 +219,56 @@ class SummaryEditorBehaviorTests(unittest.TestCase):
             self.assertIn(marker, SUMMARY)
         self.assertIn("summary-palette-picker", INDEX)
         self.assertIn("slice(0, 32)", SUMMARY)
+
+    def test_contained_insert_delete_and_replace_stay_inside_bold(self):
+        cases = [
+            ("**important**", 4, 4, "X", "**imXportant**"),
+            ("**important**", 4, 5, "", "**imortant**"),
+            ("**important**", 4, 8, "X", "**imXant**"),
+        ]
+        for source, start, end, replacement, expected in cases:
+            result = run_node(f"process.stdout.write(JSON.stringify(c.safeReplaceVisibleRange({json.dumps(source)}, {start}, {end}, {json.dumps(replacement)})));" )
+            self.assertEqual(result, expected)
+
+    def test_contained_edits_preserve_italic_highlight_custom_highlight_code_and_link(self):
+        cases = [
+            ("*important*", 3, 3, "X", "*imXportant*"),
+            ("==important==", 4, 4, "X", "==imXportant=="),
+            ("=={#ff0000}important==", 13, 13, "X", "=={#ff0000}imXportant=="),
+            ("`important`", 3, 3, "X", "`imXportant`"),
+            ("[important](https://example.com)", 3, 3, "X", "[imXportant](https://example.com)"),
+            ("[important](https://example.com)", 3, 7, "X", "[imXant](https://example.com)"),
+        ]
+        for source, start, end, replacement, expected in cases:
+            result = run_node(f"process.stdout.write(JSON.stringify(c.safeReplaceVisibleRange({json.dumps(source)}, {start}, {end}, {json.dumps(replacement)})));" )
+            self.assertEqual(result, expected)
+
+    def test_exact_end_selection_keeps_one_valid_token(self):
+        cases = [
+            ("**important**", 3, 11, "X", "**iX**"),
+            ("*important*", 2, 10, "X", "*iX*"),
+            ("++important++", 3, 11, "X", "++iX++"),
+            ("~~important~~", 3, 11, "X", "~~iX~~"),
+            ("==important==", 3, 11, "X", "==iX=="),
+            ("=={#ff0000}important==", 12, 20, "X", "=={#ff0000}iX=="),
+            ("`important`", 2, 10, "X", "`iX`"),
+            ("[important](https://example.com)", 2, 10, "X", "[iX](https://example.com)"),
+        ]
+        for source, start, end, replacement, expected in cases:
+            result = run_node(f"process.stdout.write(JSON.stringify(c.safeReplaceVisibleRange({json.dumps(source)}, {start}, {end}, {json.dumps(replacement)})));" )
+            self.assertEqual(result, expected)
+
+    def test_cross_token_regressions_remain_safe(self):
+        cases = [
+            ("**important** plain", 4, 19, "X", "**im**X"),
+            ("plain **important**", 0, 10, "X", "X**portant**"),
+            ("before **important** after", 9, 26, "X", "before X"),
+            ("**bold** and *italic*", 3, 17, "X", "**b**X*lic*"),
+            ("[link](https://example.com) after", 1, 10, "X", "X after"),
+        ]
+        for source, start, end, replacement, expected in cases:
+            result = run_node(f"process.stdout.write(JSON.stringify(c.safeReplaceVisibleRange({json.dumps(source)}, {start}, {end}, {json.dumps(replacement)})));" )
+            self.assertEqual(result, expected)
 
 
 if __name__ == "__main__":

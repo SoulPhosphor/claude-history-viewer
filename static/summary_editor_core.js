@@ -154,30 +154,31 @@
 
   function safeReplaceVisibleRange(source, start, end, replacement) {
     const tokens = inlineSegments(source).filter((segment) => segment.tokenStart != null);
-    let editStart = start;
-    let editEnd = end;
-    for (const token of tokens) {
-      if (token.sourceStart >= start && token.sourceEnd <= end) {
-        editStart = Math.min(editStart, token.tokenStart);
-        editEnd = Math.max(editEnd, token.tokenEnd);
-      }
-    }
-    const startToken = tokens.find((token) => token.sourceStart < start && start < token.sourceEnd);
-    const startContentToken = tokens.find((token) => token.sourceStart === start && token.sourceEnd > end);
-    const endToken = tokens.find((token) => token.sourceStart < end && end < token.sourceEnd);
-    let left = startContentToken ? source.slice(0, startContentToken.tokenStart) : source.slice(0, editStart);
-    let right = source.slice(editEnd);
-    if (startToken) {
-      const content = source.slice(startToken.sourceStart, start);
-      const token = { ...startToken, raw: source.slice(startToken.tokenStart, startToken.tokenEnd) };
-      left = source.slice(0, startToken.tokenStart) + formatTokenContent(token, content);
-    }
-    if (endToken) {
-      const content = source.slice(end, endToken.sourceEnd);
-      const token = { ...endToken, raw: source.slice(endToken.tokenStart, endToken.tokenEnd) };
-      right = formatTokenContent(token, content) + source.slice(endToken.tokenEnd);
-    }
-    return left + replacement + right;
+    const contained = tokens.find((token) =>
+      token.sourceStart <= start && end <= token.sourceEnd
+    );
+
+    // A normal edit inside one visible token must patch only its content. This
+    // keeps the token's delimiters, link target, or highlight metadata intact
+    // and makes inserted text inherit the token's formatting.
+    if (contained) return replaceRange(source, start, end, replacement);
+
+    const overlapping = tokens.filter((token) =>
+      token.sourceStart < end && token.sourceEnd > start
+    );
+    if (!overlapping.length) return replaceRange(source, start, end, replacement);
+
+    const first = overlapping[0];
+    const last = overlapping[overlapping.length - 1];
+    const left = start > first.sourceStart
+      ? formatTokenContent(first, source.slice(first.sourceStart, Math.min(start, first.sourceEnd)))
+      : "";
+    const right = end < last.sourceEnd
+      ? formatTokenContent(last, source.slice(Math.max(end, last.sourceStart), last.sourceEnd))
+      : "";
+    const prefix = source.slice(0, Math.min(start, first.tokenStart));
+    const suffix = source.slice(Math.max(end, last.tokenEnd));
+    return prefix + left + replacement + right + suffix;
   }
 
   function inlineTokenForRange(source, start, end) {
@@ -197,9 +198,11 @@
     const markers = { bold: ["**", "**"], italic: ["*", "*"], underline: ["++", "++"], strike: ["~~", "~~"] }[kind];
     if (!markers) return source;
     const token = inlineTokenForRange(source, start, end);
+    if (token && token.kind === kind && start >= token.sourceStart && end <= token.sourceEnd) {
+      return removeTokenFormatting(source, token, start, end);
+    }
     if (token && token.sourceStart === start && token.sourceEnd === end) {
       if (["link", "code", "highlight"].includes(token.kind) && token.kind !== kind) return source;
-      if (token.kind === kind) return replaceRange(source, token.tokenStart, token.tokenEnd, source.slice(start, end));
       if (["bold", "italic", "strike"].includes(token.kind) && ["bold", "italic", "strike"].includes(kind)) {
         const nested = markers[0] + source.slice(start, end) + markers[1];
         return replaceRange(source, token.tokenStart, token.tokenEnd, formatTokenContent(token, nested));
@@ -215,16 +218,41 @@
     return safeReplaceVisibleRange(source, start, end, markers[0] + source.slice(start, end) + markers[1]);
   }
 
+  function formatWithWhitespace(token, content) {
+    const leading = content.match(/^\s*/)[0];
+    const trailing = content.match(/\s*$/)[0];
+    const first = leading.length;
+    const last = content.length - trailing.length;
+    if (first >= last) return content;
+    return leading + formatTokenContent(token, content.slice(first, last)) + trailing;
+  }
+
+  function removeTokenFormatting(source, token, start, end) {
+    const content = source.slice(token.sourceStart, token.sourceEnd);
+    const relativeStart = Math.max(0, start - token.sourceStart);
+    const relativeEnd = Math.min(content.length, end - token.sourceStart);
+    if (relativeStart <= 0 && relativeEnd >= content.length) return replaceRange(source, token.tokenStart, token.tokenEnd, content);
+    const before = formatWithWhitespace(token, content.slice(0, relativeStart));
+    const selected = content.slice(relativeStart, relativeEnd);
+    const after = formatWithWhitespace(token, content.slice(relativeEnd));
+    return replaceRange(source, token.tokenStart, token.tokenEnd, before + selected + after);
+  }
+
   function removeHighlightRange(source, start, end) {
     const token = inlineTokenForRange(source, start, end);
-    if (token && token.kind === "highlight") return safeReplaceVisibleRange(source, start, end, source.slice(start, end));
+    if (token && token.kind === "highlight") return removeTokenFormatting(source, token, start, end);
     return source;
   }
 
   function replaceHighlightRange(source, start, end, color) {
     const token = inlineTokenForRange(source, start, end);
+    if (token && token.kind === "highlight" && start >= token.sourceStart && end <= token.sourceEnd) {
+      const updated = { ...token, color: color || null };
+      if (start === token.sourceStart && end === token.sourceEnd) {
+        return replaceRange(source, token.tokenStart, token.tokenEnd, formatTokenContent(updated, source.slice(start, end)));
+      }
+    }
     const replacement = `==${color ? `{${color}}` : ""}${source.slice(start, end)}==`;
-    if (token && token.kind === "highlight") return safeReplaceVisibleRange(source, start, end, replacement);
     return safeReplaceVisibleRange(source, start, end, replacement);
   }
 
