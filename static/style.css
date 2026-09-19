@@ -794,19 +794,16 @@ mark.search-term-highlight {
   flex-shrink: 0;
   display: flex;
   flex-direction: row;
-  justify-content: space-around;
-  gap: 4px;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
-#gallery-btn,
-#memories-btn,
-#projects-btn,
+#bookmarks-hub-btn,
 #sidebar-menu-btn {
-  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 7px 0;
+  padding: 7px 12px;
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -816,18 +813,15 @@ mark.search-term-highlight {
     background 0.1s,
     color 0.1s;
 }
-#gallery-btn:hover,
-#memories-btn:hover,
-#projects-btn:hover,
+#bookmarks-hub-btn:hover,
+#bookmarks-hub-btn[aria-expanded="true"],
 #sidebar-menu-btn:hover,
 #sidebar-menu-btn[aria-expanded="true"] {
   background: var(--hover);
   color: var(--text);
   border-color: var(--border);
 }
-#gallery-btn svg,
-#memories-btn svg,
-#projects-btn svg,
+#bookmarks-hub-btn svg,
 #sidebar-menu-btn svg {
   width: 17px;
   height: 17px;
@@ -5087,4 +5081,278 @@ kbd {
 }
 .summary-author-collaborative {
   color: var(--summary-author-collaborative-color);
+}
+
+/* ── Global Bookmarks ─────────────────────────────────────────────────────────
+   A provider-scoped table of every conversation that carries bookmarks. Each
+   conversation is one group: a title with a chevron, and (when expanded) an
+   indented, undecorated list of its bookmarks. All sizes and colours live in
+   variables so a later theme pass can retune the whole view in one place. */
+:root {
+  --gb-toolbar-padding: 14px 40px;
+  --gb-toolbar-gap: 14px;
+  --gb-toolbar-border: var(--border);
+  --gb-control-font-size: 12.5px;
+  --gb-control-label-color: var(--muted);
+  --gb-field-bg: var(--bg);
+  --gb-field-border: var(--border);
+  --gb-field-focus-border: var(--accent);
+  --gb-field-radius: 8px;
+  --gb-field-height: 34px;
+  --gb-field-color: var(--text);
+  --gb-list-padding: 10px 40px 64px;
+  /* Paragraph space between one conversation group and the next. Kept well
+     larger than --gb-inner-gap below so a group reads as one block while
+     neighbouring conversations stay clearly apart. */
+  --gb-conv-gap: 22px;
+  /* Titles sit a step above the base 15px text so they lead each group. */
+  --gb-title-size: 17px;
+  --gb-title-weight: 600;
+  --gb-title-color: var(--text);
+  --gb-title-hover-color: var(--accent);
+  --gb-head-gap: 2px;
+  --gb-chevron-size: 15px;
+  --gb-chevron-color: var(--muted);
+  --gb-chevron-hover-color: var(--text);
+  /* Indent of the bookmark list under its title, and the gentle gap that
+     separates the bookmarks from their title and from each other — just enough
+     to breathe for readability, never a full line break, so the title and its
+     bookmarks still read as one group. Nudge this to taste. */
+  --gb-bookmarks-indent: 24px;
+  --gb-inner-gap: 8px;
+  /* Distance from a title down to its first bookmark. Kept smaller than the
+     between-bookmark gap so the first bookmark hugs its title and the group
+     reads as one. */
+  --gb-title-gap: 3px;
+  /* Bookmarks never drop below the base 15px body text, and stay smaller than
+     the title above. */
+  --gb-bookmark-size: 15px;
+  --gb-bookmark-color: var(--muted);
+  --gb-bookmark-hover-color: var(--accent);
+  --gb-bookmark-radius: 5px;
+  --gb-empty-color: var(--muted);
+}
+
+#global-bookmarks-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#global-bookmarks-panel[hidden] {
+  display: none;
+}
+
+#global-bookmarks-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gb-toolbar-gap);
+  padding: var(--gb-toolbar-padding);
+  border-bottom: 1px solid var(--gb-toolbar-border);
+  flex-shrink: 0;
+}
+
+.gb-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 260px;
+  min-width: 220px;
+  background: var(--gb-field-bg);
+  border: 1px solid var(--gb-field-border);
+  border-radius: var(--gb-field-radius);
+  height: var(--gb-field-height);
+  transition: border-color 0.12s;
+}
+.gb-search-wrap:focus-within {
+  border-color: var(--gb-field-focus-border);
+}
+.gb-search-icon {
+  width: 16px;
+  height: 16px;
+  margin-left: 10px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+#gb-search {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0 8px;
+  height: 100%;
+  font-size: var(--gb-control-font-size);
+  color: var(--gb-field-color);
+  outline: none;
+}
+#gb-search-scope {
+  border: none;
+  border-left: 1px solid var(--gb-field-border);
+  background: transparent;
+  color: var(--gb-field-color);
+  font-size: var(--gb-control-font-size);
+  height: 100%;
+  padding: 0 8px;
+  cursor: pointer;
+  outline: none;
+  border-top-right-radius: var(--gb-field-radius);
+  border-bottom-right-radius: var(--gb-field-radius);
+}
+
+.gb-controls {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.gb-sort-wrap,
+.gb-collapse-wrap {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+}
+.gb-control-label {
+  font-size: var(--gb-control-font-size);
+  color: var(--gb-control-label-color);
+  white-space: nowrap;
+}
+.gb-caps {
+  /* Title Case is the HTML text itself ("Collapse Bookmarks"); no
+     transform — uppercasing it here would shout the whole label. */
+  font-weight: 600;
+}
+#gb-sort {
+  height: var(--gb-field-height);
+  border: 1px solid var(--gb-field-border);
+  border-radius: var(--gb-field-radius);
+  background: var(--gb-field-bg);
+  color: var(--gb-field-color);
+  font-size: var(--gb-control-font-size);
+  padding: 0 8px;
+  cursor: pointer;
+  outline: none;
+}
+#gb-sort:focus {
+  border-color: var(--gb-field-focus-border);
+}
+#gb-collapse-toggle {
+  width: 15px;
+  height: 15px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+#global-bookmarks-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--gb-list-padding);
+}
+#global-bookmarks-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+#global-bookmarks-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+#global-bookmarks-scroll::-webkit-scrollbar-thumb {
+  background: var(--muted);
+  border-radius: 4px;
+}
+
+/* One conversation group. The whole group carries the paragraph space to the
+   next, so a title and its own bookmarks stay together while adjacent
+   conversations are clearly separated — whether or not they are expanded. */
+.gb-conv {
+  margin-bottom: var(--gb-conv-gap);
+}
+.gb-conv:last-child {
+  margin-bottom: 0;
+}
+
+.gb-conv-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--gb-head-gap);
+}
+.gb-title {
+  border: none;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  font-size: var(--gb-title-size);
+  font-weight: var(--gb-title-weight);
+  color: var(--gb-title-color);
+  cursor: pointer;
+  line-height: 1.35;
+}
+.gb-title:hover {
+  color: var(--gb-title-hover-color);
+  text-decoration: underline;
+}
+.gb-chevron {
+  border: none;
+  background: transparent;
+  padding: 2px;
+  margin: 0;
+  color: var(--gb-chevron-color);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  line-height: 1.35;
+}
+.gb-chevron:hover {
+  color: var(--gb-chevron-hover-color);
+}
+.gb-chevron svg {
+  width: var(--gb-chevron-size);
+  height: var(--gb-chevron-size);
+  transition: transform 0.14s ease;
+}
+/* Base glyph points right (collapsed); rotate to point down when expanded. */
+.gb-conv.expanded .gb-chevron svg {
+  transform: rotate(90deg);
+}
+
+.gb-bookmarks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gb-inner-gap);
+  padding-left: var(--gb-bookmarks-indent);
+  margin-top: var(--gb-title-gap);
+}
+.gb-conv:not(.expanded) .gb-bookmarks {
+  display: none;
+}
+.gb-bookmark {
+  border: none;
+  background: transparent;
+  padding: 3px 6px;
+  margin-left: -6px;
+  border-radius: var(--gb-bookmark-radius);
+  text-align: left;
+  font-size: var(--gb-bookmark-size);
+  color: var(--gb-bookmark-color);
+  cursor: pointer;
+  line-height: 1.4;
+}
+.gb-bookmark:hover {
+  color: var(--gb-bookmark-hover-color);
+  background: var(--hover);
+}
+.gb-bookmark.gb-unnamed {
+  font-style: italic;
+}
+
+#global-bookmarks-meta {
+  color: var(--muted);
+}
+.gb-empty {
+  color: var(--gb-empty-color);
+  padding: 24px 0;
+}
+.gb-loading {
+  color: var(--muted);
+  padding: 16px 0;
 }
