@@ -64,6 +64,50 @@ class SummaryEditorBehaviorTests(unittest.TestCase):
             result = run_node(f"process.stdout.write(JSON.stringify(c.replaceRange({json.dumps(source)}, {start}, {start + len(visible)}, {json.dumps(replacement)})));" )
             self.assertEqual(result, expected)
 
+    def test_safe_visible_range_replacement_preserves_cross_token_formatting(self):
+        cases = [
+            ("**important** plain", 4, 19, "X", "**im**X"),
+            ("plain **important**", 0, 10, "X", "X**portant**"),
+            ("before **important** after", 9, 26, "X", "before X"),
+            ("**bold** and *italic*", 3, 17, "X", "**b**X*lic*"),
+            ("[link](https://example.com) after", 1, 10, "X", "X after"),
+        ]
+        for source, start, end, replacement, expected in cases:
+            result = run_node(f"process.stdout.write(JSON.stringify(c.safeReplaceVisibleRange({json.dumps(source)}, {start}, {end}, {json.dumps(replacement)})));")
+            self.assertEqual(result, expected)
+
+    def test_partial_format_removal_keeps_unselected_text_formatted(self):
+        self.assertEqual(run_node("process.stdout.write(JSON.stringify(c.removeHighlightRange('==important text==', 2, 11)));"), "important== text==")
+        self.assertEqual(run_node("process.stdout.write(JSON.stringify(c.toggleInlineFormat('**important text**', 2, 11, 'bold')));"), "important** text**")
+
+    def test_highlight_color_replacement_does_not_nest(self):
+        cases = [
+            ("==important==", "#ff0000", "=={#ff0000}important=="),
+            ("=={#ff0000}important==", "#00ff00", "=={#00ff00}important=="),
+            ("=={#ff0000}important==", "", "==important=="),
+        ]
+        for source, color, expected in cases:
+            start = source.index("important")
+            result = run_node(f"process.stdout.write(JSON.stringify(c.replaceHighlightRange({json.dumps(source)}, {start}, {start + 9}, {json.dumps(color)})));")
+            self.assertEqual(result, expected)
+
+    def test_combined_inline_formats_are_parsed(self):
+        cases = [
+            ("***important***", "boldItalic"),
+            ("**~~important~~**", "boldStrike"),
+            ("~~*important*~~", "italicStrike"),
+        ]
+        for source, kind in cases:
+            segments = run_node(f"process.stdout.write(JSON.stringify(c.inlineSegments({json.dumps(source)}))); ")
+            self.assertEqual([segment["kind"] for segment in segments], [kind])
+        self.assertEqual(run_node("process.stdout.write(JSON.stringify(c.toggleInlineFormat('**important**', 2, 11, 'italic')));"), "***important***")
+
+    def test_element_boundary_mapping_uses_child_source_ranges(self):
+        children = [{"start": 2, "end": 5}, {"start": 5, "end": 11}, {"start": 11, "end": 13}]
+        result = run_node(f"process.stdout.write(JSON.stringify([c.mapElementBoundary({json.dumps(children)}, 0, 2, 13), c.mapElementBoundary({json.dumps(children)}, 1, 2, 13), c.mapElementBoundary({json.dumps(children)}, 2, 2, 13), c.mapElementBoundary({json.dumps(children)}, 3, 2, 13)]));")
+        self.assertEqual(result, [2, 5, 11, 13])
+        self.assertIn("function summarySourceBoundary", SUMMARY)
+
     def test_remove_highlight_and_toggle_inline_formats_off(self):
         cases = [
             ("==important==", "highlight", "important"),

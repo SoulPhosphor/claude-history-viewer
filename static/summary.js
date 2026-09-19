@@ -165,9 +165,10 @@ function applyHighlight(color) {
   const range = sourceRangeFromSelection();
   if (!range) return;
   const source = summaryMarkdown();
-  const selected = source.slice(range.start, range.end);
-  const escaped = color.toLowerCase() === "#fff3a3" ? selected : `{${color}}${selected}`;
-  replaceSourceRange(range.start, range.end, `==${escaped}==`);
+  const token = summaryCore.inlineTokenForRange(source, range.start, range.end);
+  if (token && token.kind !== "highlight" && token.sourceStart === range.start && token.sourceEnd === range.end) return;
+  const next = summaryCore.replaceHighlightRange(source, range.start, range.end, color.toLowerCase() === "#fff3a3" ? "" : color.toLowerCase());
+  commitVisualSource(next, range.start);
   if (summaryHighlightMenu) summaryHighlightMenu.hidden = true;
 }
 
@@ -342,18 +343,37 @@ window.addEventListener("beforeunload", (e) => {
 // never asked to serialize a contenteditable DOM back into Markdown.
 const summaryCore = window.SummaryEditorCore;
 
-function summarySourcePoint(node, offset) {
-  const leaf = node.nodeType === Node.TEXT_NODE ? node.parentElement?.closest("[data-source-start]") : node.closest?.("[data-source-start]");
-  if (leaf) {
-    if (leaf.tagName === "BR") return Number(offset ? leaf.dataset.sourceEnd : leaf.dataset.sourceStart);
-    return Number(leaf.dataset.sourceStart) + Math.min(offset, (node.textContent || "").length);
+function mappedSourceRange(node) {
+  const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+  if (!element?.dataset?.sourceStart) return null;
+  return { start: Number(element.dataset.sourceStart), end: Number(element.dataset.sourceEnd) };
+}
+
+function summarySourceBoundary(node, offset) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const range = mappedSourceRange(node);
+    return range ? range.start + Math.min(offset, node.nodeValue.length) : null;
   }
-  const parent = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-  const children = [...(parent?.childNodes || [])];
-  const child = children[offset] || children[offset - 1];
-  const mapped = child?.nodeType === Node.TEXT_NODE ? child.parentElement?.closest("[data-source-start]") : child?.closest?.("[data-source-start]");
-  if (mapped) return Number(mapped.dataset.sourceStart) + (child === children[offset - 1] ? Number(mapped.dataset.sourceEnd) - Number(mapped.dataset.sourceStart) : 0);
-  return 0;
+  if (node.nodeType !== Node.ELEMENT_NODE) return null;
+  const own = mappedSourceRange(node);
+  const children = [...node.childNodes];
+  if (!children.length) return offset ? own?.end ?? null : own?.start ?? null;
+  if (offset <= 0) return summarySourceBoundary(children[0], 0) ?? own?.start ?? null;
+  if (offset >= children.length) {
+    const last = children[children.length - 1];
+    return summarySourceBoundary(last, last.nodeType === Node.TEXT_NODE ? last.nodeValue.length : last.childNodes.length) ?? own?.end ?? null;
+  }
+  const before = children[offset - 1];
+  const after = children[offset];
+  return summarySourceBoundary(before, before.nodeType === Node.TEXT_NODE ? before.nodeValue.length : before.childNodes.length)
+    ?? summarySourceBoundary(after, 0)
+    ?? own?.start
+    ?? null;
+}
+
+function summarySourcePoint(node, offset) {
+  const point = summarySourceBoundary(node, offset);
+  return point == null ? 0 : point;
 }
 
 function sourceRangeFromSelection() {
@@ -372,6 +392,18 @@ function appendMappedSegment(parent, segment) {
     br.dataset.sourceStart = String(segment.sourceStart);
     br.dataset.sourceEnd = String(segment.sourceEnd);
     parent.appendChild(br);
+    return;
+  }
+  if (["boldItalic", "boldStrike", "italicStrike"].includes(segment.kind)) {
+    const outer = document.createElement(segment.kind.startsWith("italic") ? "em" : segment.kind.startsWith("bold") ? "strong" : "del");
+    const inner = document.createElement(segment.kind.endsWith("Strike") ? "del" : segment.kind === "boldItalic" ? "em" : "strong");
+    for (const element of [outer, inner]) {
+      element.dataset.sourceStart = String(segment.sourceStart);
+      element.dataset.sourceEnd = String(segment.sourceEnd);
+    }
+    inner.textContent = segment.text;
+    outer.appendChild(inner);
+    parent.appendChild(outer);
     return;
   }
   const tags = { bold: "strong", italic: "em", underline: "u", strike: "del", highlight: "mark", code: "code", link: "span" };
@@ -501,7 +533,7 @@ function handleVisualBeforeInput(event) {
   }
 
   event.preventDefault();
-  commitVisualSource(summaryCore.replaceRange(source, start, end, replacement), start + replacement.length);
+  commitVisualSource(summaryCore.safeReplaceVisibleRange(source, start, end, replacement), start + replacement.length);
 }
 
 function applyBlockFormat(type) {

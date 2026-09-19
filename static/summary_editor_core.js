@@ -8,7 +8,7 @@
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.SummaryEditorCore = api;
 })(typeof window !== "undefined" ? window : globalThis, function () {
-  const INLINE_RE = /\*\*[^*\n]+\*\*|~~[^~\n]+~~|\+\+[^+\n]+\+\+|==(?:\{#[0-9a-fA-F]{6}\})?[^=\n]+==|\*[^*\n]+\*|`[^`\n]+`|\[[^\]]+\]\((?:https?:|mailto:|\/|#|\.\.?\/)[^)]+\)/g;
+  const INLINE_RE = /\*\*~~[^*~\n]+~~\*\*|~~\*\*[^*~\n]+\*\*~~|\*~~[^*~\n]+~~\*|~~\*[^*~\n]+\*~~|\*\*\*[^*\n]+\*\*\*|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\+\+[^+\n]+\+\+|==(?:\{#[0-9a-fA-F]{6}\})?[^=\n]+==|\*[^*\n]+\*|`[^`\n]+`|\[[^\]]+\]\((?:https?:|mailto:|\/|#|\.\.?\/)[^)]+\)/g;
 
   function inlineSegments(source, offset = 0) {
     const segments = [];
@@ -24,7 +24,12 @@
       let contentEnd = raw.length;
       let kind = "plain";
       let color = null;
-      if (raw.startsWith("**")) { kind = "bold"; contentStart = 2; contentEnd = raw.length - 2; }
+      if (raw.startsWith("**~~")) { kind = "boldStrike"; contentStart = 4; contentEnd = raw.length - 4; }
+      else if (raw.startsWith("~~**")) { kind = "boldStrike"; contentStart = 4; contentEnd = raw.length - 4; }
+      else if (raw.startsWith("*~~")) { kind = "italicStrike"; contentStart = 3; contentEnd = raw.length - 3; }
+      else if (raw.startsWith("~~*")) { kind = "italicStrike"; contentStart = 3; contentEnd = raw.length - 3; }
+      else if (raw.startsWith("***")) { kind = "boldItalic"; contentStart = 3; contentEnd = raw.length - 3; }
+      else if (raw.startsWith("**")) { kind = "bold"; contentStart = 2; contentEnd = raw.length - 2; }
       else if (raw.startsWith("~~")) { kind = "strike"; contentStart = 2; contentEnd = raw.length - 2; }
       else if (raw.startsWith("++")) { kind = "underline"; contentStart = 2; contentEnd = raw.length - 2; }
       else if (raw.startsWith("==")) {
@@ -41,7 +46,7 @@
         contentEnd = raw.indexOf("](");
       }
       text = raw.slice(contentStart, contentEnd);
-      segments.push({ text, sourceStart: offset + match.index + contentStart, sourceEnd: offset + match.index + contentEnd, tokenStart: offset + match.index, tokenEnd: offset + match.index + raw.length, kind, color });
+      segments.push({ text, raw, sourceStart: offset + match.index + contentStart, sourceEnd: offset + match.index + contentEnd, tokenStart: offset + match.index, tokenEnd: offset + match.index + raw.length, kind, color });
       cursor = match.index + raw.length;
     }
     if (cursor < source.length) segments.push({ text: source.slice(cursor), sourceStart: offset + cursor, sourceEnd: offset + source.length, kind: "plain" });
@@ -101,6 +106,12 @@
     return result;
   }
 
+  function mapElementBoundary(children, offset, ownStart = 0, ownEnd = 0) {
+    if (!children.length || offset <= 0) return children[0]?.start ?? ownStart;
+    if (offset >= children.length) return children[children.length - 1]?.end ?? ownEnd;
+    return children[offset - 1]?.end ?? children[offset]?.start ?? ownStart;
+  }
+
   function visibleRangeToSource(source, visibleStart, visibleEnd) {
     const segments = visibleSegments(source);
     const point = (position) => {
@@ -117,6 +128,56 @@
 
   function replaceRange(source, start, end, value) {
     return source.slice(0, start) + value + source.slice(end);
+  }
+
+  function formatTokenContent(token, content) {
+    if (token.kind === "bold") return `**${content}**`;
+    if (token.kind === "italic") return `*${content}*`;
+    if (token.kind === "boldItalic") return `***${content}***`;
+    if (token.kind === "boldStrike") return `**~~${content}~~**`;
+    if (token.kind === "italicStrike") return `*~~${content}~~*`;
+    if (token.kind === "underline") return `++${content}++`;
+    if (token.kind === "strike") return `~~${content}~~`;
+    if (token.kind === "highlight") return `==${token.color ? `{${token.color}}` : ""}${content}==`;
+    if (token.kind === "code") return `\`${content}\``;
+    if (token.kind === "link") {
+      const raw = sourceForToken(token);
+      const target = raw.slice(raw.indexOf("](") + 2, -1);
+      return `[${content}](${target})`;
+    }
+    return content;
+  }
+
+  function sourceForToken(token) {
+    return token.raw || "";
+  }
+
+  function safeReplaceVisibleRange(source, start, end, replacement) {
+    const tokens = inlineSegments(source).filter((segment) => segment.tokenStart != null);
+    let editStart = start;
+    let editEnd = end;
+    for (const token of tokens) {
+      if (token.sourceStart >= start && token.sourceEnd <= end) {
+        editStart = Math.min(editStart, token.tokenStart);
+        editEnd = Math.max(editEnd, token.tokenEnd);
+      }
+    }
+    const startToken = tokens.find((token) => token.sourceStart < start && start < token.sourceEnd);
+    const startContentToken = tokens.find((token) => token.sourceStart === start && token.sourceEnd > end);
+    const endToken = tokens.find((token) => token.sourceStart < end && end < token.sourceEnd);
+    let left = startContentToken ? source.slice(0, startContentToken.tokenStart) : source.slice(0, editStart);
+    let right = source.slice(editEnd);
+    if (startToken) {
+      const content = source.slice(startToken.sourceStart, start);
+      const token = { ...startToken, raw: source.slice(startToken.tokenStart, startToken.tokenEnd) };
+      left = source.slice(0, startToken.tokenStart) + formatTokenContent(token, content);
+    }
+    if (endToken) {
+      const content = source.slice(end, endToken.sourceEnd);
+      const token = { ...endToken, raw: source.slice(endToken.tokenStart, endToken.tokenEnd) };
+      right = formatTokenContent(token, content) + source.slice(endToken.tokenEnd);
+    }
+    return left + replacement + right;
   }
 
   function inlineTokenForRange(source, start, end) {
@@ -136,18 +197,35 @@
     const markers = { bold: ["**", "**"], italic: ["*", "*"], underline: ["++", "++"], strike: ["~~", "~~"] }[kind];
     if (!markers) return source;
     const token = inlineTokenForRange(source, start, end);
-    if (token && token.kind === kind && token.sourceStart === start && token.sourceEnd === end) {
-      return replaceRange(source, token.tokenStart, token.tokenEnd, source.slice(start, end));
+    if (token && token.sourceStart === start && token.sourceEnd === end) {
+      if (["link", "code", "highlight"].includes(token.kind) && token.kind !== kind) return source;
+      if (token.kind === kind) return replaceRange(source, token.tokenStart, token.tokenEnd, source.slice(start, end));
+      if (["bold", "italic", "strike"].includes(token.kind) && ["bold", "italic", "strike"].includes(kind)) {
+        const nested = markers[0] + source.slice(start, end) + markers[1];
+        return replaceRange(source, token.tokenStart, token.tokenEnd, formatTokenContent(token, nested));
+      }
+      if (token.kind === "boldItalic" && kind === "bold") return replaceRange(source, token.tokenStart, token.tokenEnd, `*${source.slice(start, end)}*`);
+      if (token.kind === "boldItalic" && kind === "italic") return replaceRange(source, token.tokenStart, token.tokenEnd, `**${source.slice(start, end)}**`);
+      if (token.kind === "boldStrike" && kind === "bold") return replaceRange(source, token.tokenStart, token.tokenEnd, `~~${source.slice(start, end)}~~`);
+      if (token.kind === "boldStrike" && kind === "strike") return replaceRange(source, token.tokenStart, token.tokenEnd, `**${source.slice(start, end)}**`);
+      if (token.kind === "italicStrike" && kind === "italic") return replaceRange(source, token.tokenStart, token.tokenEnd, `~~${source.slice(start, end)}~~`);
+      if (token.kind === "italicStrike" && kind === "strike") return replaceRange(source, token.tokenStart, token.tokenEnd, `*${source.slice(start, end)}*`);
     }
-    return replaceRange(source, start, end, markers[0] + source.slice(start, end) + markers[1]);
+    if (token && token.kind === kind) return safeReplaceVisibleRange(source, start, end, source.slice(start, end));
+    return safeReplaceVisibleRange(source, start, end, markers[0] + source.slice(start, end) + markers[1]);
   }
 
   function removeHighlightRange(source, start, end) {
     const token = inlineTokenForRange(source, start, end);
-    if (token && token.kind === "highlight" && token.sourceStart === start && token.sourceEnd === end) {
-      return replaceRange(source, token.tokenStart, token.tokenEnd, source.slice(start, end));
-    }
+    if (token && token.kind === "highlight") return safeReplaceVisibleRange(source, start, end, source.slice(start, end));
     return source;
+  }
+
+  function replaceHighlightRange(source, start, end, color) {
+    const token = inlineTokenForRange(source, start, end);
+    const replacement = `==${color ? `{${color}}` : ""}${source.slice(start, end)}==`;
+    if (token && token.kind === "highlight") return safeReplaceVisibleRange(source, start, end, replacement);
+    return safeReplaceVisibleRange(source, start, end, replacement);
   }
 
   function deleteVisibleCharacter(source, sourcePosition, direction) {
@@ -160,5 +238,5 @@
     return source;
   }
 
-  return { inlineSegments, inlineTokenForRange, isSupportedVisualInputType, toggleInlineFormat, removeHighlightRange, sourceLines, visibleContent, visibleSegments, visibleRangeToSource, replaceRange, applyBlockFormat, deleteVisibleCharacter };
+  return { inlineSegments, inlineTokenForRange, isSupportedVisualInputType, toggleInlineFormat, removeHighlightRange, replaceHighlightRange, safeReplaceVisibleRange, mapElementBoundary, sourceLines, visibleContent, visibleSegments, visibleRangeToSource, replaceRange, applyBlockFormat, deleteVisibleCharacter };
 });
