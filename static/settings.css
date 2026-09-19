@@ -12,11 +12,6 @@
 #settings-content .settings-section-title {
   margin: 0 0 var(--settings-section-title-gap);
 }
-/* A second category title inside one box (Compare Tab Model Identifier inside
-   Summaries) needs the same separation from the row above it. */
-.settings-setting + .settings-section-title {
-  margin-top: var(--settings-setting-gap-y);
-}
 
 /* One setting row: text on the left, switch pinned to the right edge of the
    box. The text block keeps a fixed minimum width so every switch on the page
@@ -100,7 +95,7 @@
 .settings-switch input:checked + .settings-switch-track .settings-switch-thumb {
   transform: translateX(
     calc(
-      var(--switch-width) - var(--switch-height) - var(--switch-thumb-size) -
+      var(--switch-width) - var(--switch-thumb-size) -
         2 * var(--switch-padding) - 2 * var(--switch-border-width)
     )
   );
