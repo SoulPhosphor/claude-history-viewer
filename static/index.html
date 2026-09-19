@@ -16,6 +16,24 @@
   <body>
     <div id="app">
       <aside id="sidebar">
+        <!-- Temporary bookmark panel (shown for 5+ bookmarks). While open it
+             covers the normal sidebar; closing it reveals the sidebar again.
+             Not remembered across sessions. -->
+        <div id="bookmark-panel" class="bookmark-panel" hidden>
+          <div class="bookmark-panel-top">
+            <button
+              id="bookmark-panel-close"
+              class="bookmark-panel-close"
+              type="button"
+              title="Close bookmarks"
+              aria-label="Close bookmarks"
+            >
+              ✕
+            </button>
+          </div>
+          <div class="bookmark-panel-title">Bookmarks</div>
+          <div class="bookmark-panel-list" id="bookmark-panel-list"></div>
+        </div>
         <div class="sidebar-header">
           <div class="sidebar-title-row">
             <button
@@ -370,6 +388,18 @@
           <div class="thread-titlebar">
             <span id="thread-titlebar-label"></span>
             <button
+              id="bookmarks-toggle-btn"
+              type="button"
+              title="Bookmarks"
+              aria-label="Show bookmarks"
+              hidden
+            >
+              <!-- Google Material Symbols: bookmark (opens the bookmark list) -->
+              <svg class="bookmark-nav-icon" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
+                <path d="M200-120v-640q0-33 23.5-56.5T280-840h400q33 0 56.5 23.5T760-760v640L480-240 200-120Zm80-122 200-86 200 86v-518H280v518Zm0-518h400-400Z"/>
+              </svg>
+            </button>
+            <button
               id="summary-toggle-btn"
               type="button"
               title="Summary"
@@ -474,6 +504,21 @@
               </div>
             </div>
             <div id="thread-tags"></div>
+          </div>
+          <!-- Compact bookmark bar (shown for 2–4 bookmarks). Sits beneath the
+               chat header and stays put whether or not that header is collapsed,
+               until the user closes it. -->
+          <div id="bookmark-bar" class="bookmark-bar" hidden>
+            <div class="bookmark-bar-links" id="bookmark-bar-links"></div>
+            <button
+              id="bookmark-bar-close"
+              class="bookmark-bar-close"
+              type="button"
+              title="Close bookmarks"
+              aria-label="Close bookmarks"
+            >
+              ✕
+            </button>
           </div>
           <div id="messages"></div>
           <!-- Summary body (replaces messages when the summary view is active) -->
@@ -1308,6 +1353,7 @@
     <script src="/static/snapshots.js"></script>
     <script src="/static/summary_editor_core.js"></script>
     <script src="/static/summary.js"></script>
+    <script src="/static/bookmarks.js"></script>
     <script
       src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
       crossorigin="anonymous"

@@ -509,6 +509,22 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 summary_author     TEXT,
                 updated_at         REAL
             );
+            -- Per-message bookmarks. Each bookmark carries its own stable id
+            -- (a UUID) that never changes when it is renamed, so later features
+            -- can reference a bookmark steadily regardless of its display name.
+            -- The conversation's own id is untouched by any of this. `source`
+            -- records who created the bookmark ("user" today; leaves room for an
+            -- "ai" origin later, which may show a different icon).
+            CREATE TABLE IF NOT EXISTS conversation_bookmarks (
+                id              TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                seq             INTEGER NOT NULL,
+                name            TEXT,
+                source          TEXT DEFAULT 'user',
+                created_at      REAL,
+                updated_at      REAL,
+                UNIQUE(conversation_id, seq)
+            );
             """
         )
         # Add the folders.provider column on databases created before folders
@@ -1208,6 +1224,9 @@ def _purge_conversation(conn, cid: str) -> bool:
         # conversation can't keep inflating label counts or silently regain its
         # old label if the same stable ID is re-imported later.
         "DELETE FROM udb.conversation_labels WHERE conversation_id = ?",
+        # Bookmarks are viewer metadata as well: a purged conversation should
+        # take its message bookmarks with it.
+        "DELETE FROM udb.conversation_bookmarks WHERE conversation_id = ?",
     ):
         try:
             conn.execute(stmt, (cid,))
@@ -1325,6 +1344,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_recycle_purge()
         elif path == "/api/import-new/review-import":
             self._api_review_import()
+        elif path == "/api/bookmarks":
+            self._api_bookmark_create()
         else:
             self.send_error(404)
 
@@ -1350,6 +1371,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_label_update(urllib.parse.unquote(path[len("/api/labels/"):]))
         elif path.startswith("/api/summaries/"):
             self._api_summary_update(urllib.parse.unquote(path[len("/api/summaries/"):]))
+        elif path.startswith("/api/bookmarks/"):
+            self._api_bookmark_update(urllib.parse.unquote(path[len("/api/bookmarks/"):]))
         else:
             self.send_error(404)
 
@@ -1387,6 +1410,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_label_delete(urllib.parse.unquote(path[len("/api/labels/"):]))
         elif path.startswith("/api/snapshots/"):
             self._api_snapshot_delete(urllib.parse.unquote(path[len("/api/snapshots/"):]))
+        elif path.startswith("/api/bookmarks/"):
+            self._api_bookmark_delete(urllib.parse.unquote(path[len("/api/bookmarks/"):]))
         else:
             self.send_error(404)
 
@@ -1542,6 +1567,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_snapshot_list()
         elif path.startswith("/api/summaries/"):
             self._api_summary_get(urllib.parse.unquote(path[len("/api/summaries/"):]))
+        elif path.startswith("/api/bookmarks/"):
+            self._api_bookmarks_get(urllib.parse.unquote(path[len("/api/bookmarks/"):]))
         elif path == "/api/version":
             self._api_version()
         elif path == "/api/preferences":
@@ -2097,7 +2124,8 @@ class Handler(BaseHTTPRequestHandler):
                             "artifacts": artifacts_meta,
                             "models": models,
                             "tags": self._conv_tags(conn, conv_id),
-                            "mood_tags": self._conv_mood_tags(conn, conv_id)})
+                            "mood_tags": self._conv_mood_tags(conn, conv_id),
+                            "bookmarks": self._conv_bookmarks(conn, conv_id)})
         finally:
             conn.close()
 
@@ -3486,6 +3514,112 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "updated_at": now,
                             "condensed_author": (row["condensed_author"] or "") if row else "",
                             "summary_author": (row["summary_author"] or "") if row else ""})
+        finally:
+            conn.close()
+
+    # ── Bookmarks ────────────────────────────────────────────────────────────
+    # A bookmark marks one message in a conversation. It has its own stable id
+    # (UUID) so a rename never changes what identifies it; the conversation id
+    # is never touched here.
+    def _conv_bookmarks(self, conn, conv_id):
+        rows = conn.execute(
+            "SELECT id, conversation_id, seq, name, source, created_at, updated_at "
+            "FROM udb.conversation_bookmarks WHERE conversation_id = ? ORDER BY seq",
+            (conv_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def _api_bookmarks_get(self, conv_id):
+        if not conv_id:
+            self.send_json({"error": "missing conversation id"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            self.send_json({"conversation_id": conv_id,
+                            "bookmarks": self._conv_bookmarks(conn, conv_id)})
+        finally:
+            conn.close()
+
+    def _api_bookmark_create(self):
+        payload = self._read_json_body()
+        conv_id = (payload.get("conversation_id") or "").strip()
+        seq = payload.get("seq")
+        if not conv_id or seq is None:
+            self.send_json({"error": "missing conversation id or seq"}, 400); return
+        try:
+            seq = int(seq)
+        except (TypeError, ValueError):
+            self.send_json({"error": "invalid seq"}, 400); return
+        name = payload.get("name")
+        if name is not None:
+            name = str(name)
+        source = payload.get("source") or "user"
+        conn = open_db(self.db_path)
+        try:
+            now = time.time()
+            # Toggling the same message on twice must not make a second bookmark:
+            # return the one already there rather than erroring on the UNIQUE key.
+            existing = conn.execute(
+                "SELECT id FROM udb.conversation_bookmarks "
+                "WHERE conversation_id = ? AND seq = ?",
+                (conv_id, seq),
+            ).fetchone()
+            if existing:
+                bid = existing["id"]
+            else:
+                bid = uuid.uuid4().hex
+                conn.execute(
+                    "INSERT INTO udb.conversation_bookmarks "
+                    "(id, conversation_id, seq, name, source, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (bid, conv_id, seq, name, source, now, now),
+                )
+                conn.commit()
+            row = conn.execute(
+                "SELECT id, conversation_id, seq, name, source, created_at, updated_at "
+                "FROM udb.conversation_bookmarks WHERE id = ?",
+                (bid,),
+            ).fetchone()
+            self.send_json({"ok": True, "bookmark": dict(row)})
+        finally:
+            conn.close()
+
+    def _api_bookmark_update(self, bid):
+        if not bid:
+            self.send_json({"error": "missing bookmark id"}, 400); return
+        payload = self._read_json_body()
+        conn = open_db(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT id FROM udb.conversation_bookmarks WHERE id = ?", (bid,),
+            ).fetchone()
+            if not row:
+                self.send_json({"error": "not found"}, 404); return
+            # Only the name is editable. The id stays put so references hold.
+            if payload.get("name") is not None:
+                conn.execute(
+                    "UPDATE udb.conversation_bookmarks SET name = ?, updated_at = ? "
+                    "WHERE id = ?",
+                    (str(payload.get("name")), time.time(), bid),
+                )
+                conn.commit()
+            out = conn.execute(
+                "SELECT id, conversation_id, seq, name, source, created_at, updated_at "
+                "FROM udb.conversation_bookmarks WHERE id = ?", (bid,),
+            ).fetchone()
+            self.send_json({"ok": True, "bookmark": dict(out)})
+        finally:
+            conn.close()
+
+    def _api_bookmark_delete(self, bid):
+        if not bid:
+            self.send_json({"error": "missing bookmark id"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            conn.execute(
+                "DELETE FROM udb.conversation_bookmarks WHERE id = ?", (bid,),
+            )
+            conn.commit()
+            self.send_json({"ok": True})
         finally:
             conn.close()
 
