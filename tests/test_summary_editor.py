@@ -85,12 +85,40 @@ class SummaryEditorBehaviorTests(unittest.TestCase):
             "insertText", "insertReplacementText", "insertParagraph", "insertLineBreak",
             "insertFromPaste", "insertFromPasteAsQuotation", "insertFromDrop",
             "deleteContentBackward", "deleteContentForward", "deleteWordBackward",
-            "deleteWordForward", "deleteByCut", "deleteByDrag", "insertCompositionText",
-            "deleteCompositionText", "historyUndo", "historyRedo",
+            "deleteWordForward", "deleteByCut", "deleteByDrag", "historyUndo", "historyRedo",
         ]
         result = run_node(f"process.stdout.write(JSON.stringify({{supported:{json.dumps(supported)}.every(c.isSupportedVisualInputType), unknown:c.isSupportedVisualInputType('formatBold')}}));")
         self.assertTrue(result["supported"])
         self.assertFalse(result["unknown"])
+        self.assertFalse(run_node("process.stdout.write(JSON.stringify(c.isSupportedVisualInputType('insertCompositionText')));"))
+        self.assertFalse(run_node("process.stdout.write(JSON.stringify(c.isSupportedVisualInputType('deleteCompositionText')));"))
+        self.assertNotIn("insertCompositionText", SUMMARY)
+        self.assertNotIn("deleteCompositionText", SUMMARY)
+
+    def test_delimiter_safe_deletion_boundaries_and_interior_deletion(self):
+        cases = [
+            ("**important**", 2, "backward", "**important**"),
+            ("**important**", 11, "forward", "**important**"),
+            ("==important==", 2, "backward", "==important=="),
+            ("==important==", 11, "forward", "==important=="),
+            ("=={#ff0000}important==", 11, "backward", "=={#ff0000}important=="),
+            ("=={#ff0000}important==", 20, "forward", "=={#ff0000}important=="),
+            ("[important](https://example.com)", 1, "backward", "[important](https://example.com)"),
+            ("[important](https://example.com)", 10, "forward", "[important](https://example.com)"),
+        ]
+        for source, position, direction, expected in cases:
+            result = run_node(f"process.stdout.write(JSON.stringify(c.deleteVisibleCharacter({json.dumps(source)}, {position}, {json.dumps(direction)})));")
+            self.assertEqual(result, expected)
+        interior = run_node("process.stdout.write(JSON.stringify(c.deleteVisibleCharacter('**important**', 5, 'backward')));")
+        self.assertEqual(interior, "**imortant**")
+
+    def test_history_reset_contract_prevents_cross_summary_restore(self):
+        self.assertIn("function clearVisualHistory()", SUMMARY)
+        self.assertIn("clearVisualHistory();\n  if (messagesEl)", SUMMARY)
+        self.assertIn("clearVisualHistory();\n  summaryInput.value = _savedSummary", SUMMARY)
+        self.assertIn("clearVisualHistory();\n  updateSummaryButtons();", SUMMARY)
+        self.assertIn("historyUndo", SUMMARY)
+        self.assertIn("historyRedo", SUMMARY)
 
     def test_old_flattened_visual_edit_path_is_not_wired_and_editor_functions_are_unique(self):
         self.assertNotIn("patchVisualText", SUMMARY)

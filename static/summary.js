@@ -13,6 +13,11 @@ let _visualUndo = [];
 let _visualRedo = [];
 let _summaryPalette = ["#fff3a3", "#c9f7c5", "#c9e7ff", "#f5c9ff"];
 
+function clearVisualHistory() {
+  _visualUndo = [];
+  _visualRedo = [];
+}
+
 const summaryBodyEl = $("summary-body");
 const condensedSection = $("summary-condensed-section");
 const condensedInput = $("condensed-summary-input");
@@ -261,6 +266,7 @@ async function openSummaryForConversation(convId) {
   }
   if (state.activeId !== convId) await openConversation(convId, findConvItemEl(convId));
   _summaryConvId = convId;
+  clearVisualHistory();
   if (messagesEl) messagesEl.hidden = true;
   if (summaryBodyEl) summaryBodyEl.hidden = false;
   updateSummaryCondensedVisibility();
@@ -287,6 +293,7 @@ async function openSummaryForConversation(convId) {
 
 function closeSummaryPanel() {
   _summaryConvId = null;
+  clearVisualHistory();
   if (summaryBodyEl) summaryBodyEl.hidden = true;
   if (messagesEl) messagesEl.hidden = false;
   updateSummaryToggleIcon(false);
@@ -483,15 +490,16 @@ function handleVisualBeforeInput(event) {
       const segment = segments.find((item) => start >= item.sourceStart && start <= item.sourceEnd);
       if (!segment) { event.preventDefault(); return; }
       if (inputType === "deleteContentBackward" || inputType === "deleteWordBackward") {
+        if (start <= segment.sourceStart) { event.preventDefault(); return; }
         start = inputType === "deleteWordBackward" ? Math.max(segment.sourceStart, source.lastIndexOf(" ", start - 1) + 1) : start - 1;
       } else if (inputType === "deleteContentForward" || inputType === "deleteWordForward") {
+        if (start >= segment.sourceEnd) { event.preventDefault(); return; }
         end = inputType === "deleteWordForward" ? Math.min(segment.sourceEnd, source.indexOf(" ", start) < 0 ? segment.sourceEnd : source.indexOf(" ", start)) : start + 1;
       }
     }
     replacement = "";
-  } else if (inputType === "insertCompositionText" || inputType === "deleteCompositionText") {
-    replacement = event.data || "";
   }
+
   event.preventDefault();
   commitVisualSource(summaryCore.replaceRange(source, start, end, replacement), start + replacement.length);
 }
@@ -549,8 +557,17 @@ function refreshPaletteControls() {
 summaryVisual?.addEventListener("beforeinput", handleVisualBeforeInput);
 
 condensedInput?.addEventListener("input", updateCondensedButtons);
-summaryInput?.addEventListener("input", () => { updateSummaryButtons(); if (_summaryMode === "markdown") renderVisual(); });
-summaryRevertBtn?.addEventListener("click", () => { summaryInput.value = _savedSummary; renderVisual(); updateSummaryButtons(); });
+summaryInput?.addEventListener("input", () => {
+  clearVisualHistory();
+  updateSummaryButtons();
+  if (_summaryMode === "markdown") renderVisual();
+});
+summaryRevertBtn?.addEventListener("click", () => {
+  clearVisualHistory();
+  summaryInput.value = _savedSummary;
+  renderVisual();
+  updateSummaryButtons();
+});
 condensedRevertBtn?.addEventListener("click", () => { condensedInput.value = _savedCondensed; updateCondensedButtons(); });
 condensedSaveBtn?.addEventListener("click", () => saveCondensedSummary());
 summarySaveBtn?.addEventListener("click", () => saveMainSummary());

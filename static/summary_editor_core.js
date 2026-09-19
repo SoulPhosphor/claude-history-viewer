@@ -128,8 +128,7 @@
       "insertText", "insertReplacementText", "insertParagraph", "insertLineBreak",
       "insertFromPaste", "insertFromPasteAsQuotation", "insertFromDrop",
       "deleteContentBackward", "deleteContentForward", "deleteWordBackward",
-      "deleteWordForward", "deleteByCut", "deleteByDrag", "insertCompositionText",
-      "deleteCompositionText", "historyUndo", "historyRedo",
+      "deleteWordForward", "deleteByCut", "deleteByDrag", "historyUndo", "historyRedo",
     ].includes(inputType);
   }
 
