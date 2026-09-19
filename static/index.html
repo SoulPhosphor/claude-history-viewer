@@ -501,11 +501,36 @@
                   <button type="button" class="summary-btn summary-btn-primary" id="summary-save-btn" disabled>Save</button>
                 </div>
               </div>
-              <textarea
-                id="summary-input"
-                class="summary-textarea summary-textarea-main"
-                placeholder=""
-              ></textarea>
+              <div class="summary-editor" id="summary-editor">
+                <div class="summary-mode-switch" role="group" aria-label="Summary editing mode">
+                  <button type="button" class="summary-mode-btn" id="summary-mode-visual" aria-pressed="true">Visual</button>
+                  <button type="button" class="summary-mode-btn" id="summary-mode-markdown" aria-pressed="false">Markdown</button>
+                </div>
+                <div class="summary-toolbar" id="summary-toolbar" role="toolbar" aria-label="Summary formatting">
+                  <select class="summary-format-select" data-format="normal" aria-label="Text style">
+                    <option value="normal">Normal</option>
+                    <option value="heading1">Heading 1</option>
+                    <option value="heading2">Heading 2</option>
+                    <option value="heading3">Heading 3</option>
+                  </select>
+                  <button type="button" class="summary-tool-btn" data-format="bold" title="Bold" aria-label="Bold"><strong>B</strong></button>
+                  <button type="button" class="summary-tool-btn" data-format="italic" title="Italic" aria-label="Italic"><em>I</em></button>
+                  <button type="button" class="summary-tool-btn" data-format="underline" title="Underline" aria-label="Underline"><u>U</u></button>
+                  <button type="button" class="summary-tool-btn" data-format="strike" title="Strikethrough" aria-label="Strikethrough"><s>S</s></button>
+                  <div class="summary-highlight-wrap">
+                    <button type="button" class="summary-tool-btn" id="summary-highlight-button" title="Highlight" aria-label="Highlight">▰</button>
+                    <div class="summary-highlight-menu" id="summary-highlight-menu" hidden>
+                      <div class="summary-palette" aria-label="Highlight palette"></div>
+                      <label class="summary-palette-custom">Custom <input type="color" class="summary-palette-picker" value="#fff3a3" aria-label="Choose custom highlight color"></label>
+                      <button type="button" class="summary-palette-remove">Remove highlight</button>
+                    </div>
+                  </div>
+                  <button type="button" class="summary-tool-btn" data-format="bullet" title="Bulleted list" aria-label="Bulleted list">•≡</button>
+                  <button type="button" class="summary-tool-btn" data-format="numbered" title="Numbered list" aria-label="Numbered list">1≡</button>
+                </div>
+                <div id="summary-visual" class="summary-visual" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Visual Summary"></div>
+                <textarea id="summary-input" class="summary-textarea summary-textarea-main" placeholder="" hidden></textarea>
+              </div>
               <div class="summary-author-row" id="summary-author-row" hidden>
                 <span class="summary-author-label" id="summary-author-label"></span>
               </div>
@@ -1244,6 +1269,7 @@
     <script src="/static/labels_screen.js"></script>
     <script src="/static/bulk_labels.js"></script>
     <script src="/static/snapshots.js"></script>
+    <script src="/static/summary_editor_core.js"></script>
     <script src="/static/summary.js"></script>
     <script
       src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"

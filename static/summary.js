@@ -1,18 +1,25 @@
 "use strict";
 
-// ── Summary feature ──────────────────────────────────────────────────────────
-// The summary view lives inside #thread, sharing its titlebar and header.
-// Toggling between chat and summary just swaps #messages and #summary-body
-// visibility. The only visual change in the titlebar is the book/forum icon.
-
-// ── State ────────────────────────────────────────────────────────────────────
+// Main Summary editor. Markdown is the only document state. Visual mode renders
+// source-mapped text leaves; edits patch only the changed source range instead of
+// serializing the rendered DOM back to Markdown.
 let _summaryConvId = null;
 let _savedCondensed = "";
 let _savedSummary = "";
 let _condensedAuthor = "";
 let _summaryAuthor = "";
+let _summaryMode = "visual";
+let _visualUndo = [];
+let _visualRedo = [];
+let _savedVisualSelection = null;
+let _summaryPalette = ["#fff3a3", "#c9f7c5", "#c9e7ff", "#f5c9ff"];
 
-// ── DOM refs ─────────────────────────────────────────────────────────────────
+function clearVisualHistory() {
+  _visualUndo = [];
+  _visualRedo = [];
+  _savedVisualSelection = null;
+}
+
 const summaryBodyEl = $("summary-body");
 const condensedSection = $("summary-condensed-section");
 const condensedInput = $("condensed-summary-input");
@@ -28,19 +35,24 @@ const summaryAuthorLabel = $("summary-author-label");
 const summaryUnsavedModal = $("summary-unsaved-modal");
 const summaryUnsavedCancel = $("summary-unsaved-cancel");
 const summaryUnsavedSave = $("summary-unsaved-save");
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
+const summaryVisual = $("summary-visual");
+const summaryToolbar = $("summary-toolbar");
+const summaryModeVisual = $("summary-mode-visual");
+const summaryModeMarkdown = $("summary-mode-markdown");
+const summaryHighlightMenu = $("summary-highlight-menu");
 
 function summaryIsOpen() {
   return summaryBodyEl && !summaryBodyEl.hidden;
 }
 
+function summaryMarkdown() {
+  return summaryInput ? summaryInput.value : "";
+}
+
 function summaryHasUnsavedChanges() {
   if (!_summaryConvId) return false;
-  const cDirty = condensedInput && !condensedSection.hidden &&
-    condensedInput.value !== _savedCondensed;
-  const sDirty = summaryInput && summaryInput.value !== _savedSummary;
-  return !!(cDirty || sDirty);
+  const cDirty = condensedInput && !condensedSection.hidden && condensedInput.value !== _savedCondensed;
+  return !!(cDirty || summaryMarkdown() !== _savedSummary);
 }
 
 function updateCondensedButtons() {
@@ -52,14 +64,13 @@ function updateCondensedButtons() {
 
 function updateSummaryButtons() {
   if (!summaryRevertBtn || !summarySaveBtn) return;
-  const dirty = summaryInput.value !== _savedSummary;
+  const dirty = summaryMarkdown() !== _savedSummary;
   summaryRevertBtn.disabled = !dirty;
   summarySaveBtn.disabled = !dirty;
 }
 
 function updateSummaryCondensedVisibility() {
-  if (!condensedSection) return;
-  condensedSection.hidden = !state.preferences.includeCondensedSummary;
+  if (condensedSection) condensedSection.hidden = !state.preferences.includeCondensedSummary;
 }
 
 function authorDisplayText(val) {
@@ -71,54 +82,35 @@ function authorDisplayText(val) {
 
 function updateSummaryAuthorLabels() {
   const show = state.preferences.showSummaryAuthor;
-  if (condensedAuthorRow) {
-    const text = authorDisplayText(_condensedAuthor);
-    condensedAuthorRow.hidden = !show || !text;
-    if (condensedAuthorLabel) {
-      condensedAuthorLabel.textContent = text;
-      condensedAuthorLabel.className = "summary-author-label";
-      if (_condensedAuthor) condensedAuthorLabel.classList.add(`summary-author-${_condensedAuthor}`);
-    }
-  }
-  if (summaryAuthorRow) {
-    const text = authorDisplayText(_summaryAuthor);
-    summaryAuthorRow.hidden = !show || !text;
-    if (summaryAuthorLabel) {
-      summaryAuthorLabel.textContent = text;
-      summaryAuthorLabel.className = "summary-author-label";
-      if (_summaryAuthor) summaryAuthorLabel.classList.add(`summary-author-${_summaryAuthor}`);
+  for (const [row, label, value] of [[condensedAuthorRow, condensedAuthorLabel, _condensedAuthor], [summaryAuthorRow, summaryAuthorLabel, _summaryAuthor]]) {
+    if (!row) continue;
+    const text = authorDisplayText(value);
+    row.hidden = !show || !text;
+    if (label) {
+      label.textContent = text;
+      label.className = "summary-author-label";
+      if (value) label.classList.add(`summary-author-${value}`);
     }
   }
 }
 
-function updateSummaryAuthorVisibility() {
-  updateSummaryAuthorLabels();
-}
-
-// ── Toggle icon (book / forum) in the thread titlebar ────────────────────────
-
-function updateSummaryToggleIcon(isSummaryOpen) {
-  const bookIcon = $("summary-icon-book");
-  const forumIcon = $("summary-icon-forum");
-  const toggleBtn = $("summary-toggle-btn");
-  if (!bookIcon || !forumIcon || !toggleBtn) return;
-  // The icons are <svg> elements: `el.hidden = ...` is not reflected on
-  // SVGElement, so the hidden attribute must be set explicitly or both
-  // icons render at once.
-  if (isSummaryOpen) {
-    bookIcon.setAttribute("hidden", "");
-    forumIcon.removeAttribute("hidden");
-    toggleBtn.title = "Back to chat";
-    toggleBtn.setAttribute("aria-label", "Back to chat");
+function updateSummaryToggleIcon(isOpen) {
+  const book = $("summary-icon-book");
+  const forum = $("summary-icon-forum");
+  const button = $("summary-toggle-btn");
+  if (!book || !forum || !button) return;
+  if (isOpen) {
+    book.setAttribute("hidden", "");
+    forum.removeAttribute("hidden");
+    button.title = "Back to chat";
+    button.setAttribute("aria-label", "Back to chat");
   } else {
-    bookIcon.removeAttribute("hidden");
-    forumIcon.setAttribute("hidden", "");
-    toggleBtn.title = "Summary";
-    toggleBtn.setAttribute("aria-label", "Open summary");
+    book.removeAttribute("hidden");
+    forum.setAttribute("hidden", "");
+    button.title = "Summary";
+    button.setAttribute("aria-label", "Open summary");
   }
 }
-
-// ── API ──────────────────────────────────────────────────────────────────────
 
 async function apiGetSummary(convId) {
   const r = await fetch(`/api/summaries/${encodeURIComponent(convId)}`);
@@ -134,7 +126,76 @@ async function apiSaveSummary(convId, fields) {
   return r.json();
 }
 
-// ── Save helpers ─────────────────────────────────────────────────────────────
+function normalizePalette(value) {
+  if (!Array.isArray(value)) return _summaryPalette;
+  const colors = value.filter((x) => /^#[0-9a-f]{6}$/i.test(String(x))).map((x) => String(x).toLowerCase());
+  return colors.length ? [...new Set(colors)].slice(0, 32) : _summaryPalette;
+}
+
+async function saveSummaryPalette() {
+  state.preferences.summaryHighlightPalette = _summaryPalette;
+  await saveUiPreferences({ summaryHighlightPalette: _summaryPalette });
+}
+
+function updatePaletteFromPicker(input) {
+  const color = String(input.value || "").toLowerCase();
+  if (!/^#[0-9a-f]{6}$/.test(color)) return;
+  if (!_summaryPalette.includes(color)) _summaryPalette = [..._summaryPalette, color].slice(0, 32);
+  refreshPaletteControls();
+  saveSummaryPalette();
+  applyHighlight(color);
+}
+
+function replaceSourceRange(start, end, replacement) {
+  const source = summaryMarkdown();
+  const next = source.slice(0, start) + replacement + source.slice(end);
+  if (next === source) return;
+  _visualUndo.push(source);
+  _visualRedo = [];
+  summaryInput.value = next;
+  renderVisual();
+  updateSummaryButtons();
+}
+
+function applyInlineFormat(type) {
+  const range = visualCommandRange();
+  if (!range || range.start === range.end) return;
+  commitVisualSource(summaryCore.toggleInlineFormat(summaryMarkdown(), range.start, range.end, type), range.start);
+}
+
+function applyHighlight(color) {
+  const range = visualCommandRange();
+  if (!range || range.start === range.end) return;
+  const source = summaryMarkdown();
+  const token = summaryCore.inlineTokenForRange(source, range.start, range.end);
+  if (token && token.kind !== "highlight") return;
+  const next = summaryCore.replaceHighlightRange(source, range.start, range.end, color.toLowerCase() === "#fff3a3" ? "" : color.toLowerCase());
+  commitVisualSource(next, range.start);
+  if (summaryHighlightMenu) summaryHighlightMenu.hidden = true;
+}
+
+function removeHighlight() {
+  const range = visualCommandRange();
+  if (!range || range.start === range.end) return;
+  commitVisualSource(summaryCore.removeHighlightRange(summaryMarkdown(), range.start, range.end), range.start);
+  if (summaryHighlightMenu) summaryHighlightMenu.hidden = true;
+}
+
+function renderVisual() {
+  if (!summaryVisual) return;
+  renderMarkdownSource(summaryMarkdown(), summaryVisual);
+}
+
+function setSummaryMode(mode) {
+  _summaryMode = mode;
+  const visual = mode === "visual";
+  if (summaryVisual) summaryVisual.hidden = !visual;
+  if (summaryInput) summaryInput.hidden = visual;
+  if (summaryToolbar) summaryToolbar.hidden = !visual;
+  if (summaryModeVisual) summaryModeVisual.setAttribute("aria-pressed", String(visual));
+  if (summaryModeMarkdown) summaryModeMarkdown.setAttribute("aria-pressed", String(!visual));
+  if (visual) renderVisual();
+}
 
 async function saveCondensedSummary() {
   if (!_summaryConvId) return;
@@ -149,7 +210,7 @@ async function saveCondensedSummary() {
 
 async function saveMainSummary() {
   if (!_summaryConvId) return;
-  const text = summaryInput.value;
+  const text = summaryMarkdown();
   const res = await apiSaveSummary(_summaryConvId, { summary: text, author: "personal" });
   _savedSummary = text;
   if (res.summary_author) _summaryAuthor = res.summary_author;
@@ -160,14 +221,13 @@ async function saveMainSummary() {
 async function saveAllUnsaved() {
   if (!_summaryConvId) return;
   const fields = {};
-  if (condensedInput && !condensedSection.hidden &&
-      condensedInput.value !== _savedCondensed) {
+  if (condensedInput && !condensedSection.hidden && condensedInput.value !== _savedCondensed) {
     fields.condensed_summary = condensedInput.value;
     _savedCondensed = condensedInput.value;
   }
-  if (summaryInput && summaryInput.value !== _savedSummary) {
-    fields.summary = summaryInput.value;
-    _savedSummary = summaryInput.value;
+  if (summaryMarkdown() !== _savedSummary) {
+    fields.summary = summaryMarkdown();
+    _savedSummary = summaryMarkdown();
   }
   if (Object.keys(fields).length) {
     fields.author = "personal";
@@ -180,8 +240,6 @@ async function saveAllUnsaved() {
   updateSummaryAuthorLabels();
   refreshSummaryHintForConv(_summaryConvId);
 }
-
-// ── Refresh the sidebar hint for a conversation after saving ────────────────
 
 function refreshSummaryHintForConv(convId) {
   const hasContent = !!(_savedCondensed && _savedCondensed.trim());
@@ -196,37 +254,26 @@ function refreshSummaryHintForConv(convId) {
         hintEl.textContent = "Summary";
         hintEl.dataset.convId = convId;
         const anchor = row.querySelector(".conv-top-row") || row.querySelector(".folder-conv-title");
-        if (anchor) anchor.after(hintEl);
-        else row.appendChild(hintEl);
+        if (anchor) anchor.after(hintEl); else row.appendChild(hintEl);
       }
     });
   }
 }
 
-// ── Open / close summary view ───────────────────────────────────────────────
-
 async function openSummaryForConversation(convId) {
   if (!convId) return;
-
   if (_summaryConvId && _summaryConvId !== convId && summaryHasUnsavedChanges()) {
     const result = await openSummaryUnsavedModal();
     if (result === "cancel") return;
     if (result === "save") await saveAllUnsaved();
   }
-
-  if (state.activeId !== convId) {
-    await openConversation(convId, findConvItemEl(convId));
-  }
-
+  if (state.activeId !== convId) await openConversation(convId, findConvItemEl(convId));
   _summaryConvId = convId;
-
-  // Swap messages for summary body (both inside #thread).
+  clearVisualHistory();
   if (messagesEl) messagesEl.hidden = true;
   if (summaryBodyEl) summaryBodyEl.hidden = false;
-
   updateSummaryCondensedVisibility();
   updateSummaryToggleIcon(true);
-
   const data = await apiGetSummary(convId);
   _savedCondensed = data.condensed_summary || "";
   _savedSummary = data.summary || "";
@@ -234,7 +281,14 @@ async function openSummaryForConversation(convId) {
   _summaryAuthor = data.summary_author || "";
   if (condensedInput) condensedInput.value = _savedCondensed;
   if (summaryInput) summaryInput.value = _savedSummary;
-
+  try {
+    const prefs = await apiPreferences();
+    _summaryPalette = normalizePalette(prefs.preferences?.summaryHighlightPalette);
+  } catch (_) {
+    _summaryPalette = normalizePalette(_summaryPalette);
+  }
+  refreshPaletteControls();
+  setSummaryMode("visual");
   updateCondensedButtons();
   updateSummaryButtons();
   updateSummaryAuthorLabels();
@@ -242,51 +296,34 @@ async function openSummaryForConversation(convId) {
 
 function closeSummaryPanel() {
   _summaryConvId = null;
+  clearVisualHistory();
   if (summaryBodyEl) summaryBodyEl.hidden = true;
   if (messagesEl) messagesEl.hidden = false;
   updateSummaryToggleIcon(false);
 }
 
 function returnFromSummaryToChat() {
-  _summaryConvId = null;
-  if (summaryBodyEl) summaryBodyEl.hidden = true;
-  if (messagesEl) messagesEl.hidden = false;
-  updateSummaryToggleIcon(false);
+  closeSummaryPanel();
 }
 
-// ── Unsaved changes modal ────────────────────────────────────────────────────
-
 let _unsavedResolve = null;
-
 function openSummaryUnsavedModal() {
   return new Promise((resolve) => {
     _unsavedResolve = resolve;
     if (summaryUnsavedModal) summaryUnsavedModal.hidden = false;
   });
 }
-
 function closeSummaryUnsavedModal(result) {
   if (summaryUnsavedModal) summaryUnsavedModal.hidden = true;
-  if (_unsavedResolve) {
-    _unsavedResolve(result);
-    _unsavedResolve = null;
-  }
+  if (_unsavedResolve) { _unsavedResolve(result); _unsavedResolve = null; }
 }
-
 summaryUnsavedCancel?.addEventListener("click", () => closeSummaryUnsavedModal("cancel"));
 summaryUnsavedSave?.addEventListener("click", () => closeSummaryUnsavedModal("save"));
-
-summaryUnsavedModal?.addEventListener("click", (e) => {
-  if (e.target === summaryUnsavedModal) closeSummaryUnsavedModal("cancel");
-});
+summaryUnsavedModal?.addEventListener("click", (e) => { if (e.target === summaryUnsavedModal) closeSummaryUnsavedModal("cancel"); });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && summaryUnsavedModal && !summaryUnsavedModal.hidden) {
-    closeSummaryUnsavedModal("cancel");
-  }
+  if (e.key === "Escape" && summaryUnsavedModal && !summaryUnsavedModal.hidden) closeSummaryUnsavedModal("cancel");
 });
-
-// ── Navigation guard ─────────────────────────────────────────────────────────
 
 async function summaryNavigationGuard(proceedFn) {
   if (summaryHasUnsavedChanges()) {
@@ -299,33 +336,324 @@ async function summaryNavigationGuard(proceedFn) {
   return true;
 }
 
-// ── beforeunload guard ───────────────────────────────────────────────────────
-
 window.addEventListener("beforeunload", (e) => {
-  if (summaryHasUnsavedChanges()) {
-    e.preventDefault();
-    e.returnValue = "";
-  }
+  if (summaryHasUnsavedChanges()) { e.preventDefault(); e.returnValue = ""; }
 });
 
-// ── Button wiring ────────────────────────────────────────────────────────────
+// ── Safe source-mapped visual editing overrides ─────────────────────────────
+// These helpers use explicit source segments and beforeinput. The browser is
+// never asked to serialize a contenteditable DOM back into Markdown.
+const summaryCore = window.SummaryEditorCore;
+
+function mappedSourceRange(node) {
+  const element = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+  if (!element?.dataset?.sourceStart) return null;
+  return { start: Number(element.dataset.sourceStart), end: Number(element.dataset.sourceEnd) };
+}
+
+function summarySourceBoundary(node, offset) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    const range = mappedSourceRange(node);
+    return range ? range.start + Math.min(offset, node.nodeValue.length) : null;
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return null;
+  const own = mappedSourceRange(node);
+  const children = [...node.childNodes];
+  if (!children.length) return offset ? own?.end ?? null : own?.start ?? null;
+  if (offset <= 0) return summarySourceBoundary(children[0], 0) ?? own?.start ?? null;
+  if (offset >= children.length) {
+    const last = children[children.length - 1];
+    return summarySourceBoundary(last, last.nodeType === Node.TEXT_NODE ? last.nodeValue.length : last.childNodes.length) ?? own?.end ?? null;
+  }
+  const before = children[offset - 1];
+  const after = children[offset];
+  return summarySourceBoundary(before, before.nodeType === Node.TEXT_NODE ? before.nodeValue.length : before.childNodes.length)
+    ?? summarySourceBoundary(after, 0)
+    ?? own?.start
+    ?? null;
+}
+
+function summarySourcePoint(node, offset) {
+  const point = summarySourceBoundary(node, offset);
+  return point == null ? 0 : point;
+}
+
+function sourceRangeFromSelection() {
+  const selection = window.getSelection?.();
+  if (!summaryVisual || !selection?.rangeCount) return null;
+  const range = selection.getRangeAt(0);
+  if (!summaryVisual.contains(range.startContainer) || !summaryVisual.contains(range.endContainer)) return null;
+  const start = summarySourcePoint(range.startContainer, range.startOffset);
+  const end = summarySourcePoint(range.endContainer, range.endOffset);
+  return { start: Math.min(start, end), end: Math.max(start, end) };
+}
+
+function rememberVisualSelection() {
+  const range = sourceRangeFromSelection();
+  if (range) _savedVisualSelection = range;
+  return range;
+}
+
+function visualCommandRange() {
+  return sourceRangeFromSelection() || _savedVisualSelection;
+}
+
+function appendMappedSegment(parent, segment) {
+  if (segment.kind === "newline") {
+    const br = document.createElement("br");
+    br.dataset.sourceStart = String(segment.sourceStart);
+    br.dataset.sourceEnd = String(segment.sourceEnd);
+    parent.appendChild(br);
+    return;
+  }
+  if (["boldItalic", "boldStrike", "italicStrike"].includes(segment.kind)) {
+    const outer = document.createElement(segment.kind.startsWith("italic") ? "em" : segment.kind.startsWith("bold") ? "strong" : "del");
+    const inner = document.createElement(segment.kind.endsWith("Strike") ? "del" : segment.kind === "boldItalic" ? "em" : "strong");
+    for (const element of [outer, inner]) {
+      element.dataset.sourceStart = String(segment.sourceStart);
+      element.dataset.sourceEnd = String(segment.sourceEnd);
+    }
+    inner.textContent = segment.text;
+    outer.appendChild(inner);
+    parent.appendChild(outer);
+    return;
+  }
+  const tags = { bold: "strong", italic: "em", underline: "u", strike: "del", highlight: "mark", code: "code", link: "span" };
+  const element = document.createElement(tags[segment.kind] || "span");
+  // Map the visible leaf to its content range, not the surrounding Markdown
+  // delimiters. Token boundaries remain available for diagnostics/future use.
+  element.dataset.sourceStart = String(segment.sourceStart);
+  element.dataset.sourceEnd = String(segment.sourceEnd);
+  element.dataset.tokenStart = String(segment.tokenStart ?? segment.sourceStart);
+  element.dataset.tokenEnd = String(segment.tokenEnd ?? segment.sourceEnd);
+  element.textContent = segment.text;
+  if (segment.kind === "highlight" && segment.color) element.style.setProperty("--summary-inline-highlight-color", segment.color);
+  if (segment.kind === "link") element.title = "Markdown link";
+  parent.appendChild(element);
+}
+
+function renderMarkdownSource(source, root) {
+  root.replaceChildren();
+  for (const line of summaryCore.sourceLines(source)) {
+    const block = document.createElement("div");
+    block.className = "summary-visual-line";
+    const content = summaryCore.visibleContent(line);
+    block.dataset.sourceStart = String(line.start);
+    block.dataset.sourceEnd = String(line.end);
+    const wrapper = document.createElement(content.block === "heading" ? `h${content.level}` : content.block === "bullet" ? "li" : content.block === "numbered" ? "li" : "p");
+    if (content.block === "bullet" || content.block === "numbered") {
+      const list = document.createElement(content.block === "bullet" ? "ul" : "ol");
+      wrapper.dataset.sourceStart = String(content.start);
+      wrapper.dataset.sourceEnd = String(line.end);
+      for (const segment of summaryCore.inlineSegments(content.text, content.start)) appendMappedSegment(wrapper, segment);
+      list.appendChild(wrapper);
+      block.appendChild(list);
+    } else {
+      wrapper.dataset.sourceStart = String(content.start);
+      wrapper.dataset.sourceEnd = String(line.end);
+      for (const segment of summaryCore.inlineSegments(content.text, content.start)) appendMappedSegment(wrapper, segment);
+      block.appendChild(wrapper);
+    }
+    if (line.newlineEnd > line.newlineStart) {
+      const br = document.createElement("br");
+      br.dataset.sourceStart = String(line.newlineStart);
+      br.dataset.sourceEnd = String(line.newlineEnd);
+      block.appendChild(br);
+    }
+    root.appendChild(block);
+  }
+}
+
+function setVisualCaret(sourcePosition) {
+  if (!summaryVisual) return;
+  const walker = document.createTreeWalker(summaryVisual, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const leaf = node.parentElement.closest("[data-source-start]");
+    if (!leaf) continue;
+    const start = Number(leaf.dataset.sourceStart);
+    const end = Number(leaf.dataset.sourceEnd);
+    if (sourcePosition >= start && sourcePosition <= end) {
+      const range = document.createRange();
+      range.setStart(node, Math.min(node.nodeValue.length, sourcePosition - start));
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return;
+    }
+  }
+}
+
+function commitVisualSource(source, caret, recordHistory = true) {
+  const previous = summaryMarkdown();
+  if (source === previous) return;
+  if (recordHistory) _visualUndo.push(previous);
+  _visualRedo = [];
+  summaryInput.value = source;
+  renderVisual();
+  updateSummaryButtons();
+  setVisualCaret(caret);
+  _savedVisualSelection = { start: caret, end: caret };
+}
+
+function restoreVisualSource(source) {
+  _savedVisualSelection = null;
+  summaryInput.value = source;
+  renderVisual();
+  updateSummaryButtons();
+}
+
+function handleVisualBeforeInput(event) {
+  if (!summaryVisual || !summaryInput) return;
+  const inputType = event.inputType || "";
+  if (!summaryCore.isSupportedVisualInputType(inputType)) {
+    event.preventDefault();
+    return;
+  }
+  const source = summaryMarkdown();
+  if (inputType === "historyUndo" || inputType === "historyRedo") {
+    const from = inputType === "historyUndo" ? _visualUndo : _visualRedo;
+    const to = inputType === "historyUndo" ? _visualRedo : _visualUndo;
+    if (!from.length) { event.preventDefault(); return; }
+    event.preventDefault();
+    to.push(source);
+    restoreVisualSource(from.pop());
+    return;
+  }
+  const range = sourceRangeFromSelection();
+  if (!range) { event.preventDefault(); return; }
+  let start = range.start;
+  let end = range.end;
+  let replacement = event.data || "";
+  if (inputType === "insertFromPaste" || inputType === "insertFromPasteAsQuotation" || inputType === "insertFromDrop") {
+    replacement = event.data || event.dataTransfer?.getData("text/plain") || "";
+  } else if (inputType === "insertParagraph" || inputType === "insertLineBreak") {
+    event.preventDefault();
+    const paragraph = summaryCore.insertParagraph(source, start, end);
+    commitVisualSource(paragraph.source, paragraph.caret);
+    return;
+  } else if (inputType.startsWith("delete")) {
+    if (start === end) {
+      const segments = summaryCore.visibleSegments(source).filter((segment) => segment.kind !== "newline");
+      const segment = segments.find((item) => start >= item.sourceStart && start <= item.sourceEnd);
+      if (!segment) { event.preventDefault(); return; }
+      if (inputType === "deleteContentBackward" || inputType === "deleteWordBackward") {
+        if (start <= segment.sourceStart) { event.preventDefault(); return; }
+        start = inputType === "deleteWordBackward" ? Math.max(segment.sourceStart, source.lastIndexOf(" ", start - 1) + 1) : start - 1;
+      } else if (inputType === "deleteContentForward" || inputType === "deleteWordForward") {
+        if (start >= segment.sourceEnd) { event.preventDefault(); return; }
+        end = inputType === "deleteWordForward" ? Math.min(segment.sourceEnd, source.indexOf(" ", start) < 0 ? segment.sourceEnd : source.indexOf(" ", start)) : start + 1;
+      }
+    }
+    replacement = "";
+  }
+
+  event.preventDefault();
+  commitVisualSource(summaryCore.safeReplaceVisibleRange(source, start, end, replacement), start + replacement.length);
+}
+
+function applyBlockFormat(type) {
+  const range = visualCommandRange();
+  if (!range) return;
+  const next = summaryCore.applyBlockFormat(summaryMarkdown(), range.start, range.end, type);
+  commitVisualSource(next, range.start);
+}
+
+function refreshPaletteControls() {
+  const palette = summaryHighlightMenu?.querySelector(".summary-palette");
+  if (!palette) return;
+  palette.replaceChildren();
+  for (const color of _summaryPalette) {
+    const item = document.createElement("span");
+    item.className = "summary-palette-item";
+    const use = document.createElement("button");
+    use.type = "button";
+    use.className = "summary-palette-swatch";
+    use.style.setProperty("--summary-swatch-color", color);
+    use.title = `Use highlight ${color}`;
+    use.setAttribute("aria-label", `Use highlight ${color}`);
+    use.addEventListener("click", () => applyHighlight(color));
+    const edit = document.createElement("input");
+    edit.type = "color";
+    edit.value = color;
+    edit.className = "summary-palette-edit";
+    edit.title = `Change palette color ${color}`;
+    edit.setAttribute("aria-label", `Change palette color ${color}`);
+    edit.addEventListener("input", () => {
+      const next = edit.value.toLowerCase();
+      _summaryPalette = _summaryPalette.map((entry) => entry === color ? next : entry);
+      _summaryPalette = [...new Set(_summaryPalette)].slice(0, 32);
+      refreshPaletteControls();
+      saveSummaryPalette();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "summary-palette-remove-one";
+    remove.textContent = "×";
+    remove.title = `Remove ${color} from palette`;
+    remove.setAttribute("aria-label", `Remove ${color} from palette`);
+    remove.addEventListener("click", () => {
+      _summaryPalette = _summaryPalette.filter((entry) => entry !== color);
+      refreshPaletteControls();
+      saveSummaryPalette();
+    });
+    item.append(use, edit, remove);
+    palette.appendChild(item);
+  }
+}
+
+summaryVisual?.addEventListener("beforeinput", handleVisualBeforeInput);
+
+document.addEventListener("selectionchange", () => {
+  if (summaryIsOpen()) rememberVisualSelection();
+});
+const preserveSummarySelection = () => { rememberVisualSelection(); };
+summaryToolbar?.addEventListener("mousedown", preserveSummarySelection);
+summaryHighlightMenu?.addEventListener("mousedown", preserveSummarySelection);
 
 condensedInput?.addEventListener("input", updateCondensedButtons);
-summaryInput?.addEventListener("input", updateSummaryButtons);
-
-condensedRevertBtn?.addEventListener("click", () => {
-  if (condensedInput) condensedInput.value = _savedCondensed;
-  updateCondensedButtons();
+summaryInput?.addEventListener("input", () => {
+  clearVisualHistory();
+  updateSummaryButtons();
+  if (_summaryMode === "markdown") renderVisual();
 });
-condensedSaveBtn?.addEventListener("click", () => saveCondensedSummary());
-
 summaryRevertBtn?.addEventListener("click", () => {
-  if (summaryInput) summaryInput.value = _savedSummary;
+  clearVisualHistory();
+  summaryInput.value = _savedSummary;
+  renderVisual();
   updateSummaryButtons();
 });
+condensedRevertBtn?.addEventListener("click", () => { condensedInput.value = _savedCondensed; updateCondensedButtons(); });
+condensedSaveBtn?.addEventListener("click", () => saveCondensedSummary());
 summarySaveBtn?.addEventListener("click", () => saveMainSummary());
+summaryModeVisual?.addEventListener("click", () => setSummaryMode("visual"));
+summaryModeMarkdown?.addEventListener("click", () => setSummaryMode("markdown"));
 
-// ── Header icon toggle ──────────────────────────────────────────────────────
+summaryToolbar?.addEventListener("click", (e) => {
+  const button = e.target.closest("button[data-format]");
+  if (!button) return;
+  e.preventDefault();
+  const format = button.dataset.format;
+  if (["bold", "italic", "underline", "strike"].includes(format)) applyInlineFormat(format);
+  else applyBlockFormat(format);
+});
+summaryToolbar?.querySelector("select[data-format]")?.addEventListener("change", (e) => {
+  applyBlockFormat(e.target.value);
+  e.target.value = "normal";
+});
+
+summaryHighlightMenu?.querySelector(".summary-palette-picker")?.addEventListener("input", (e) => updatePaletteFromPicker(e.target));
+summaryHighlightMenu?.querySelector(".summary-palette-remove")?.addEventListener("click", removeHighlight);
+$("summary-highlight-button")?.addEventListener("click", (e) => {
+  e.preventDefault();
+  if (summaryHighlightMenu) summaryHighlightMenu.hidden = !summaryHighlightMenu.hidden;
+  refreshPaletteControls();
+});
+
+document.addEventListener("click", (e) => {
+  if (summaryHighlightMenu && !summaryHighlightMenu.hidden && !summaryHighlightMenu.contains(e.target) && e.target.id !== "summary-highlight-button") summaryHighlightMenu.hidden = true;
+});
 
 $("summary-toggle-btn")?.addEventListener("click", async () => {
   if (summaryIsOpen()) {
@@ -335,73 +663,50 @@ $("summary-toggle-btn")?.addEventListener("click", async () => {
       if (result === "save") await saveAllUnsaved();
     }
     returnFromSummaryToChat();
-  } else if (state.activeId) {
-    openSummaryForConversation(state.activeId);
-  }
+  } else if (state.activeId) openSummaryForConversation(state.activeId);
 });
-
-// ── Sidebar hover popup for condensed summary ───────────────────────────────
 
 let _hintPopup = null;
 let _hintHideTimer = null;
 let _hintLoadAbort = null;
-
 function createSummaryPopup() {
   const popup = document.createElement("div");
   popup.className = "summary-hint-popup";
   popup.hidden = true;
   document.body.appendChild(popup);
   popup.addEventListener("mouseenter", () => clearTimeout(_hintHideTimer));
-  popup.addEventListener("mouseleave", () => hideSummaryPopup());
+  popup.addEventListener("mouseleave", hideSummaryPopup);
   return popup;
 }
-
 function showSummaryPopup(anchorEl, text) {
   if (!_hintPopup) _hintPopup = createSummaryPopup();
   _hintPopup.textContent = text;
   _hintPopup.hidden = false;
   clearTimeout(_hintHideTimer);
-
   const r = anchorEl.getBoundingClientRect();
   const pw = _hintPopup.offsetWidth;
   const ph = _hintPopup.offsetHeight;
-  let left = r.left;
-  if (left + pw > window.innerWidth - 8) left = window.innerWidth - pw - 8;
-  if (left < 8) left = 8;
+  let left = Math.min(r.left, window.innerWidth - pw - 8);
   let top = r.bottom + 4;
   if (top + ph > window.innerHeight - 8) top = r.top - ph - 4;
-  _hintPopup.style.left = `${left}px`;
-  _hintPopup.style.top = `${top}px`;
+  _hintPopup.style.left = `${Math.max(8, left)}px`;
+  _hintPopup.style.top = `${Math.max(8, top)}px`;
 }
-
 function hideSummaryPopup() {
   clearTimeout(_hintHideTimer);
-  _hintHideTimer = setTimeout(() => {
-    if (_hintPopup) _hintPopup.hidden = true;
-    if (_hintLoadAbort) { _hintLoadAbort.abort(); _hintLoadAbort = null; }
-  }, 200);
+  _hintHideTimer = setTimeout(() => { if (_hintPopup) _hintPopup.hidden = true; if (_hintLoadAbort) { _hintLoadAbort.abort(); _hintLoadAbort = null; } }, 200);
 }
-
 document.addEventListener("mouseover", async (e) => {
   const hint = e.target.closest(".conv-summary-hint");
-  if (!hint) return;
-  const convId = hint.dataset.convId;
-  if (!convId) return;
-
+  if (!hint || !hint.dataset.convId) return;
   clearTimeout(_hintHideTimer);
   if (_hintLoadAbort) _hintLoadAbort.abort();
   _hintLoadAbort = new AbortController();
-
   try {
-    const data = await apiGetSummary(convId);
+    const data = await apiGetSummary(hint.dataset.convId);
     if (_hintLoadAbort?.signal.aborted) return;
     const text = (data.condensed_summary || "").trim();
     if (text) showSummaryPopup(hint, text);
-  } catch { /* aborted or network error */ }
+  } catch (_) {}
 });
-
-document.addEventListener("mouseout", (e) => {
-  const hint = e.target.closest(".conv-summary-hint");
-  if (!hint) return;
-  hideSummaryPopup();
-});
+document.addEventListener("mouseout", (e) => { if (e.target.closest(".conv-summary-hint")) hideSummaryPopup(); });
