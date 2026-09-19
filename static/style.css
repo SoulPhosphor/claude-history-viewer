@@ -103,6 +103,46 @@
   --summary-author-personal-color: var(--accent);
   --summary-author-ai-color: #8b5cf6;
   --summary-author-collaborative-color: #f59e0b;
+  /* Chat-header label placement. With "Show Labels in Chat Header" on, the
+     header squares render as their own line under the title; these variables
+     keep that row lined up with the title and the date/messages line below. */
+  --header-label-row-gap: 4px;
+  --thread-title-square-margin: 2px;
+  /* Settings page switches. One set of variables drives every switch so they
+     all look and move alike and the whole look rethemes in one place. */
+  --switch-width: 40px;
+  --switch-height: 22px;
+  --switch-padding: 2px;
+  --switch-radius: 999px;
+  --switch-border-width: 1px;
+  --switch-off-bg: #cfc8be;
+  --switch-off-border: var(--border);
+  --switch-on-bg: var(--accent);
+  --switch-on-border: var(--accent);
+  --switch-thumb-size: 18px;
+  --switch-thumb-color: #ffffff;
+  --switch-thumb-off-color: #ffffff;
+  --switch-thumb-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.25),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.12),
+    inset 0 1px 1px rgba(255, 255, 255, 0.4);
+  --switch-track-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.18);
+  --switch-focus-ring: var(--accent);
+  --switch-focus-width: 2px;
+  --switch-focus-offset: 2px;
+  --switch-transition: 0.18s ease;
+  /* Settings page layout: the text column has a fixed flex basis so every
+     switch on the page starts at the same distance from the left edge no
+     matter how long its label is. */
+  --settings-text-min-width: 300px;
+  --settings-setting-gap: 18px;
+  --settings-setting-gap-y: 14px;
+  --settings-setting-title-weight: 600;
+  --settings-setting-subtext-color: var(--muted);
+  --settings-setting-subtext-size: 0.85rem;
+  --settings-setting-subtext-gap: 2px;
+  --settings-section-gap: 18px;
+  --settings-section-title-gap: 12px;
 }
 
 .summary-editor { display: flex; flex-direction: column; gap: var(--summary-editor-gap); }
