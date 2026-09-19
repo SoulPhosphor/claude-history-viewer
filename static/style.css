@@ -103,6 +103,53 @@
   --summary-author-personal-color: var(--accent);
   --summary-author-ai-color: #8b5cf6;
   --summary-author-collaborative-color: #f59e0b;
+  /* ── Bookmarks ────────────────────────────────────────────────────────────
+     One set of variables drives every bookmark surface: the per-message icon,
+     the title beside the date/time, the header control, the compact bar and
+     the sidebar panel. Retheme or resize any of it from here. */
+  --bookmark-icon-size: 16px;
+  --bookmark-icon-hit-size: 26px;
+  --bookmark-nav-icon-size: 20px;
+  --bookmark-nav-hit-size: 32px;
+  /* Idle icon colour, and the colour once a message is bookmarked (the star). */
+  --bookmark-icon-color: var(--muted);
+  --bookmark-icon-hover-color: var(--accent);
+  --bookmark-active-color: var(--accent);
+  --bookmark-title-size: var(--message-time-size);
+  --bookmark-title-color: var(--accent);
+  --bookmark-title-empty-color: var(--muted);
+  --bookmark-title-gap: 8px;
+  --bookmark-title-max: 240px;
+  --bookmark-input-bg: var(--bg);
+  --bookmark-input-border: var(--border);
+  --bookmark-input-focus-border: var(--accent);
+  --bookmark-input-color: var(--text);
+  /* Little "name this bookmark" dialog popover. */
+  --bookmark-dialog-bg: var(--bg);
+  --bookmark-dialog-border: var(--border);
+  --bookmark-dialog-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  --bookmark-dialog-radius: 8px;
+  --bookmark-dialog-padding: 8px;
+  --bookmark-dialog-width: 220px;
+  /* Compact bar (2–4 bookmarks) beneath the chat header. */
+  --bookmark-bar-bg: var(--sidebar-bg);
+  --bookmark-bar-border: var(--border);
+  --bookmark-bar-padding: 6px 10px;
+  --bookmark-bar-gap: 14px;
+  --bookmark-bar-link-size: 12.5px;
+  --bookmark-bar-link-color: var(--accent);
+  --bookmark-bar-link-max: 180px;
+  --bookmark-bar-close-color: var(--muted);
+  /* Sidebar panel (5+ bookmarks). */
+  --bookmark-panel-bg: var(--sidebar-bg);
+  --bookmark-panel-padding: 12px;
+  --bookmark-panel-title-size: 14px;
+  --bookmark-panel-title-weight: 600;
+  --bookmark-panel-title-color: var(--text);
+  --bookmark-panel-item-size: 13px;
+  --bookmark-panel-item-color: var(--accent);
+  --bookmark-panel-item-gap: 1.4em;
+  --bookmark-panel-close-color: var(--muted);
   /* Chat-header label placement. With "Show Labels in Chat Header" on, the
      header squares render as their own line under the title; these variables
      keep that row lined up with the title and the date/messages line below. */
@@ -234,6 +281,8 @@ body.sidebar-collapsed #sidebar-footer {
   background: var(--sidebar-bg);
   border-right: 1px solid var(--border);
   overflow: hidden;
+  /* Anchor for the temporary bookmark panel, which overlays the sidebar. */
+  position: relative;
 }
 
 .sidebar-header {
@@ -1334,6 +1383,9 @@ kbd {
   font-weight: 600;
   letter-spacing: 0.02em;
   color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .message.user .message-role {
@@ -1344,13 +1396,257 @@ kbd {
   color: var(--accent);
 }
 
+/* Meta row carries the date/time (and any model name), then the bookmark
+   title at its right end. Empty (no time, not bookmarked) it takes no space. */
+.message-meta-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--bookmark-title-gap);
+  align-self: flex-start;
+}
+.message.user .message-meta-row {
+  align-self: flex-end;
+}
+.message-meta-row:empty {
+  display: none;
+}
+
 .message-time {
   font-size: var(--message-time-size);
   color: var(--message-time-color);
-  align-self: flex-start;
 }
-.message.user .message-time {
-  align-self: flex-end;
+
+/* ── Bookmarks ──────────────────────────────────────────────────────────────
+   Every bookmark glyph, whether the idle bookmark or the active star, is the
+   same `.bookmark-msg-icon` sized from the variables above. */
+.bookmark-msg-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--bookmark-icon-hit-size);
+  height: var(--bookmark-icon-hit-size);
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--bookmark-icon-color);
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.bookmark-msg-btn:hover {
+  color: var(--bookmark-icon-hover-color);
+  background: var(--hover);
+}
+.bookmark-msg-btn.active {
+  color: var(--bookmark-active-color);
+}
+.bookmark-msg-icon {
+  width: var(--bookmark-icon-size);
+  height: var(--bookmark-icon-size);
+  display: block;
+}
+
+/* Bookmark title beside the date/time. Click it to rename in place. */
+.bookmark-title {
+  font-size: var(--bookmark-title-size);
+  color: var(--bookmark-title-color);
+  max-width: var(--bookmark-title-max);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+}
+.bookmark-title:not(.has-name) {
+  color: var(--bookmark-title-empty-color);
+  font-style: italic;
+}
+.bookmark-title.editing {
+  overflow: visible;
+}
+.bookmark-title-input {
+  font-size: var(--bookmark-title-size);
+  color: var(--bookmark-input-color);
+  background: var(--bookmark-input-bg);
+  border: 1px solid var(--bookmark-input-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  max-width: var(--bookmark-title-max);
+  font-family: inherit;
+}
+.bookmark-title-input:focus {
+  outline: none;
+  border-color: var(--bookmark-input-focus-border);
+}
+
+/* Little "name this bookmark" dialog shown when a bookmark is first added. */
+.bookmark-name-dialog {
+  position: fixed;
+  z-index: 1000;
+  width: var(--bookmark-dialog-width);
+  background: var(--bookmark-dialog-bg);
+  border: 1px solid var(--bookmark-dialog-border);
+  border-radius: var(--bookmark-dialog-radius);
+  box-shadow: var(--bookmark-dialog-shadow);
+  padding: var(--bookmark-dialog-padding);
+}
+.bookmark-name-input {
+  width: 100%;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--bookmark-input-color);
+  background: var(--bookmark-input-bg);
+  border: 1px solid var(--bookmark-input-border);
+  border-radius: 5px;
+  padding: 6px 8px;
+}
+.bookmark-name-input:focus {
+  outline: none;
+  border-color: var(--bookmark-input-focus-border);
+}
+
+/* Header control that opens the bookmark list. */
+#bookmarks-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--bookmark-nav-hit-size);
+  height: var(--bookmark-nav-hit-size);
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--bookmark-icon-color);
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+#bookmarks-toggle-btn:hover {
+  color: var(--bookmark-icon-hover-color);
+  background: var(--hover);
+}
+.bookmark-nav-icon {
+  width: var(--bookmark-nav-icon-size);
+  height: var(--bookmark-nav-icon-size);
+  display: block;
+}
+
+/* Compact bar (2–4 bookmarks) beneath the chat header. */
+/* A class display value beats the UA [hidden] rule, so restore it explicitly. */
+.bookmark-bar[hidden],
+.bookmark-panel[hidden] {
+  display: none;
+}
+.bookmark-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--bookmark-bar-gap);
+  padding: var(--bookmark-bar-padding);
+  background: var(--bookmark-bar-bg);
+  border-bottom: 1px solid var(--bookmark-bar-border);
+  flex-shrink: 0;
+}
+.bookmark-bar-links {
+  display: flex;
+  align-items: center;
+  gap: var(--bookmark-bar-gap);
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.bookmark-bar-link {
+  font-size: var(--bookmark-bar-link-size);
+  color: var(--bookmark-bar-link-color);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  max-width: var(--bookmark-bar-link-max);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+}
+.bookmark-bar-link:hover {
+  text-decoration: underline;
+}
+.bookmark-bar-close {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--bookmark-bar-close-color);
+  font-size: 14px;
+  line-height: 1;
+  padding: 4px;
+  border-radius: 4px;
+}
+.bookmark-bar-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+/* Sidebar panel (5+ bookmarks): a temporary overlay over the whole sidebar. */
+.bookmark-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--bookmark-panel-bg);
+  padding: var(--bookmark-panel-padding);
+}
+.bookmark-panel-top {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+.bookmark-panel-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--bookmark-panel-close-color);
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px;
+  border-radius: 4px;
+}
+.bookmark-panel-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.bookmark-panel-title {
+  text-align: center;
+  font-size: var(--bookmark-panel-title-size);
+  font-weight: var(--bookmark-panel-title-weight);
+  color: var(--bookmark-panel-title-color);
+  margin-bottom: var(--bookmark-panel-item-gap);
+  flex-shrink: 0;
+}
+.bookmark-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bookmark-panel-item-gap);
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+.bookmark-panel-item {
+  text-align: left;
+  font-size: var(--bookmark-panel-item-size);
+  color: var(--bookmark-panel-item-color);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+  line-height: 1.4;
+  /* Wrap onto at most one extra line, then truncate with an ellipsis. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.bookmark-panel-item:hover {
+  text-decoration: underline;
 }
 
 .message-body {

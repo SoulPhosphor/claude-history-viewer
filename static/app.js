@@ -48,6 +48,10 @@ const state = {
   // preview, by changing view/search, and after an Apply.
   bulkPreview: null,
   activeLabels: [], // the open conversation's labels ([{id,name,color}, …])
+  // The open conversation's message bookmarks ([{id, seq, name, source}, …]).
+  // Each bookmark's id is stable across renames; the list is replaced whenever
+  // a conversation opens.
+  bookmarks: [],
   scrollByConversation: {},
   // Which side the sidebar toggle shows: "claude" or "chatgpt". Persisted so
   // reopening the app returns to the side last viewed.
@@ -2264,6 +2268,12 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   state.activeFolderPinned = !!conv.folder_pinned;
 
   setThreadTitle(conv.title);
+  // Bookmarks for this conversation. Reset any open bookmark UI from a prior
+  // conversation first (we never carry an open bar/panel across a switch), then
+  // adopt this conversation's list.
+  if (typeof resetBookmarksForConversation === "function") {
+    resetBookmarksForConversation(data.bookmarks || []);
+  }
   state.activeLabels = conv.labels || [];
   renderHeaderLabel(conv.id, state.activeLabels);
   const ts = formatDate(conv.update_time || conv.create_time);
@@ -2331,15 +2341,28 @@ async function openConversation(id, clickedEl, targetSeq = null) {
 
     const roleEl = document.createElement("div");
     roleEl.className = "message-role";
-    roleEl.textContent = label;
+    const nameEl = document.createElement("span");
+    nameEl.className = "message-role-name";
+    nameEl.textContent = label;
+    roleEl.appendChild(nameEl);
     div.insertBefore(roleEl, div.firstChild);
 
+    // ── Bookmark control + title ────────────────────────────────────────────
+    // The per-message bookmark icon sits beside the name (left of it on the
+    // user's own messages, right of it on the assistant's), and the bookmark
+    // title (when set) rides to the right of the date/time line.
     const timeText = formatMessageTime(msg.create_time);
+    const metaRow = document.createElement("div");
+    metaRow.className = "message-meta-row";
     if (timeText) {
-      const timeEl = document.createElement("div");
+      const timeEl = document.createElement("span");
       timeEl.className = "message-time";
       timeEl.textContent = timeText;
-      roleEl.after(timeEl);
+      metaRow.appendChild(timeEl);
+    }
+    roleEl.after(metaRow);
+    if (msg.seq != null && typeof decorateMessageBookmark === "function") {
+      decorateMessageBookmark({ div, roleEl, nameEl, metaRow, seq: msg.seq, role: msg.role });
     }
 
     div.appendChild(bodyEl);
