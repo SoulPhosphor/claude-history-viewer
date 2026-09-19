@@ -64,6 +64,42 @@ class SummaryEditorBehaviorTests(unittest.TestCase):
             result = run_node(f"process.stdout.write(JSON.stringify(c.replaceRange({json.dumps(source)}, {start}, {start + len(visible)}, {json.dumps(replacement)})));" )
             self.assertEqual(result, expected)
 
+    def test_remove_highlight_and_toggle_inline_formats_off(self):
+        cases = [
+            ("==important==", "highlight", "important"),
+            ("=={#ff0000}important==", "highlight", "important"),
+            ("**important**", "bold", "important"),
+            ("*important*", "italic", "important"),
+            ("++important++", "underline", "important"),
+            ("~~important~~", "strike", "important"),
+        ]
+        for source, kind, expected in cases:
+            start = source.index("important")
+            function = "removeHighlightRange" if kind == "highlight" else "toggleInlineFormat"
+            expression = f"c.{function}({json.dumps(source)}, {start}, {start + 9}" + (f", {json.dumps(kind)}" if kind != "highlight" else "") + ")"
+            result = run_node(f"process.stdout.write(JSON.stringify({expression}));")
+            self.assertEqual(result, expected)
+
+    def test_input_type_contract_covers_editing_and_blocks_unknown_types(self):
+        supported = [
+            "insertText", "insertReplacementText", "insertParagraph", "insertLineBreak",
+            "insertFromPaste", "insertFromPasteAsQuotation", "insertFromDrop",
+            "deleteContentBackward", "deleteContentForward", "deleteWordBackward",
+            "deleteWordForward", "deleteByCut", "deleteByDrag", "insertCompositionText",
+            "deleteCompositionText", "historyUndo", "historyRedo",
+        ]
+        result = run_node(f"process.stdout.write(JSON.stringify({{supported:{json.dumps(supported)}.every(c.isSupportedVisualInputType), unknown:c.isSupportedVisualInputType('formatBold')}}));")
+        self.assertTrue(result["supported"])
+        self.assertFalse(result["unknown"])
+
+    def test_old_flattened_visual_edit_path_is_not_wired_and_editor_functions_are_unique(self):
+        self.assertNotIn("patchVisualText", SUMMARY)
+        self.assertNotIn("visibleText", SUMMARY)
+        self.assertNotIn("sourcePositionForVisibleOffset", SUMMARY)
+        self.assertNotIn('summaryVisual?.addEventListener("input"', SUMMARY)
+        for name in ("sourceRangeFromSelection", "renderMarkdownSource", "refreshPaletteControls", "applyBlockFormat"):
+            self.assertEqual(SUMMARY.count(f"function {name}("), 1, name)
+
     def test_link_edit_does_not_touch_url(self):
         source = "Read [the documentation](https://example.com)."
         start = source.index("the documentation")

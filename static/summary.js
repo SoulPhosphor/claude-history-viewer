@@ -9,7 +9,8 @@ let _savedSummary = "";
 let _condensedAuthor = "";
 let _summaryAuthor = "";
 let _summaryMode = "visual";
-let _summaryVisualBeforeEdit = "";
+let _visualUndo = [];
+let _visualRedo = [];
 let _summaryPalette = ["#fff3a3", "#c9f7c5", "#c9e7ff", "#f5c9ff"];
 
 const summaryBodyEl = $("summary-body");
@@ -129,22 +130,6 @@ async function saveSummaryPalette() {
   await saveUiPreferences({ summaryHighlightPalette: _summaryPalette });
 }
 
-function refreshPaletteControls() {
-  if (!summaryHighlightMenu) return;
-  summaryHighlightMenu.querySelectorAll(".summary-palette-swatch").forEach((el) => el.remove());
-  for (const color of _summaryPalette) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "summary-palette-swatch";
-    button.dataset.color = color;
-    button.style.setProperty("--summary-swatch-color", color);
-    button.title = `Highlight ${color}`;
-    button.setAttribute("aria-label", `Highlight with ${color}`);
-    button.addEventListener("click", () => applyHighlight(color));
-    summaryHighlightMenu.insertBefore(button, summaryHighlightMenu.querySelector(".summary-palette-custom"));
-  }
-}
-
 function updatePaletteFromPicker(input) {
   const color = String(input.value || "").toLowerCase();
   if (!/^#[0-9a-f]{6}$/.test(color)) return;
@@ -154,51 +139,21 @@ function updatePaletteFromPicker(input) {
   applyHighlight(color);
 }
 
-function sourceRangeFromSelection() {
-  if (!summaryVisual || !window.getSelection) return null;
-  const selection = window.getSelection();
-  if (!selection || !selection.rangeCount || selection.isCollapsed) return null;
-  const range = selection.getRangeAt(0);
-  if (!summaryVisual.contains(range.startContainer) || !summaryVisual.contains(range.endContainer)) return null;
-  const point = (node, offset) => {
-    const leaf = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-    const span = leaf?.closest?.("[data-source-start]");
-    if (!span) return null;
-    const textOffset = node.nodeType === Node.TEXT_NODE ? offset : 0;
-    return Number(span.dataset.sourceStart) + textOffset;
-  };
-  const start = point(range.startContainer, range.startOffset);
-  const end = point(range.endContainer, range.endOffset);
-  if (start == null || end == null || start === end) return null;
-  return { start: Math.min(start, end), end: Math.max(start, end) };
-}
-
 function replaceSourceRange(start, end, replacement) {
   const source = summaryMarkdown();
-  summaryInput.value = source.slice(0, start) + replacement + source.slice(end);
+  const next = source.slice(0, start) + replacement + source.slice(end);
+  if (next === source) return;
+  _visualUndo.push(source);
+  _visualRedo = [];
+  summaryInput.value = next;
   renderVisual();
   updateSummaryButtons();
 }
 
-function wrapSelected(prefix, suffix, removePattern) {
+function applyInlineFormat(type) {
   const range = sourceRangeFromSelection();
   if (!range) return;
-  const source = summaryMarkdown();
-  const selected = source.slice(range.start, range.end);
-  const clean = removePattern ? selected.replace(removePattern, "$1") : selected;
-  if (clean !== selected) replaceSourceRange(range.start, range.end, clean);
-  else replaceSourceRange(range.start, range.end, prefix + selected + suffix);
-}
-
-function applyInlineFormat(type) {
-  const formats = {
-    bold: ["**", "**", /^\*\*(.*)\*\*$/s],
-    italic: ["*", "*", /^\*(.*)\*$/s],
-    underline: ["++", "++", /^\+\+(.*)\+\+$/s],
-    strike: ["~~", "~~", /^~~(.*)~~$/s],
-  };
-  const format = formats[type];
-  if (format) wrapSelected(format[0], format[1], format[2]);
+  commitVisualSource(summaryCore.toggleInlineFormat(summaryMarkdown(), range.start, range.end, type), range.start);
 }
 
 function applyHighlight(color) {
@@ -214,153 +169,13 @@ function applyHighlight(color) {
 function removeHighlight() {
   const range = sourceRangeFromSelection();
   if (!range) return;
-  const selected = summaryMarkdown().slice(range.start, range.end);
-  const clean = selected.replace(/^==(?:\{#[0-9a-f]{6}\})?(.*?)==$/is, "$1");
-  replaceSourceRange(range.start, range.end, clean);
+  commitVisualSource(summaryCore.removeHighlightRange(summaryMarkdown(), range.start, range.end), range.start);
   if (summaryHighlightMenu) summaryHighlightMenu.hidden = true;
-}
-
-function applyBlockFormat(type) {
-  const range = sourceRangeFromSelection();
-  if (!range) return;
-  const source = summaryMarkdown();
-  const blockStart = source.lastIndexOf("\n", range.start - 1) + 1;
-  const blockEndAt = source.indexOf("\n", range.end);
-  const blockEnd = blockEndAt < 0 ? source.length : blockEndAt;
-  const block = source.slice(blockStart, blockEnd);
-  let replacement = block;
-  if (type === "normal") replacement = block.replace(/^#{1,6}\s+/, "").replace(/^\s*[-*+]\s+/, "").replace(/^\s*\d+[.)]\s+/, "");
-  if (type === "heading1") replacement = `# ${block.replace(/^#{1,6}\s+/, "")}`;
-  if (type === "heading2") replacement = `## ${block.replace(/^#{1,6}\s+/, "")}`;
-  if (type === "heading3") replacement = `### ${block.replace(/^#{1,6}\s+/, "")}`;
-  if (type === "bullet") replacement = block.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/, "- ");
-  if (type === "numbered") replacement = block.replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/, "1. ");
-  replaceSourceRange(blockStart, blockEnd, replacement);
-}
-
-function visibleText(source) {
-  const root = document.createElement("div");
-  renderMarkdownSource(source, root);
-  return root.textContent || "";
-}
-
-function sourcePositionForVisibleOffset(root, visibleOffset) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let remaining = visibleOffset;
-  let node;
-  while ((node = walker.nextNode())) {
-    if (remaining <= node.nodeValue.length) {
-      const span = node.parentElement.closest("[data-source-start]");
-      return Number(span.dataset.sourceStart) + remaining;
-    }
-    remaining -= node.nodeValue.length;
-  }
-  const leaves = root.querySelectorAll("[data-source-end]");
-  return leaves.length ? Number(leaves[leaves.length - 1].dataset.sourceEnd) : 0;
-}
-
-function patchVisualText() {
-  if (!summaryVisual) return;
-  const before = _summaryVisualBeforeEdit;
-  const after = summaryVisual.textContent || "";
-  if (before === after) return;
-  let start = 0;
-  while (start < before.length && start < after.length && before[start] === after[start]) start++;
-  let beforeEnd = before.length;
-  let afterEnd = after.length;
-  while (beforeEnd > start && afterEnd > start && before[beforeEnd - 1] === after[afterEnd - 1]) {
-    beforeEnd--;
-    afterEnd--;
-  }
-  const source = summaryMarkdown();
-  const sourceStart = sourcePositionForVisibleOffset(summaryVisual, start);
-  const sourceEnd = sourcePositionForVisibleOffset(summaryVisual, beforeEnd);
-  replaceSourceRange(sourceStart, sourceEnd, after.slice(start, afterEnd));
-}
-
-function appendLeaf(root, text, start, end, tag = "span") {
-  const el = document.createElement(tag);
-  el.dataset.sourceStart = String(start);
-  el.dataset.sourceEnd = String(end);
-  el.textContent = text;
-  root.appendChild(el);
-  return el;
-}
-
-function renderInline(source, root, offset) {
-  const pattern = /(\*\*[^*\n]+\*\*|~~[^~\n]+~~|\+\+[^+\n]+\+\+|==(?:\{#[0-9a-fA-F]{6}\})?[^=\n]+==|\*[^*\n]+\*|`[^`\n]+`|\[[^\]]+\]\((?:https?:|mailto:|\/|#|\.\.?\/)[^)]+\))/g;
-  let cursor = 0;
-  let match;
-  while ((match = pattern.exec(source))) {
-    if (match.index > cursor) appendLeaf(root, source.slice(cursor, match.index), offset + cursor, offset + match.index);
-    const raw = match[0];
-    let tag = "span";
-    let text = raw;
-    if (raw.startsWith("**")) { tag = "strong"; text = raw.slice(2, -2); }
-    else if (raw.startsWith("~~")) { tag = "del"; text = raw.slice(2, -2); }
-    else if (raw.startsWith("++")) { tag = "u"; text = raw.slice(2, -2); }
-    else if (raw.startsWith("==")) {
-      tag = "mark";
-      const color = raw.match(/^==\{(#[0-9a-fA-F]{6})\}/)?.[1];
-      text = raw.replace(/^==(?:\{#[0-9a-fA-F]{6}\})?/, "").slice(0, -2);
-    } else if (raw.startsWith("*") && raw.endsWith("*")) { tag = "em"; text = raw.slice(1, -1); }
-    else if (raw.startsWith("`") && raw.endsWith("`")) { tag = "code"; text = raw.slice(1, -1); }
-    else if (raw.startsWith("[")) { tag = "span"; text = raw.slice(1, raw.indexOf("](")); }
-    const el = appendLeaf(root, text, offset + match.index, offset + match.index + raw.length, tag);
-    if (colorFromHighlight(raw)) el.style.setProperty("--summary-inline-highlight-color", colorFromHighlight(raw));
-    cursor = match.index + raw.length;
-  }
-  if (cursor < source.length) appendLeaf(root, source.slice(cursor), offset + cursor, offset + source.length);
-}
-
-function colorFromHighlight(raw) {
-  return raw.match(/^==\{(#[0-9a-fA-F]{6})\}/)?.[1] || "";
-}
-
-function renderMarkdownSource(source, root) {
-  root.replaceChildren();
-  const lines = source.split("\n");
-  let offset = 0;
-  for (const line of lines) {
-    const block = document.createElement("div");
-    block.className = "summary-visual-line";
-    block.dataset.sourceStart = String(offset);
-    block.dataset.sourceEnd = String(offset + line.length);
-    const heading = line.match(/^(#{1,3})\s+(.*)$/);
-    const bullet = line.match(/^(\s*)([-*+])\s+(.*)$/);
-    const numbered = line.match(/^(\s*)\d+[.)]\s+(.*)$/);
-    if (heading) {
-      const h = document.createElement(`h${heading[1].length}`);
-      h.dataset.sourceStart = String(offset + heading[1].length + 1);
-      h.dataset.sourceEnd = String(offset + line.length);
-      renderInline(heading[2], h, offset + heading[1].length + 1);
-      block.appendChild(h);
-    } else if (bullet || numbered) {
-      const list = document.createElement(numbered ? "ol" : "ul");
-      const item = document.createElement("li");
-      const content = (bullet || numbered)[numbered ? 2 : 3];
-      const contentStart = offset + line.indexOf(content);
-      item.dataset.sourceStart = String(contentStart);
-      item.dataset.sourceEnd = String(offset + line.length);
-      renderInline(content, item, contentStart);
-      list.appendChild(item);
-      block.appendChild(list);
-    } else if (line) {
-      const p = document.createElement("p");
-      renderInline(line, p, offset);
-      block.appendChild(p);
-    } else {
-      block.appendChild(document.createElement("br"));
-    }
-    root.appendChild(block);
-    offset += line.length + 1;
-  }
 }
 
 function renderVisual() {
   if (!summaryVisual) return;
   renderMarkdownSource(summaryMarkdown(), summaryVisual);
-  _summaryVisualBeforeEdit = summaryVisual.textContent || "";
 }
 
 function setSummaryMode(mode) {
@@ -619,33 +434,64 @@ function setVisualCaret(sourcePosition) {
   }
 }
 
-function commitVisualSource(source, caret) {
+function commitVisualSource(source, caret, recordHistory = true) {
+  const previous = summaryMarkdown();
+  if (source === previous) return;
+  if (recordHistory) _visualUndo.push(previous);
+  _visualRedo = [];
   summaryInput.value = source;
   renderVisual();
   updateSummaryButtons();
   setVisualCaret(caret);
 }
 
+function restoreVisualSource(source) {
+  summaryInput.value = source;
+  renderVisual();
+  updateSummaryButtons();
+}
+
 function handleVisualBeforeInput(event) {
   if (!summaryVisual || !summaryInput) return;
-  const range = sourceRangeFromSelection();
-  if (!range) return;
+  const inputType = event.inputType || "";
+  if (!summaryCore.isSupportedVisualInputType(inputType)) {
+    event.preventDefault();
+    return;
+  }
   const source = summaryMarkdown();
+  if (inputType === "historyUndo" || inputType === "historyRedo") {
+    const from = inputType === "historyUndo" ? _visualUndo : _visualRedo;
+    const to = inputType === "historyUndo" ? _visualRedo : _visualUndo;
+    if (!from.length) { event.preventDefault(); return; }
+    event.preventDefault();
+    to.push(source);
+    restoreVisualSource(from.pop());
+    return;
+  }
+  const range = sourceRangeFromSelection();
+  if (!range) { event.preventDefault(); return; }
   let start = range.start;
   let end = range.end;
   let replacement = event.data || "";
-  if (event.inputType === "insertParagraph") replacement = "\n";
-  else if (event.inputType === "deleteContentBackward" || event.inputType === "deleteContentForward") {
+  if (inputType === "insertFromPaste" || inputType === "insertFromPasteAsQuotation" || inputType === "insertFromDrop") {
+    replacement = event.data || event.dataTransfer?.getData("text/plain") || "";
+  } else if (inputType === "insertParagraph" || inputType === "insertLineBreak") {
+    replacement = "\n";
+  } else if (inputType.startsWith("delete")) {
     if (start === end) {
       const segments = summaryCore.visibleSegments(source).filter((segment) => segment.kind !== "newline");
       const segment = segments.find((item) => start >= item.sourceStart && start <= item.sourceEnd);
-      if (!segment) return;
-      if (event.inputType === "deleteContentBackward" && start > segment.sourceStart) { start -= 1; }
-      else if (event.inputType === "deleteContentForward" && start < segment.sourceEnd) { end += 1; }
-      else return;
+      if (!segment) { event.preventDefault(); return; }
+      if (inputType === "deleteContentBackward" || inputType === "deleteWordBackward") {
+        start = inputType === "deleteWordBackward" ? Math.max(segment.sourceStart, source.lastIndexOf(" ", start - 1) + 1) : start - 1;
+      } else if (inputType === "deleteContentForward" || inputType === "deleteWordForward") {
+        end = inputType === "deleteWordForward" ? Math.min(segment.sourceEnd, source.indexOf(" ", start) < 0 ? segment.sourceEnd : source.indexOf(" ", start)) : start + 1;
+      }
     }
     replacement = "";
-  } else if (!["insertText", "insertReplacementText", "deleteByCut"].includes(event.inputType)) return;
+  } else if (inputType === "insertCompositionText" || inputType === "deleteCompositionText") {
+    replacement = event.data || "";
+  }
   event.preventDefault();
   commitVisualSource(summaryCore.replaceRange(source, start, end, replacement), start + replacement.length);
 }
@@ -701,12 +547,9 @@ function refreshPaletteControls() {
 }
 
 summaryVisual?.addEventListener("beforeinput", handleVisualBeforeInput);
-summaryVisual?.addEventListener("input", (event) => event.preventDefault());
 
 condensedInput?.addEventListener("input", updateCondensedButtons);
 summaryInput?.addEventListener("input", () => { updateSummaryButtons(); if (_summaryMode === "markdown") renderVisual(); });
-summaryVisual?.addEventListener("focus", () => { _summaryVisualBeforeEdit = summaryVisual.textContent || ""; });
-summaryVisual?.addEventListener("input", patchVisualText);
 summaryRevertBtn?.addEventListener("click", () => { summaryInput.value = _savedSummary; renderVisual(); updateSummaryButtons(); });
 condensedRevertBtn?.addEventListener("click", () => { condensedInput.value = _savedCondensed; updateCondensedButtons(); });
 condensedSaveBtn?.addEventListener("click", () => saveCondensedSummary());

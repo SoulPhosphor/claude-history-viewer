@@ -119,6 +119,38 @@
     return source.slice(0, start) + value + source.slice(end);
   }
 
+  function inlineTokenForRange(source, start, end) {
+    return inlineSegments(source).find((segment) => segment.tokenStart != null && segment.tokenStart <= start && segment.tokenEnd >= end && segment.kind !== "plain") || null;
+  }
+
+  function isSupportedVisualInputType(inputType) {
+    return [
+      "insertText", "insertReplacementText", "insertParagraph", "insertLineBreak",
+      "insertFromPaste", "insertFromPasteAsQuotation", "insertFromDrop",
+      "deleteContentBackward", "deleteContentForward", "deleteWordBackward",
+      "deleteWordForward", "deleteByCut", "deleteByDrag", "insertCompositionText",
+      "deleteCompositionText", "historyUndo", "historyRedo",
+    ].includes(inputType);
+  }
+
+  function toggleInlineFormat(source, start, end, kind) {
+    const markers = { bold: ["**", "**"], italic: ["*", "*"], underline: ["++", "++"], strike: ["~~", "~~"] }[kind];
+    if (!markers) return source;
+    const token = inlineTokenForRange(source, start, end);
+    if (token && token.kind === kind && token.sourceStart === start && token.sourceEnd === end) {
+      return replaceRange(source, token.tokenStart, token.tokenEnd, source.slice(start, end));
+    }
+    return replaceRange(source, start, end, markers[0] + source.slice(start, end) + markers[1]);
+  }
+
+  function removeHighlightRange(source, start, end) {
+    const token = inlineTokenForRange(source, start, end);
+    if (token && token.kind === "highlight" && token.sourceStart === start && token.sourceEnd === end) {
+      return replaceRange(source, token.tokenStart, token.tokenEnd, source.slice(start, end));
+    }
+    return source;
+  }
+
   function deleteVisibleCharacter(source, sourcePosition, direction) {
     const segments = visibleSegments(source).filter((segment) => segment.kind !== "newline");
     const index = segments.findIndex((segment) => sourcePosition >= segment.sourceStart && sourcePosition <= segment.sourceEnd);
@@ -129,5 +161,5 @@
     return source;
   }
 
-  return { inlineSegments, sourceLines, visibleContent, visibleSegments, visibleRangeToSource, replaceRange, applyBlockFormat, deleteVisibleCharacter };
+  return { inlineSegments, inlineTokenForRange, isSupportedVisualInputType, toggleInlineFormat, removeHighlightRange, sourceLines, visibleContent, visibleSegments, visibleRangeToSource, replaceRange, applyBlockFormat, deleteVisibleCharacter };
 });
