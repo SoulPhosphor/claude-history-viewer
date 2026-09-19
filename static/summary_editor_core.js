@@ -196,7 +196,7 @@
 
   function toggleInlineFormat(source, start, end, kind) {
     const markers = { bold: ["**", "**"], italic: ["*", "*"], underline: ["++", "++"], strike: ["~~", "~~"] }[kind];
-    if (!markers) return source;
+    if (!markers || start === end) return source;
     const token = inlineTokenForRange(source, start, end);
     if (token && token.kind === kind && start >= token.sourceStart && end <= token.sourceEnd) {
       return removeTokenFormatting(source, token, start, end);
@@ -214,7 +214,9 @@
       if (token.kind === "italicStrike" && kind === "italic") return replaceRange(source, token.tokenStart, token.tokenEnd, `~~${source.slice(start, end)}~~`);
       if (token.kind === "italicStrike" && kind === "strike") return replaceRange(source, token.tokenStart, token.tokenEnd, `*${source.slice(start, end)}*`);
     }
-    if (token && token.kind === kind) return safeReplaceVisibleRange(source, start, end, source.slice(start, end));
+    // Do not create nested syntax unless the parser has an explicit combined
+    // token for it. The toolbar must never create source it cannot render.
+    if (token) return source;
     return safeReplaceVisibleRange(source, start, end, markers[0] + source.slice(start, end) + markers[1]);
   }
 
@@ -239,21 +241,42 @@
   }
 
   function removeHighlightRange(source, start, end) {
+    if (start === end) return source;
     const token = inlineTokenForRange(source, start, end);
     if (token && token.kind === "highlight") return removeTokenFormatting(source, token, start, end);
     return source;
   }
 
   function replaceHighlightRange(source, start, end, color) {
+    if (start === end) return source;
     const token = inlineTokenForRange(source, start, end);
+    if (token && token.kind !== "highlight") return source;
     if (token && token.kind === "highlight" && start >= token.sourceStart && end <= token.sourceEnd) {
       const updated = { ...token, color: color || null };
       if (start === token.sourceStart && end === token.sourceEnd) {
         return replaceRange(source, token.tokenStart, token.tokenEnd, formatTokenContent(updated, source.slice(start, end)));
       }
+      const content = source.slice(token.sourceStart, token.sourceEnd);
+      const before = formatWithWhitespace(token, content.slice(0, start - token.sourceStart));
+      const selected = formatTokenContent(updated, content.slice(start - token.sourceStart, end - token.sourceStart));
+      const after = formatWithWhitespace(token, content.slice(end - token.sourceStart));
+      return replaceRange(source, token.tokenStart, token.tokenEnd, before + selected + after);
     }
     const replacement = `==${color ? `{${color}}` : ""}${source.slice(start, end)}==`;
     return safeReplaceVisibleRange(source, start, end, replacement);
+  }
+
+  function insertParagraph(source, start, end) {
+    const token = inlineTokenForRange(source, start, end);
+    if (token && start >= token.sourceStart && end <= token.sourceEnd) {
+      const content = source.slice(token.sourceStart, token.sourceEnd);
+      const beforeContent = content.slice(0, start - token.sourceStart);
+      const afterContent = content.slice(end - token.sourceStart);
+      const before = beforeContent ? formatTokenContent(token, beforeContent) : "";
+      const after = afterContent ? formatTokenContent(token, afterContent) : "";
+      return replaceRange(source, token.tokenStart, token.tokenEnd, `${before}\n${after}`);
+    }
+    return safeReplaceVisibleRange(source, start, end, "\n");
   }
 
   function deleteVisibleCharacter(source, sourcePosition, direction) {
@@ -266,5 +289,5 @@
     return source;
   }
 
-  return { inlineSegments, inlineTokenForRange, isSupportedVisualInputType, toggleInlineFormat, removeHighlightRange, replaceHighlightRange, safeReplaceVisibleRange, mapElementBoundary, sourceLines, visibleContent, visibleSegments, visibleRangeToSource, replaceRange, applyBlockFormat, deleteVisibleCharacter };
+  return { inlineSegments, inlineTokenForRange, isSupportedVisualInputType, toggleInlineFormat, removeHighlightRange, replaceHighlightRange, insertParagraph, safeReplaceVisibleRange, mapElementBoundary, sourceLines, visibleContent, visibleSegments, visibleRangeToSource, replaceRange, applyBlockFormat, deleteVisibleCharacter };
 });

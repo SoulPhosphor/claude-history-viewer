@@ -8,6 +8,7 @@ ROOT = Path(__file__).parents[1]
 SUMMARY = (ROOT / "static/summary.js").read_text()
 INDEX = (ROOT / "static/index.html").read_text()
 CORE = "const c=require('./static/summary_editor_core.js');"
+CORE_SOURCE = (ROOT / "static/summary_editor_core.js").read_text()
 
 
 def run_node(expression):
@@ -269,6 +270,66 @@ class SummaryEditorBehaviorTests(unittest.TestCase):
         for source, start, end, replacement, expected in cases:
             result = run_node(f"process.stdout.write(JSON.stringify(c.safeReplaceVisibleRange({json.dumps(source)}, {start}, {end}, {json.dumps(replacement)})));" )
             self.assertEqual(result, expected)
+
+    def test_collapsed_inline_commands_are_noops(self):
+        for source in ("plain text", "**important**"):
+            position = source.index("text") if "text" in source else source.index("important") + 2
+            for kind in ("bold", "italic", "underline", "strike"):
+                result = run_node(f"process.stdout.write(JSON.stringify(c.toggleInlineFormat({json.dumps(source)}, {position}, {position}, {json.dumps(kind)})));" )
+                self.assertEqual(result, source)
+            for function in ("removeHighlightRange",):
+                result = run_node(f"process.stdout.write(JSON.stringify(c.{function}({json.dumps(source)}, {position}, {position})));" )
+                self.assertEqual(result, source)
+            result = run_node(f"process.stdout.write(JSON.stringify(c.replaceHighlightRange({json.dumps(source)}, {position}, {position}, '#ff0000')));")
+            self.assertEqual(result, source)
+        self.assertIn("range.start === range.end", SUMMARY)
+
+    def test_formatted_enter_splits_tokens_without_raw_delimiters(self):
+        cases = [
+            ("**important**", "**im**\n**portant**", "bold"),
+            ("*important*", "*im*\n*portant*", "italic"),
+            ("==important==", "==im==\n==portant==", "highlight"),
+            ("=={#ff0000}important==", "=={#ff0000}im==\n=={#ff0000}portant==", "custom highlight"),
+            ("[important](https://example.com)", "[im](https://example.com)\n[portant](https://example.com)", "link"),
+            ("`important`", "`im`\n`portant`", "code"),
+        ]
+        for source, expected, _label in cases:
+            position = source.index("important") + 2
+            result = run_node(f"process.stdout.write(JSON.stringify(c.insertParagraph({json.dumps(source)}, {position}, {position})));" )
+            self.assertEqual(result, expected)
+            segments = run_node(f"process.stdout.write(JSON.stringify(c.visibleSegments({json.dumps(result)})));" )
+            self.assertFalse(any(segment["kind"] == "plain" and "**" in segment["text"] for segment in segments))
+
+    def test_partial_highlight_recolor_splits_existing_highlight(self):
+        result = run_node("process.stdout.write(JSON.stringify(c.replaceHighlightRange('==important text==', 2, 11, '#ff0000')));")
+        self.assertEqual(result, "=={#ff0000}important== ==text==")
+        result = run_node("process.stdout.write(JSON.stringify(c.replaceHighlightRange('=={#00ff00}important text==', 11, 20, '#ff0000')));")
+        self.assertEqual(result, "=={#ff0000}important== =={#00ff00}text==")
+
+    def test_unsupported_toolbar_combinations_are_noops(self):
+        cases = [
+            ("**important**", "underline"),
+            ("**important**", "highlight"),
+            ("[important](https://example.com)", "bold"),
+            ("`important`", "bold"),
+            ("==important==", "bold"),
+        ]
+        for source, kind in cases:
+            start = source.index("important")
+            result = run_node(f"process.stdout.write(JSON.stringify(c.toggleInlineFormat({json.dumps(source)}, {start}, {start + 9}, {json.dumps(kind)})));" )
+            self.assertEqual(result, source)
+        result = run_node("process.stdout.write(JSON.stringify(c.replaceHighlightRange('**important**', 2, 11, '#ff0000')));")
+        self.assertEqual(result, "**important**")
+        self.assertIn("Do not create nested syntax", CORE_SOURCE)
+
+    def test_toolbar_commands_use_saved_visual_selection(self):
+        self.assertIn("function rememberVisualSelection()", SUMMARY)
+        self.assertIn("function visualCommandRange()", SUMMARY)
+        self.assertIn("document.addEventListener(\"selectionchange\"", SUMMARY)
+        self.assertIn("summaryToolbar?.addEventListener(\"mousedown\"", SUMMARY)
+        self.assertIn("summaryHighlightMenu?.addEventListener(\"mousedown\"", SUMMARY)
+        for marker in ("applyInlineFormat", "applyHighlight", "removeHighlight", "applyBlockFormat"):
+            self.assertIn("visualCommandRange()", SUMMARY[SUMMARY.index(f"function {marker}"):])
 
 
 if __name__ == "__main__":

@@ -11,11 +11,13 @@ let _summaryAuthor = "";
 let _summaryMode = "visual";
 let _visualUndo = [];
 let _visualRedo = [];
+let _savedVisualSelection = null;
 let _summaryPalette = ["#fff3a3", "#c9f7c5", "#c9e7ff", "#f5c9ff"];
 
 function clearVisualHistory() {
   _visualUndo = [];
   _visualRedo = [];
+  _savedVisualSelection = null;
 }
 
 const summaryBodyEl = $("summary-body");
@@ -156,25 +158,25 @@ function replaceSourceRange(start, end, replacement) {
 }
 
 function applyInlineFormat(type) {
-  const range = sourceRangeFromSelection();
-  if (!range) return;
+  const range = visualCommandRange();
+  if (!range || range.start === range.end) return;
   commitVisualSource(summaryCore.toggleInlineFormat(summaryMarkdown(), range.start, range.end, type), range.start);
 }
 
 function applyHighlight(color) {
-  const range = sourceRangeFromSelection();
-  if (!range) return;
+  const range = visualCommandRange();
+  if (!range || range.start === range.end) return;
   const source = summaryMarkdown();
   const token = summaryCore.inlineTokenForRange(source, range.start, range.end);
-  if (token && token.kind !== "highlight" && token.sourceStart === range.start && token.sourceEnd === range.end) return;
+  if (token && token.kind !== "highlight") return;
   const next = summaryCore.replaceHighlightRange(source, range.start, range.end, color.toLowerCase() === "#fff3a3" ? "" : color.toLowerCase());
   commitVisualSource(next, range.start);
   if (summaryHighlightMenu) summaryHighlightMenu.hidden = true;
 }
 
 function removeHighlight() {
-  const range = sourceRangeFromSelection();
-  if (!range) return;
+  const range = visualCommandRange();
+  if (!range || range.start === range.end) return;
   commitVisualSource(summaryCore.removeHighlightRange(summaryMarkdown(), range.start, range.end), range.start);
   if (summaryHighlightMenu) summaryHighlightMenu.hidden = true;
 }
@@ -386,6 +388,16 @@ function sourceRangeFromSelection() {
   return { start: Math.min(start, end), end: Math.max(start, end) };
 }
 
+function rememberVisualSelection() {
+  const range = sourceRangeFromSelection();
+  if (range) _savedVisualSelection = range;
+  return range;
+}
+
+function visualCommandRange() {
+  return sourceRangeFromSelection() || _savedVisualSelection;
+}
+
 function appendMappedSegment(parent, segment) {
   if (segment.kind === "newline") {
     const br = document.createElement("br");
@@ -482,9 +494,11 @@ function commitVisualSource(source, caret, recordHistory = true) {
   renderVisual();
   updateSummaryButtons();
   setVisualCaret(caret);
+  _savedVisualSelection = { start: caret, end: caret };
 }
 
 function restoreVisualSource(source) {
+  _savedVisualSelection = null;
   summaryInput.value = source;
   renderVisual();
   updateSummaryButtons();
@@ -515,7 +529,9 @@ function handleVisualBeforeInput(event) {
   if (inputType === "insertFromPaste" || inputType === "insertFromPasteAsQuotation" || inputType === "insertFromDrop") {
     replacement = event.data || event.dataTransfer?.getData("text/plain") || "";
   } else if (inputType === "insertParagraph" || inputType === "insertLineBreak") {
-    replacement = "\n";
+    event.preventDefault();
+    commitVisualSource(summaryCore.insertParagraph(source, start, end), start + 1);
+    return;
   } else if (inputType.startsWith("delete")) {
     if (start === end) {
       const segments = summaryCore.visibleSegments(source).filter((segment) => segment.kind !== "newline");
@@ -537,7 +553,7 @@ function handleVisualBeforeInput(event) {
 }
 
 function applyBlockFormat(type) {
-  const range = sourceRangeFromSelection();
+  const range = visualCommandRange();
   if (!range) return;
   const next = summaryCore.applyBlockFormat(summaryMarkdown(), range.start, range.end, type);
   commitVisualSource(next, range.start);
@@ -587,6 +603,13 @@ function refreshPaletteControls() {
 }
 
 summaryVisual?.addEventListener("beforeinput", handleVisualBeforeInput);
+
+document.addEventListener("selectionchange", () => {
+  if (summaryIsOpen()) rememberVisualSelection();
+});
+const preserveSummarySelection = () => { rememberVisualSelection(); };
+summaryToolbar?.addEventListener("mousedown", preserveSummarySelection);
+summaryHighlightMenu?.addEventListener("mousedown", preserveSummarySelection);
 
 condensedInput?.addEventListener("input", updateCondensedButtons);
 summaryInput?.addEventListener("input", () => {
