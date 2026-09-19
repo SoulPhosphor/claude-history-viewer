@@ -303,7 +303,6 @@ function renderInline(source, root, offset) {
       tag = "mark";
       const color = raw.match(/^==\{(#[0-9a-fA-F]{6})\}/)?.[1];
       text = raw.replace(/^==(?:\{#[0-9a-fA-F]{6}\})?/, "").slice(0, -2);
-      if (color) root.style.setProperty("--summary-inline-highlight-color", color);
     } else if (raw.startsWith("*") && raw.endsWith("*")) { tag = "em"; text = raw.slice(1, -1); }
     else if (raw.startsWith("`") && raw.endsWith("`")) { tag = "code"; text = raw.slice(1, -1); }
     else if (raw.startsWith("[")) { tag = "span"; text = raw.slice(1, raw.indexOf("](")); }
@@ -515,6 +514,194 @@ async function summaryNavigationGuard(proceedFn) {
 window.addEventListener("beforeunload", (e) => {
   if (summaryHasUnsavedChanges()) { e.preventDefault(); e.returnValue = ""; }
 });
+
+// ── Safe source-mapped visual editing overrides ─────────────────────────────
+// These helpers use explicit source segments and beforeinput. The browser is
+// never asked to serialize a contenteditable DOM back into Markdown.
+const summaryCore = window.SummaryEditorCore;
+
+function summarySourcePoint(node, offset) {
+  const leaf = node.nodeType === Node.TEXT_NODE ? node.parentElement?.closest("[data-source-start]") : node.closest?.("[data-source-start]");
+  if (leaf) {
+    if (leaf.tagName === "BR") return Number(offset ? leaf.dataset.sourceEnd : leaf.dataset.sourceStart);
+    return Number(leaf.dataset.sourceStart) + Math.min(offset, (node.textContent || "").length);
+  }
+  const parent = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+  const children = [...(parent?.childNodes || [])];
+  const child = children[offset] || children[offset - 1];
+  const mapped = child?.nodeType === Node.TEXT_NODE ? child.parentElement?.closest("[data-source-start]") : child?.closest?.("[data-source-start]");
+  if (mapped) return Number(mapped.dataset.sourceStart) + (child === children[offset - 1] ? Number(mapped.dataset.sourceEnd) - Number(mapped.dataset.sourceStart) : 0);
+  return 0;
+}
+
+function sourceRangeFromSelection() {
+  const selection = window.getSelection?.();
+  if (!summaryVisual || !selection?.rangeCount) return null;
+  const range = selection.getRangeAt(0);
+  if (!summaryVisual.contains(range.startContainer) || !summaryVisual.contains(range.endContainer)) return null;
+  const start = summarySourcePoint(range.startContainer, range.startOffset);
+  const end = summarySourcePoint(range.endContainer, range.endOffset);
+  return { start: Math.min(start, end), end: Math.max(start, end) };
+}
+
+function appendMappedSegment(parent, segment) {
+  if (segment.kind === "newline") {
+    const br = document.createElement("br");
+    br.dataset.sourceStart = String(segment.sourceStart);
+    br.dataset.sourceEnd = String(segment.sourceEnd);
+    parent.appendChild(br);
+    return;
+  }
+  const tags = { bold: "strong", italic: "em", underline: "u", strike: "del", highlight: "mark", code: "code", link: "span" };
+  const element = document.createElement(tags[segment.kind] || "span");
+  // Map the visible leaf to its content range, not the surrounding Markdown
+  // delimiters. Token boundaries remain available for diagnostics/future use.
+  element.dataset.sourceStart = String(segment.sourceStart);
+  element.dataset.sourceEnd = String(segment.sourceEnd);
+  element.dataset.tokenStart = String(segment.tokenStart ?? segment.sourceStart);
+  element.dataset.tokenEnd = String(segment.tokenEnd ?? segment.sourceEnd);
+  element.textContent = segment.text;
+  if (segment.kind === "highlight" && segment.color) element.style.setProperty("--summary-inline-highlight-color", segment.color);
+  if (segment.kind === "link") element.title = "Markdown link";
+  parent.appendChild(element);
+}
+
+function renderMarkdownSource(source, root) {
+  root.replaceChildren();
+  for (const line of summaryCore.sourceLines(source)) {
+    const block = document.createElement("div");
+    block.className = "summary-visual-line";
+    const content = summaryCore.visibleContent(line);
+    block.dataset.sourceStart = String(line.start);
+    block.dataset.sourceEnd = String(line.end);
+    const wrapper = document.createElement(content.block === "heading" ? `h${content.level}` : content.block === "bullet" ? "li" : content.block === "numbered" ? "li" : "p");
+    if (content.block === "bullet" || content.block === "numbered") {
+      const list = document.createElement(content.block === "bullet" ? "ul" : "ol");
+      wrapper.dataset.sourceStart = String(content.start);
+      wrapper.dataset.sourceEnd = String(line.end);
+      for (const segment of summaryCore.inlineSegments(content.text, content.start)) appendMappedSegment(wrapper, segment);
+      list.appendChild(wrapper);
+      block.appendChild(list);
+    } else {
+      wrapper.dataset.sourceStart = String(content.start);
+      wrapper.dataset.sourceEnd = String(line.end);
+      for (const segment of summaryCore.inlineSegments(content.text, content.start)) appendMappedSegment(wrapper, segment);
+      block.appendChild(wrapper);
+    }
+    if (line.newlineEnd > line.newlineStart) {
+      const br = document.createElement("br");
+      br.dataset.sourceStart = String(line.newlineStart);
+      br.dataset.sourceEnd = String(line.newlineEnd);
+      block.appendChild(br);
+    }
+    root.appendChild(block);
+  }
+}
+
+function setVisualCaret(sourcePosition) {
+  if (!summaryVisual) return;
+  const walker = document.createTreeWalker(summaryVisual, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    const leaf = node.parentElement.closest("[data-source-start]");
+    if (!leaf) continue;
+    const start = Number(leaf.dataset.sourceStart);
+    const end = Number(leaf.dataset.sourceEnd);
+    if (sourcePosition >= start && sourcePosition <= end) {
+      const range = document.createRange();
+      range.setStart(node, Math.min(node.nodeValue.length, sourcePosition - start));
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return;
+    }
+  }
+}
+
+function commitVisualSource(source, caret) {
+  summaryInput.value = source;
+  renderVisual();
+  updateSummaryButtons();
+  setVisualCaret(caret);
+}
+
+function handleVisualBeforeInput(event) {
+  if (!summaryVisual || !summaryInput) return;
+  const range = sourceRangeFromSelection();
+  if (!range) return;
+  const source = summaryMarkdown();
+  let start = range.start;
+  let end = range.end;
+  let replacement = event.data || "";
+  if (event.inputType === "insertParagraph") replacement = "\n";
+  else if (event.inputType === "deleteContentBackward" || event.inputType === "deleteContentForward") {
+    if (start === end) {
+      const segments = summaryCore.visibleSegments(source).filter((segment) => segment.kind !== "newline");
+      const segment = segments.find((item) => start >= item.sourceStart && start <= item.sourceEnd);
+      if (!segment) return;
+      if (event.inputType === "deleteContentBackward" && start > segment.sourceStart) { start -= 1; }
+      else if (event.inputType === "deleteContentForward" && start < segment.sourceEnd) { end += 1; }
+      else return;
+    }
+    replacement = "";
+  } else if (!["insertText", "insertReplacementText", "deleteByCut"].includes(event.inputType)) return;
+  event.preventDefault();
+  commitVisualSource(summaryCore.replaceRange(source, start, end, replacement), start + replacement.length);
+}
+
+function applyBlockFormat(type) {
+  const range = sourceRangeFromSelection();
+  if (!range) return;
+  const next = summaryCore.applyBlockFormat(summaryMarkdown(), range.start, range.end, type);
+  commitVisualSource(next, range.start);
+}
+
+function refreshPaletteControls() {
+  const palette = summaryHighlightMenu?.querySelector(".summary-palette");
+  if (!palette) return;
+  palette.replaceChildren();
+  for (const color of _summaryPalette) {
+    const item = document.createElement("span");
+    item.className = "summary-palette-item";
+    const use = document.createElement("button");
+    use.type = "button";
+    use.className = "summary-palette-swatch";
+    use.style.setProperty("--summary-swatch-color", color);
+    use.title = `Use highlight ${color}`;
+    use.setAttribute("aria-label", `Use highlight ${color}`);
+    use.addEventListener("click", () => applyHighlight(color));
+    const edit = document.createElement("input");
+    edit.type = "color";
+    edit.value = color;
+    edit.className = "summary-palette-edit";
+    edit.title = `Change palette color ${color}`;
+    edit.setAttribute("aria-label", `Change palette color ${color}`);
+    edit.addEventListener("input", () => {
+      const next = edit.value.toLowerCase();
+      _summaryPalette = _summaryPalette.map((entry) => entry === color ? next : entry);
+      _summaryPalette = [...new Set(_summaryPalette)].slice(0, 32);
+      refreshPaletteControls();
+      saveSummaryPalette();
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "summary-palette-remove-one";
+    remove.textContent = "×";
+    remove.title = `Remove ${color} from palette`;
+    remove.setAttribute("aria-label", `Remove ${color} from palette`);
+    remove.addEventListener("click", () => {
+      _summaryPalette = _summaryPalette.filter((entry) => entry !== color);
+      refreshPaletteControls();
+      saveSummaryPalette();
+    });
+    item.append(use, edit, remove);
+    palette.appendChild(item);
+  }
+}
+
+summaryVisual?.addEventListener("beforeinput", handleVisualBeforeInput);
+summaryVisual?.addEventListener("input", (event) => event.preventDefault());
 
 condensedInput?.addEventListener("input", updateCondensedButtons);
 summaryInput?.addEventListener("input", () => { updateSummaryButtons(); if (_summaryMode === "markdown") renderVisual(); });

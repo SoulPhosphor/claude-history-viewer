@@ -125,6 +125,10 @@
 .summary-highlight-menu[hidden] { display: none; }
 .summary-palette-swatch { width: var(--summary-swatch-size); height: var(--summary-swatch-size); padding: 0; border: 1px solid var(--summary-btn-border); border-radius: var(--summary-btn-radius); background: var(--summary-swatch-color); cursor: pointer; }
 .summary-palette-remove { padding: 4px 6px; border: 1px solid var(--summary-btn-border); border-radius: var(--summary-btn-radius); background: transparent; color: var(--summary-btn-color); cursor: pointer; }
+.summary-palette { display: flex; flex-wrap: wrap; gap: var(--summary-toolbar-gap); width: 100%; }
+.summary-palette-item { display: inline-flex; align-items: center; gap: 3px; }
+.summary-palette-edit { width: var(--summary-swatch-size); height: var(--summary-swatch-size); padding: 0; border: 1px solid var(--summary-btn-border); border-radius: var(--summary-btn-radius); cursor: pointer; }
+.summary-palette-remove-one { width: var(--summary-swatch-size); height: var(--summary-swatch-size); padding: 0; border: 1px solid var(--summary-btn-border); border-radius: var(--summary-btn-radius); background: transparent; color: var(--summary-btn-color); cursor: pointer; }
 
 html,
 body {
