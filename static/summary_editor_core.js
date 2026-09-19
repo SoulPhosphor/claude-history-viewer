@@ -194,9 +194,26 @@
     ].includes(inputType);
   }
 
+  function isToolbarFormatRangeSafe(source, start, end, kind) {
+    if (start === end) return false;
+    const tokens = inlineSegments(source).filter((segment) => segment.tokenStart != null && segment.sourceStart < end && segment.sourceEnd > start);
+    if (!tokens.length) return true;
+    if (tokens.length !== 1) return false;
+    const token = tokens[0];
+    if (kind === "highlight") return token.kind === "highlight";
+    if (token.kind === kind) return start >= token.sourceStart && end <= token.sourceEnd;
+    if (token.sourceStart !== start || token.sourceEnd !== end) return false;
+    const pairs = {
+      bold: ["italic", "strike", "boldItalic", "boldStrike"],
+      italic: ["bold", "strike", "boldItalic", "italicStrike"],
+      strike: ["bold", "italic", "boldStrike", "italicStrike"],
+    };
+    return pairs[kind]?.includes(token.kind) || false;
+  }
+
   function toggleInlineFormat(source, start, end, kind) {
     const markers = { bold: ["**", "**"], italic: ["*", "*"], underline: ["++", "++"], strike: ["~~", "~~"] }[kind];
-    if (!markers || start === end) return source;
+    if (!markers || !isToolbarFormatRangeSafe(source, start, end, kind)) return source;
     const token = inlineTokenForRange(source, start, end);
     if (token && token.kind === kind && start >= token.sourceStart && end <= token.sourceEnd) {
       return removeTokenFormatting(source, token, start, end);
@@ -248,7 +265,7 @@
   }
 
   function replaceHighlightRange(source, start, end, color) {
-    if (start === end) return source;
+    if (!isToolbarFormatRangeSafe(source, start, end, "highlight")) return source;
     const token = inlineTokenForRange(source, start, end);
     if (token && token.kind !== "highlight") return source;
     if (token && token.kind === "highlight" && start >= token.sourceStart && end <= token.sourceEnd) {
@@ -274,9 +291,13 @@
       const afterContent = content.slice(end - token.sourceStart);
       const before = beforeContent ? formatTokenContent(token, beforeContent) : "";
       const after = afterContent ? formatTokenContent(token, afterContent) : "";
-      return replaceRange(source, token.tokenStart, token.tokenEnd, `${before}\n${after}`);
+      const visibleOpeningLength = after ? formatTokenContent(token, "x").indexOf("x") : 0;
+      return {
+        source: replaceRange(source, token.tokenStart, token.tokenEnd, `${before}\n${after}`),
+        caret: token.tokenStart + before.length + 1 + visibleOpeningLength,
+      };
     }
-    return safeReplaceVisibleRange(source, start, end, "\n");
+    return { source: safeReplaceVisibleRange(source, start, end, "\n"), caret: start + 1 };
   }
 
   function deleteVisibleCharacter(source, sourcePosition, direction) {
@@ -289,5 +310,5 @@
     return source;
   }
 
-  return { inlineSegments, inlineTokenForRange, isSupportedVisualInputType, toggleInlineFormat, removeHighlightRange, replaceHighlightRange, insertParagraph, safeReplaceVisibleRange, mapElementBoundary, sourceLines, visibleContent, visibleSegments, visibleRangeToSource, replaceRange, applyBlockFormat, deleteVisibleCharacter };
+  return { inlineSegments, inlineTokenForRange, isSupportedVisualInputType, isToolbarFormatRangeSafe, toggleInlineFormat, removeHighlightRange, replaceHighlightRange, insertParagraph, safeReplaceVisibleRange, mapElementBoundary, sourceLines, visibleContent, visibleSegments, visibleRangeToSource, replaceRange, applyBlockFormat, deleteVisibleCharacter };
 });

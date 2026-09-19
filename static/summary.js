@@ -530,7 +530,8 @@ function handleVisualBeforeInput(event) {
     replacement = event.data || event.dataTransfer?.getData("text/plain") || "";
   } else if (inputType === "insertParagraph" || inputType === "insertLineBreak") {
     event.preventDefault();
-    commitVisualSource(summaryCore.insertParagraph(source, start, end), start + 1);
+    const paragraph = summaryCore.insertParagraph(source, start, end);
+    commitVisualSource(paragraph.source, paragraph.caret);
     return;
   } else if (inputType.startsWith("delete")) {
     if (start === end) {

@@ -296,8 +296,10 @@ class SummaryEditorBehaviorTests(unittest.TestCase):
         for source, expected, _label in cases:
             position = source.index("important") + 2
             result = run_node(f"process.stdout.write(JSON.stringify(c.insertParagraph({json.dumps(source)}, {position}, {position})));" )
-            self.assertEqual(result, expected)
-            segments = run_node(f"process.stdout.write(JSON.stringify(c.visibleSegments({json.dumps(result)})));" )
+            self.assertEqual(result["source"], expected)
+            segments = run_node(f"process.stdout.write(JSON.stringify(c.visibleSegments({json.dumps(result['source'])})));" )
+            next_line = next(segment for segment in segments if segment.get("text") == "portant")
+            self.assertEqual(result["caret"], next_line["sourceStart"])
             self.assertFalse(any(segment["kind"] == "plain" and "**" in segment["text"] for segment in segments))
 
     def test_partial_highlight_recolor_splits_existing_highlight(self):
@@ -305,6 +307,33 @@ class SummaryEditorBehaviorTests(unittest.TestCase):
         self.assertEqual(result, "=={#ff0000}important== ==text==")
         result = run_node("process.stdout.write(JSON.stringify(c.replaceHighlightRange('=={#00ff00}important text==', 11, 20, '#ff0000')));")
         self.assertEqual(result, "=={#ff0000}important== =={#00ff00}text==")
+
+    def test_enter_caret_allows_immediate_insert_on_new_formatted_line(self):
+        cases = [
+            ("**important**", "**im**\n**Xportant**"),
+            ("=={#ff0000}important==", "=={#ff0000}im==\n=={#ff0000}Xportant=="),
+            ("[important](https://example.com)", "[im](https://example.com)\n[Xportant](https://example.com)"),
+        ]
+        for source, expected in cases:
+            position = source.index("important") + 2
+            paragraph = run_node(f"process.stdout.write(JSON.stringify(c.insertParagraph({json.dumps(source)}, {position}, {position})));" )
+            edited = run_node(f"process.stdout.write(JSON.stringify(c.safeReplaceVisibleRange({json.dumps(paragraph['source'])}, {paragraph['caret']}, {paragraph['caret']}, 'X')));")
+            self.assertEqual(edited, expected)
+
+    def test_mixed_toolbar_ranges_are_safe_noops(self):
+        cases = [
+            ("**bold** plain", 4, 15, "italic"),
+            ("plain **bold**", 0, 10, "underline"),
+            ("**bold** and *italic*", 3, 17, "highlight"),
+            ("[link](https://example.com) plain", 1, 10, "bold"),
+            ("[link](https://example.com) plain", 1, 10, "highlight"),
+            ("=={#ff0000}red== plain", 12, 18, "italic"),
+        ]
+        for source, start, end, kind in cases:
+            result = run_node(f"process.stdout.write(JSON.stringify(c.toggleInlineFormat({json.dumps(source)}, {start}, {end}, {json.dumps(kind)})));" )
+            self.assertEqual(result, source)
+        self.assertTrue(run_node("process.stdout.write(JSON.stringify(c.isToolbarFormatRangeSafe('**bold**', 2, 6, 'italic')));"))
+        self.assertFalse(run_node("process.stdout.write(JSON.stringify(c.isToolbarFormatRangeSafe('**bold** plain', 4, 15, 'italic')));"))
 
     def test_unsupported_toolbar_combinations_are_noops(self):
         cases = [
