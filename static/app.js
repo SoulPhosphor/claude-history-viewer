@@ -3980,22 +3980,18 @@ $("setting-condensed-summary")?.addEventListener("change", (e) => {
 $("setting-summary-hints")?.addEventListener("change", (e) => {
   saveUiPreferences({ showSummaryHints: e.target.checked });
   loadConversations(false);
+  renderFolders();
 });
 $("setting-summary-author")?.addEventListener("change", (e) => {
   saveUiPreferences({ showSummaryAuthor: e.target.checked });
-  if (typeof updateSummaryAuthorVisibility === "function") {
-    updateSummaryAuthorVisibility();
+  if (typeof updateSummaryAuthorLabels === "function") {
+    updateSummaryAuthorLabels();
   }
 });
 $("setting-chat-snippet")?.addEventListener("change", (e) => {
   saveUiPreferences({ showChatSnippet: e.target.checked });
   loadConversations(false);
   refreshPinnedList();
-  renderFolders();
-});
-$("setting-summary-hints")?.addEventListener("change", (e) => {
-  saveUiPreferences({ showSummaryHints: e.target.checked });
-  loadConversations(false);
   renderFolders();
 });
 $("setting-header-labels")?.addEventListener("change", (e) => {

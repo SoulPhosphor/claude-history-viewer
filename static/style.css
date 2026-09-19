@@ -110,8 +110,8 @@
   --thread-title-square-margin: 2px;
   /* Settings page switches. One set of variables drives every switch so they
      all look and move alike and the whole look rethemes in one place. */
-  --switch-width: 40px;
-  --switch-height: 22px;
+  --switch-width: 44px;
+  --switch-height: 24px;
   --switch-padding: 2px;
   --switch-radius: 999px;
   --switch-border-width: 1px;
@@ -143,6 +143,17 @@
   --settings-setting-subtext-gap: 2px;
   --settings-section-gap: 18px;
   --settings-section-title-gap: 12px;
+  /* Settings content + category box chrome, so the whole page rethemes and
+     resizes from here. */
+  --settings-content-padding: 20px 28px 40px;
+  --settings-section-max-width: 520px;
+  --settings-section-border-width: 1px;
+  --settings-section-border-color: var(--border);
+  --settings-section-radius: 8px;
+  --settings-section-padding: 16px 18px;
+  --settings-section-title-size: 1rem;
+  --settings-section-hint-gap: 14px;
+  --settings-section-hint-size: 0.85rem;
 }
 
 .summary-editor { display: flex; flex-direction: column; gap: var(--summary-editor-gap); }
@@ -3516,23 +3527,24 @@ kbd {
 }
 #settings-content {
   flex: 1;
-  padding: 20px 28px 40px;
+  padding: var(--settings-content-padding);
   overflow-y: auto;
 }
 .settings-section {
-  max-width: 520px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 16px 18px;
+  max-width: var(--settings-section-max-width);
+  border: var(--settings-section-border-width) solid
+    var(--settings-section-border-color);
+  border-radius: var(--settings-section-radius);
+  padding: var(--settings-section-padding);
 }
 .settings-section-title {
-  margin: 0 0 4px;
-  font-size: 1rem;
+  margin: 0 0 var(--settings-section-title-gap);
+  font-size: var(--settings-section-title-size);
 }
 .settings-section-hint {
-  margin: 0 0 14px;
+  margin: 0 0 var(--settings-section-hint-gap);
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: var(--settings-section-hint-size);
 }
 .settings-row {
   display: flex;
