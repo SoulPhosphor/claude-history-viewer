@@ -5131,6 +5131,13 @@ kbd {
   --gb-bookmark-hover-color: var(--accent);
   --gb-bookmark-radius: 5px;
   --gb-empty-color: var(--muted);
+  --gb-error-color: #b3261e;
+  --gb-error-gap: 10px;
+  --gb-retry-bg: var(--bg);
+  --gb-retry-border: var(--border);
+  --gb-retry-color: var(--text);
+  --gb-retry-radius: 6px;
+  --gb-retry-padding: 5px 10px;
 }
 
 #global-bookmarks-panel {
@@ -5355,4 +5362,23 @@ kbd {
 .gb-loading {
   color: var(--muted);
   padding: 16px 0;
+}
+.gb-load-error {
+  display: flex;
+  align-items: center;
+  gap: var(--gb-error-gap);
+  color: var(--gb-error-color);
+  padding: 16px 0;
+}
+.gb-retry {
+  border: 1px solid var(--gb-retry-border);
+  border-radius: var(--gb-retry-radius);
+  background: var(--gb-retry-bg);
+  color: var(--gb-retry-color);
+  padding: var(--gb-retry-padding);
+  font: inherit;
+  cursor: pointer;
+}
+.gb-retry:hover {
+  background: var(--hover);
 }

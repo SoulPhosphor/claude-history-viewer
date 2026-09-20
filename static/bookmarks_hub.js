@@ -113,8 +113,24 @@ function gbShowLoading(on) {
   gbSentinel.innerHTML = on ? '<div class="gb-loading">Loading…</div>' : "";
 }
 
-async function gbLoadMore() {
-  if (gbState.loading || gbState.done) return;
+function gbShowError() {
+  if (!gbSentinel) return;
+  gbSentinel.innerHTML = "";
+  const error = document.createElement("div");
+  error.className = "gb-load-error";
+  const message = document.createElement("span");
+  message.textContent = "Bookmarks could not be loaded.";
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "gb-retry";
+  retry.textContent = "Try Again";
+  retry.addEventListener("click", () => gbLoadMore());
+  error.append(message, retry);
+  gbSentinel.appendChild(error);
+}
+
+async function gbLoadMore(allowAutoFill = true) {
+  if (gbState.loading || gbState.done) return false;
   gbState.loading = true;
   const epoch = gbState.epoch;
   gbShowLoading(true);
@@ -130,13 +146,18 @@ async function gbLoadMore() {
 
   let data;
   try {
-    data = await fetch(`/api/global-bookmarks?${params}`).then((r) => r.json());
+    const response = await fetch(`/api/global-bookmarks?${params}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    data = await response.json();
+    if (!data || !Array.isArray(data.conversations)) {
+      throw new Error("Invalid bookmark response");
+    }
   } catch (_) {
     if (epoch === gbState.epoch) {
       gbState.loading = false;
-      gbShowLoading(false);
+      gbShowError();
     }
-    return;
+    return false;
   }
   // A newer reset happened while this was in flight — drop the stale page.
   if (epoch !== gbState.epoch) return;
@@ -165,7 +186,8 @@ async function gbLoadMore() {
   gbUpdateMeta();
   gbState.loading = false;
   gbShowLoading(false);
-  gbMaybeAutoFill();
+  if (allowAutoFill) gbMaybeAutoFill();
+  return true;
 }
 
 // Keep loading until the list overflows its container, so the scroll-triggered
@@ -253,7 +275,12 @@ function gbToggleConv(id, wrap, chevron) {
 // ── Navigation (Back returns to this table, same scroll position) ─────────────
 function gbOpenConversation(convId, seq) {
   history.replaceState(
-    { gbNav: true, view: "gb-list", scrollTop: gbScroll ? gbScroll.scrollTop : 0 },
+    {
+      gbNav: true,
+      view: "gb-list",
+      scrollTop: gbScroll ? gbScroll.scrollTop : 0,
+      loadedCount: gbState.offset,
+    },
     "",
   );
   history.pushState({ gbNav: true, view: "conversation", convId, seq }, "");
@@ -264,19 +291,30 @@ function gbOpenConversation(convId, seq) {
   openConversation(convId, el, seq != null ? seq : null);
 }
 
+async function gbRestoreHistoryList(scrollTop, loadedCount) {
+  // Bookmark names and membership may have changed while the conversation was
+  // open. Reload from the database instead of revealing the stale cached DOM,
+  // then rebuild enough pages to restore the previous scroll position.
+  gbReset();
+  const target = Math.max(GB_PAGE, Number(loadedCount) || 0);
+  while (!gbState.done && gbState.offset < target) {
+    const loaded = await gbLoadMore(false);
+    if (!loaded) return;
+  }
+  if (typeof scrollTop === "number") {
+    requestAnimationFrame(() => {
+      if (gbScroll) gbScroll.scrollTop = scrollTop;
+    });
+  }
+}
+
 window.addEventListener("popstate", (e) => {
   const st = e.state;
   if (!st || !st.gbNav) return;
   if (st.view === "gb-list") {
-    // The list DOM is untouched by hideAllPanels, so re-showing the panel
-    // restores the loaded conversations as they were; just put scroll back.
     showGlobalBookmarksPanel();
     if (typeof renderTabs === "function") renderTabs();
-    if (typeof st.scrollTop === "number") {
-      requestAnimationFrame(() => {
-        if (gbScroll) gbScroll.scrollTop = st.scrollTop;
-      });
-    }
+    gbRestoreHistoryList(st.scrollTop, st.loadedCount);
   } else if (st.view === "conversation") {
     const el =
       typeof resolveConversationSidebarEl === "function"
