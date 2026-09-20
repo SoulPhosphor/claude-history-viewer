@@ -2017,6 +2017,8 @@ async function renderArtifactTabContent(artifactId, title) {
 // conversation, else the empty state). Used on load and by tab cycling.
 async function activateActiveTab() {
   if (state.activeSpecialView === "gallery") return openGallery(false);
+  if (state.activeSpecialView === "global_bookmarks")
+    return openGlobalBookmarks(false);
   if (state.activeSpecialView === "memories") return openMemories(false);
   if (state.activeSpecialView === "projects") return openProjects(false);
   if (state.activeSpecialView === "attachment_report")
@@ -2093,6 +2095,8 @@ function hideAllPanels() {
   settingsPanel.hidden = true;
   claudeModelsPanel.hidden = true;
   labelsPanel.hidden = true;
+  const gbPanelEl = document.getElementById("global-bookmarks-panel");
+  if (gbPanelEl) gbPanelEl.hidden = true;
   closeArtifactPanel();
   closeFilePanel();
   clearSearchNav();
@@ -3056,7 +3060,9 @@ async function openGallery(fromButton = false) {
   renderMediaHub(data);
 }
 
-$("gallery-btn").addEventListener("click", () => openGallery(true));
+// The Media Hub is now reached from the briefcase menu; its old footer icon is
+// gone, so wire the button only if it exists.
+$("gallery-btn")?.addEventListener("click", () => openGallery(true));
 
 // ── Attachment Report ─────────────────────────────────────────────────────────
 
@@ -3486,6 +3492,13 @@ async function switchProviderSide(side) {
   await loadFolders();
   await loadConversations(false);
   syncUnverifiedOption();
+  // Global Bookmarks is per-side too; reload it if it's the open view.
+  if (
+    state.activeSpecialView === "global_bookmarks" &&
+    typeof gbReloadForProvider === "function"
+  ) {
+    gbReloadForProvider();
+  }
 }
 
 document
@@ -5175,7 +5188,7 @@ async function openMemories(fromButton = false) {
   memoriesContent.dataset.loaded = "1";
 }
 
-$("memories-btn").addEventListener("click", () => openMemories(true));
+$("memories-btn")?.addEventListener("click", () => openMemories(true));
 
 // ── Projects ──────────────────────────────────────────────────────────────────
 
@@ -5257,7 +5270,7 @@ async function openProjects(fromButton = false) {
   projectsContent.dataset.loaded = "1";
 }
 
-$("projects-btn").addEventListener("click", () => openProjects(true));
+$("projects-btn")?.addEventListener("click", () => openProjects(true));
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 

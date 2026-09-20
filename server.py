@@ -1567,6 +1567,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_snapshot_list()
         elif path.startswith("/api/summaries/"):
             self._api_summary_get(urllib.parse.unquote(path[len("/api/summaries/"):]))
+        elif path == "/api/global-bookmarks":
+            self._api_global_bookmarks(qs)
         elif path.startswith("/api/bookmarks/"):
             self._api_bookmarks_get(urllib.parse.unquote(path[len("/api/bookmarks/"):]))
         elif path == "/api/version":
@@ -3536,6 +3538,114 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.send_json({"conversation_id": conv_id,
                             "bookmarks": self._conv_bookmarks(conn, conv_id)})
+        finally:
+            conn.close()
+
+    def _api_global_bookmarks(self, qs):
+        # Every conversation that carries at least one bookmark, scoped to the
+        # side (Claude / ChatGPT) currently in view — the two never mix, like the
+        # rest of the app. Ordered by the last message the *user* sent in each
+        # conversation (bookmarks and summaries never move that mark), newest
+        # first by default. Paginated 25 conversations at a time (bookmarks are
+        # not counted toward the page size). An optional search narrows by
+        # conversation title, bookmark name, or both.
+        provider = ((qs.get("provider") or [""])[0]).strip().lower()
+        if provider not in ("claude", "chatgpt"):
+            provider = None
+
+        sort = ((qs.get("sort") or ["newest"])[0]).strip().lower()
+        order = "ASC" if sort == "oldest" else "DESC"
+
+        scope = ((qs.get("scope") or ["both"])[0]).strip().lower()
+        if scope not in ("titles", "bookmarks", "both"):
+            scope = "both"
+        q = ((qs.get("q") or [""])[0]).strip()
+
+        try:
+            limit = int((qs.get("limit") or ["25"])[0])
+        except (TypeError, ValueError):
+            limit = 25
+        limit = max(1, min(limit, 200))
+        try:
+            offset = int((qs.get("offset") or ["0"])[0])
+        except (TypeError, ValueError):
+            offset = 0
+
+        conn = open_db(self.db_path)
+        try:
+            where = [
+                "EXISTS (SELECT 1 FROM udb.conversation_bookmarks b "
+                "WHERE b.conversation_id = c.id)",
+                "COALESCE(cm.deleted, 0) = 0",
+            ]
+            params = []
+            if provider:
+                where.append("c.provider = ?")
+                params.append(provider)
+            if q:
+                like = f"%{q}%"
+                terms = []
+                if scope in ("titles", "both"):
+                    terms.append(
+                        "COALESCE(NULLIF(cm.custom_title, ''), c.title) LIKE ?")
+                    params.append(like)
+                if scope in ("bookmarks", "both"):
+                    terms.append(
+                        "EXISTS (SELECT 1 FROM udb.conversation_bookmarks b2 "
+                        "WHERE b2.conversation_id = c.id AND b2.name LIKE ?)")
+                    params.append(like)
+                where.append("(" + " OR ".join(terms) + ")")
+            where_sql = " AND ".join(where)
+
+            # Last user message time. NULL (no user message) sorts to the end in
+            # either direction so the dated conversations stay grouped together.
+            last_expr = (
+                "(SELECT MAX(m.create_time) FROM messages m "
+                "WHERE m.conversation_id = c.id AND m.role = 'user')")
+
+            total = conn.execute(
+                "SELECT COUNT(*) FROM conversations c "
+                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                "WHERE " + where_sql,
+                tuple(params),
+            ).fetchone()[0]
+
+            rows = conn.execute(
+                "SELECT c.id, COALESCE(NULLIF(cm.custom_title, ''), c.title) AS title, "
+                "c.provider, " + last_expr + " AS last_user_time "
+                "FROM conversations c "
+                "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+                "WHERE " + where_sql + " "
+                "ORDER BY last_user_time IS NULL, "
+                f"last_user_time {order}, c.update_time {order} "
+                "LIMIT ? OFFSET ?",
+                tuple(params) + (limit, offset),
+            ).fetchall()
+
+            convs = []
+            for r in rows:
+                bms = conn.execute(
+                    "SELECT id, seq, name FROM udb.conversation_bookmarks "
+                    "WHERE conversation_id = ? ORDER BY seq",
+                    (r["id"],),
+                ).fetchall()
+                convs.append({
+                    "id": r["id"],
+                    "title": r["title"],
+                    "provider": r["provider"],
+                    "last_user_time": r["last_user_time"],
+                    "bookmarks": [dict(b) for b in bms],
+                })
+
+            self.send_json({
+                "conversations": convs,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+                "sort": sort,
+                "scope": scope,
+                "q": q,
+            })
         finally:
             conn.close()
 
