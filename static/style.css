@@ -94,6 +94,32 @@
   /* Titlebar Book (summary) button + collapse chevron sizing. Icon size is the
      visible glyph; hit size is the clickable target around it. */
   --summary-toggle-hit-size: 32px;
+  /* Notes screen/navigation and temporary sidebar editor. */
+  --notes-toggle-icon-size: var(--summary-toggle-icon-size);
+  --notes-toggle-hit-size: var(--summary-toggle-hit-size);
+  --notes-panel-bg: var(--sidebar-bg);
+  --notes-panel-padding: 12px;
+  --notes-panel-gap: 18px;
+  --notes-panel-title-size: 16px;
+  --notes-panel-title-weight: 600;
+  --notes-panel-heading-size: 12px;
+  --notes-panel-heading-weight: 600;
+  --notes-panel-revert-size: 10px;
+  --notes-panel-revert-color: var(--accent);
+  --notes-panel-textarea-bg: var(--bg);
+  --notes-panel-textarea-border: var(--border);
+  --notes-panel-textarea-focus-border: var(--accent);
+  --notes-panel-textarea-radius: 7px;
+  --notes-panel-textarea-padding: 8px 10px;
+  --notes-panel-textarea-min-height: 128px;
+  --notes-panel-textarea-size: 13px;
+  --notes-panel-close-color: var(--muted);
+  --notes-panel-close-size: 16px;
+  --notes-panel-control-radius: 4px;
+  --notes-panel-field-gap: 6px;
+  --notes-panel-heading-gap: 8px;
+  --notes-panel-line-height: 1.5;
+  --notes-full-min-height: 150px;
   --thread-chevron-size: 20px;
   --thread-chevron-hit-size: 32px;
   --thread-chevron-stroke: 2;
@@ -1659,6 +1685,102 @@ kbd {
 }
 .bookmark-panel-item:hover {
   text-decoration: underline;
+}
+
+/* Notes uses the same temporary sidebar-overlay pattern as bookmarks. */
+.notes-side-panel[hidden] {
+  display: none;
+}
+.notes-side-panel {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  background: var(--notes-panel-bg);
+  padding: var(--notes-panel-padding);
+}
+.notes-side-panel-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  margin-bottom: var(--notes-panel-gap);
+}
+.notes-side-panel-title {
+  margin: 0;
+  font-size: var(--notes-panel-title-size);
+  font-weight: var(--notes-panel-title-weight);
+  color: var(--text);
+}
+.notes-side-panel-close {
+  border: none;
+  border-radius: var(--notes-panel-control-radius);
+  background: none;
+  color: var(--notes-panel-close-color);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--notes-panel-close-size);
+  line-height: 1;
+  padding: 4px;
+}
+.notes-side-panel-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.notes-side-panel-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--notes-panel-gap);
+  min-height: 0;
+  overflow-y: auto;
+}
+.notes-side-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--notes-panel-field-gap);
+  flex-shrink: 0;
+}
+.notes-side-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--notes-panel-heading-gap);
+}
+.notes-side-heading-row label {
+  color: var(--text);
+  font-size: var(--notes-panel-heading-size);
+  font-weight: var(--notes-panel-heading-weight);
+}
+.notes-side-revert {
+  border: none;
+  background: none;
+  color: var(--notes-panel-revert-color);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--notes-panel-revert-size);
+  line-height: 1.35;
+  padding: 0;
+  text-align: right;
+}
+.notes-side-revert:hover {
+  text-decoration: underline;
+}
+.notes-side-section textarea {
+  min-height: var(--notes-panel-textarea-min-height);
+  resize: vertical;
+  border: 1px solid var(--notes-panel-textarea-border);
+  border-radius: var(--notes-panel-textarea-radius);
+  background: var(--notes-panel-textarea-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: var(--notes-panel-textarea-size);
+  line-height: var(--notes-panel-line-height);
+  padding: var(--notes-panel-textarea-padding);
+}
+.notes-side-section textarea:focus {
+  outline: none;
+  border-color: var(--notes-panel-textarea-focus-border);
 }
 
 .message-body {
@@ -5002,14 +5124,31 @@ kbd {
   flex: 1;
 }
 
+#notes-body {
+  flex: 1;
+  padding: var(--summary-body-padding);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--summary-section-gap);
+}
+#notes-body[hidden] {
+  display: none;
+}
+.notes-full-textarea {
+  min-height: var(--notes-full-min-height);
+}
+
 /* ── Summary toggle icon in thread titlebar ──────────────────────────────── */
 
-#summary-toggle-btn {
+#summary-toggle-btn,
+#notes-toggle-btn,
+#notes-side-toggle-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: var(--summary-toggle-hit-size);
-  height: var(--summary-toggle-hit-size);
+  width: var(--notes-toggle-hit-size);
+  height: var(--notes-toggle-hit-size);
   padding: 0;
   border: none;
   border-radius: 4px;
@@ -5017,24 +5156,34 @@ kbd {
   color: var(--muted);
   cursor: pointer;
   flex-shrink: 0;
+}
+#notes-side-toggle-btn {
   margin-left: auto;
 }
-#summary-toggle-btn[hidden] {
+#summary-toggle-btn[hidden],
+#notes-toggle-btn[hidden],
+#notes-side-toggle-btn[hidden] {
   display: none;
 }
-#summary-toggle-btn:hover {
+#summary-toggle-btn:hover,
+#notes-toggle-btn:hover,
+#notes-side-toggle-btn:hover {
   background: var(--hover);
   color: var(--text);
 }
-.summary-toggle-icon {
+.summary-toggle-icon,
+.notes-toggle-icon,
+.notes-side-toggle-icon {
   display: block;
-  width: var(--summary-toggle-icon-size);
-  height: var(--summary-toggle-icon-size);
+  width: var(--notes-toggle-icon-size);
+  height: var(--notes-toggle-icon-size);
 }
 
 /* A class display value beats the UA [hidden] rule, so restore it explicitly.
    Without this, both toggle icons would render at once. */
-.summary-toggle-icon[hidden] {
+.summary-toggle-icon[hidden],
+.notes-toggle-icon[hidden],
+.notes-side-toggle-icon[hidden] {
   display: none;
 }
 

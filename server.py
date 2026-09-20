@@ -56,7 +56,7 @@ def _static_signature() -> str:
     h = hashlib.sha256()
     for name in ("index.html", "app.js", "style.css", "settings.css",
                  "labels_screen.js", "bulk_labels.js", "snapshots.js",
-                 "gizmos.js", "bookmarks.js", "bookmarks_hub.js"):
+                 "gizmos.js", "bookmarks.js", "bookmarks_hub.js", "notes.js"):
         try:
             h.update((static_dir / name).read_bytes())
         except OSError:
@@ -510,6 +510,16 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 condensed_author   TEXT,
                 summary_author     TEXT,
                 updated_at         REAL
+            );
+            -- Three distinct, user-editable note fields for each conversation.
+            -- They deliberately remain separate so future API operations can
+            -- read Notes to the AI and write Notes from the AI independently.
+            CREATE TABLE IF NOT EXISTS conversation_notes (
+                conversation_id TEXT PRIMARY KEY,
+                user_notes      TEXT,
+                notes_to_ai     TEXT,
+                notes_from_ai   TEXT,
+                updated_at      REAL
             );
             -- Per-message bookmarks. Each bookmark carries its own stable id
             -- (a UUID) that never changes when it is renamed, so later features
@@ -1378,6 +1388,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_label_update(urllib.parse.unquote(path[len("/api/labels/"):]))
         elif path.startswith("/api/summaries/"):
             self._api_summary_update(urllib.parse.unquote(path[len("/api/summaries/"):]))
+        elif path.startswith("/api/notes/"):
+            self._api_notes_update(urllib.parse.unquote(path[len("/api/notes/"):]))
         elif path.startswith("/api/bookmarks/"):
             self._api_bookmark_update(urllib.parse.unquote(path[len("/api/bookmarks/"):]))
         else:
@@ -1596,6 +1608,8 @@ class Handler(BaseHTTPRequestHandler):
             self._api_snapshot_list()
         elif path.startswith("/api/summaries/"):
             self._api_summary_get(urllib.parse.unquote(path[len("/api/summaries/"):]))
+        elif path.startswith("/api/notes/"):
+            self._api_notes_get(urllib.parse.unquote(path[len("/api/notes/"):]))
         elif path == "/api/global-bookmarks":
             self._api_global_bookmarks(qs)
         elif path.startswith("/api/bookmarks/"):
@@ -3545,6 +3559,84 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "updated_at": now,
                             "condensed_author": (row["condensed_author"] or "") if row else "",
                             "summary_author": (row["summary_author"] or "") if row else ""})
+        finally:
+            conn.close()
+
+    # ── Conversation notes ─────────────────────────────────────────────────
+    # These are independent fields by design. A later AI/API feature can choose
+    # whether to read them for a run and can write notes_from_ai without
+    # coupling that write to what was supplied as input.
+
+    _NOTE_FIELDS = ("user_notes", "notes_to_ai", "notes_from_ai")
+
+    def _api_notes_get(self, conv_id):
+        if not conv_id:
+            self.send_json({"error": "missing conversation id"}, 400); return
+        conn = open_db(self.db_path)
+        try:
+            row = conn.execute(
+                "SELECT user_notes, notes_to_ai, notes_from_ai, updated_at "
+                "FROM udb.conversation_notes WHERE conversation_id = ?",
+                (conv_id,),
+            ).fetchone()
+            values = {
+                field: (row[field] or "") if row else ""
+                for field in self._NOTE_FIELDS
+            }
+            self.send_json({
+                "conversation_id": conv_id,
+                **values,
+                "updated_at": row["updated_at"] if row else None,
+            })
+        finally:
+            conn.close()
+
+    def _api_notes_update(self, conv_id):
+        if not conv_id:
+            self.send_json({"error": "missing conversation id"}, 400); return
+        payload = self._read_json_body()
+        updates = {}
+        for field in self._NOTE_FIELDS:
+            if field not in payload:
+                continue
+            if not isinstance(payload[field], str):
+                self.send_json({"error": f"{field} must be text"}, 400); return
+            updates[field] = payload[field]
+        if not updates:
+            self.send_json({"error": "no note fields supplied"}, 400); return
+
+        conn = open_db(self.db_path)
+        try:
+            now = time.time()
+            conn.execute(
+                "INSERT INTO udb.conversation_notes "
+                "(conversation_id, user_notes, notes_to_ai, notes_from_ai, updated_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(conversation_id) DO UPDATE SET "
+                "user_notes = COALESCE(excluded.user_notes, user_notes), "
+                "notes_to_ai = COALESCE(excluded.notes_to_ai, notes_to_ai), "
+                "notes_from_ai = COALESCE(excluded.notes_from_ai, notes_from_ai), "
+                "updated_at = excluded.updated_at",
+                (
+                    conv_id,
+                    updates.get("user_notes"),
+                    updates.get("notes_to_ai"),
+                    updates.get("notes_from_ai"),
+                    now,
+                ),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT user_notes, notes_to_ai, notes_from_ai "
+                "FROM udb.conversation_notes WHERE conversation_id = ?",
+                (conv_id,),
+            ).fetchone()
+            self.send_json({
+                "ok": True,
+                "conversation_id": conv_id,
+                **{field: row[field] or "" for field in self._NOTE_FIELDS},
+                "updated_at": now,
+            })
         finally:
             conn.close()
 

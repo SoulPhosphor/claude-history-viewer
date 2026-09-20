@@ -76,6 +76,7 @@ async function openGlobalBookmarks(fromButton = false) {
     if (r === "save") await saveAllUnsaved();
   }
   if (typeof closeSummaryPanel === "function") closeSummaryPanel();
+  if (typeof leaveNotesForSpecialView === "function" && !(await leaveNotesForSpecialView())) return;
   if (fromButton && state.activeSpecialView === "global_bookmarks") {
     await returnFromSpecialView();
     return;
@@ -308,10 +309,11 @@ async function gbRestoreHistoryList(scrollTop, loadedCount) {
   }
 }
 
-window.addEventListener("popstate", (e) => {
+window.addEventListener("popstate", async (e) => {
   const st = e.state;
   if (!st || !st.gbNav) return;
   if (st.view === "gb-list") {
+    if (typeof leaveNotesForSpecialView === "function" && !(await leaveNotesForSpecialView())) return;
     showGlobalBookmarksPanel();
     if (typeof renderTabs === "function") renderTabs();
     gbRestoreHistoryList(st.scrollTop, st.loadedCount);

@@ -315,9 +315,13 @@ function beginInlineRename(titleEl, bm) {
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
-function scrollToBookmark(bm) {
+async function scrollToBookmark(bm) {
   if (!bm) return;
-  // Bookmarks point at chat messages, so leave the summary view first.
+  // Bookmarks point at chat messages, so leave either full editor first.
+  if (typeof notesNavigationGuard === "function") {
+    const canLeaveNotes = await notesNavigationGuard({ endVisit: false });
+    if (!canLeaveNotes) return;
+  }
   if (messagesEl && messagesEl.hidden && typeof closeSummaryPanel === "function") {
     closeSummaryPanel();
   }
@@ -374,7 +378,10 @@ function openBookmarkPanel() {
   _bookmarkView = "panel";
   renderBookmarkPanel();
   const p = $("bookmark-panel");
-  if (p) p.hidden = false;
+  if (p) {
+    if (typeof raiseSidebarOverlay === "function") raiseSidebarOverlay(p);
+    p.hidden = false;
+  }
 }
 function renderBookmarkPanel() {
   const list = $("bookmark-panel-list");
