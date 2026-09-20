@@ -201,6 +201,24 @@
   --settings-section-title-size: 1rem;
   --settings-section-hint-gap: 14px;
   --settings-section-hint-size: 0.85rem;
+  /* About page and update control. */
+  --about-content-padding: 20px 28px 40px;
+  --about-update-gap: 12px;
+  --about-button-border: var(--accent);
+  --about-button-bg: var(--accent);
+  --about-button-color: #fff;
+  --about-button-radius: 6px;
+  --about-button-padding: 8px 18px;
+  --about-button-disabled-opacity: 0.6;
+  --update-status-gap: 8px;
+  --update-status-size: 0.9rem;
+  --update-status-color: var(--muted);
+  --update-error-color: #b3261e;
+  --update-spinner-size: 16px;
+  --update-spinner-width: 2px;
+  --update-spinner-track: var(--border);
+  --update-spinner-accent: var(--accent);
+  --update-spinner-speed: 0.8s;
 }
 
 .summary-editor { display: flex; flex-direction: column; gap: var(--summary-editor-gap); }
