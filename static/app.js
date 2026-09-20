@@ -4013,7 +4013,14 @@ checkUpdateBtn?.addEventListener("click", async () => {
   updateStatus.innerHTML =
     '<span class="update-spinner" aria-hidden="true"></span><span>Checking for Updates.</span>';
   try {
-    const response = await fetch("/api/update", { method: "POST" });
+    const response = await fetch("/api/update", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CHV-Update": "1",
+      },
+      body: "{}",
+    });
     const data = await response.json();
     if (!response.ok) throw new Error();
     updateStatus.textContent = data.message || "Update Failed: The result was not understood.";

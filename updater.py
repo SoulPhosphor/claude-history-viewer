@@ -97,10 +97,13 @@ def _is_managed_file(path_text: str) -> bool:
 
 
 def _remote_tree() -> tuple[str, dict[str, str]]:
-    data = _fetch_json(f"{API_ROOT}/git/trees/{UPDATE_BRANCH}?recursive=1")
-    commit_sha = str(data.get("sha") or "").strip()
+    commit = _fetch_json(f"{API_ROOT}/commits/{UPDATE_BRANCH}")
+    commit_sha = str(commit.get("sha") or "").strip()
+    if not commit_sha:
+        raise UpdateError("Update Failed: GitHub returned incomplete update information.")
+    data = _fetch_json(f"{API_ROOT}/git/trees/{commit_sha}?recursive=1")
     tree = data.get("tree")
-    if not commit_sha or not isinstance(tree, list) or data.get("truncated"):
+    if not isinstance(tree, list) or data.get("truncated"):
         raise UpdateError("Update Failed: GitHub returned incomplete update information.")
 
     files = {}

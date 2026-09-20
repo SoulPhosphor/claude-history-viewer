@@ -38,6 +38,36 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(result["message"], "No updates available.")
             download.assert_not_called()
 
+    def test_remote_tree_resolves_branch_to_commit_before_archive(self):
+        blob_sha = "1" * 40
+        with mock.patch.object(
+            updater,
+            "_fetch_json",
+            side_effect=[
+                {"sha": "commit-sha"},
+                {
+                    "sha": "tree-sha",
+                    "truncated": False,
+                    "tree": [
+                        {
+                            "path": "server.py",
+                            "type": "blob",
+                            "sha": blob_sha,
+                        }
+                    ],
+                },
+            ],
+        ) as fetch:
+            commit_sha, files = updater._remote_tree()
+
+        self.assertEqual(commit_sha, "commit-sha")
+        self.assertEqual(files, {"server.py": blob_sha})
+        self.assertEqual(fetch.call_args_list[0].args[0], f"{updater.API_ROOT}/commits/main")
+        self.assertEqual(
+            fetch.call_args_list[1].args[0],
+            f"{updater.API_ROOT}/git/trees/commit-sha?recursive=1",
+        )
+
     def test_update_replaces_code_and_preserves_data(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
