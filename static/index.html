@@ -258,6 +258,10 @@
           <span class="sidebar-menu-item-icon" aria-hidden="true">🏷️</span>
           <span class="sidebar-menu-item-label">Labels</span>
         </button>
+        <button class="sidebar-menu-item" role="menuitem" data-action="about">
+          <span class="sidebar-menu-item-icon" aria-hidden="true">ⓘ</span>
+          <span class="sidebar-menu-item-label">About</span>
+        </button>
       </div>
 
       <!-- Popup menu anchored to the briefcase button. Global Bookmarks sits at
@@ -899,6 +903,18 @@
                 Reset to defaults
               </button>
             </section>
+          </div>
+        </div>
+
+        <div id="about-panel" hidden>
+          <div class="thread-header">
+            <h2>About</h2>
+          </div>
+          <div id="about-content">
+            <div class="about-update-row">
+              <button id="check-update-btn" type="button">Check for Updates</button>
+              <div id="update-status" role="status" aria-live="polite"></div>
+            </div>
           </div>
         </div>
 

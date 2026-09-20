@@ -120,6 +120,66 @@
   margin-right: 0;
   flex-wrap: wrap;
 }
+
+/* ── About page + updater ───────────────────────────────────────────────── */
+#about-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#about-panel[hidden] {
+  display: none;
+}
+#about-content {
+  flex: 1;
+  padding: var(--about-content-padding);
+  overflow-y: auto;
+}
+.about-update-row,
+.update-status {
+  display: flex;
+  align-items: center;
+}
+.about-update-row {
+  gap: var(--about-update-gap);
+}
+#check-update-btn {
+  flex-shrink: 0;
+  padding: var(--about-button-padding);
+  border: 1px solid var(--about-button-border);
+  border-radius: var(--about-button-radius);
+  background: var(--about-button-bg);
+  color: var(--about-button-color);
+  font: inherit;
+  cursor: pointer;
+}
+#check-update-btn:disabled {
+  opacity: var(--about-button-disabled-opacity);
+  cursor: default;
+}
+.update-status {
+  gap: var(--update-status-gap);
+  color: var(--update-status-color);
+  font-size: var(--update-status-size);
+}
+.update-status-error {
+  color: var(--update-error-color);
+}
+.update-spinner {
+  width: var(--update-spinner-size);
+  height: var(--update-spinner-size);
+  box-sizing: border-box;
+  border: var(--update-spinner-width) solid var(--update-spinner-track);
+  border-top-color: var(--update-spinner-accent);
+  border-radius: 50%;
+  animation: update-spin var(--update-spinner-speed) linear infinite;
+}
+@keyframes update-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 /* Folder rows are wrapping flex rows: the snippet takes its own full line
    under the title, the way the main list shows it. Rendered only when the
    Show Chat Snippet setting is on; nothing is emitted when it is off. */

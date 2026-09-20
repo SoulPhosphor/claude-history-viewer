@@ -142,6 +142,7 @@ const modelReloadBtn = $("model-reload-btn");
 const importAuditContent = $("import-audit-content");
 const importNewPanel = $("import-new-panel");
 const settingsPanel = $("settings-panel");
+const aboutPanel = $("about-panel");
 const labelsPanel = $("labels-panel");
 const summaryBodyPanel = $("summary-body");
 const artifactPanel = $("artifact-panel");
@@ -2029,6 +2030,7 @@ async function activateActiveTab() {
   if (state.activeSpecialView === "gizmos") return openGizmos();
   if (state.activeSpecialView === "import_new") return openImportNew();
   if (state.activeSpecialView === "settings") return openSettings();
+  if (state.activeSpecialView === "about") return openAbout();
   const cid = returnConversationId();
   if (cid) {
     await openConversation(cid, findConvItemEl(cid));
@@ -2093,6 +2095,7 @@ function hideAllPanels() {
   gizmosPanel.hidden = true;
   importNewPanel.hidden = true;
   settingsPanel.hidden = true;
+  aboutPanel.hidden = true;
   claudeModelsPanel.hidden = true;
   labelsPanel.hidden = true;
   const gbPanelEl = document.getElementById("global-bookmarks-panel");
@@ -3980,6 +3983,64 @@ async function openSettings() {
   }
 }
 
+// ── About screen ─────────────────────────────────────────────────────────────
+
+async function openAbout() {
+  if (typeof summaryHasUnsavedChanges === "function" && summaryHasUnsavedChanges()) {
+    const r = await openSummaryUnsavedModal();
+    if (r === "cancel") return;
+    if (r === "save") await saveAllUnsaved();
+  }
+  if (typeof closeSummaryPanel === "function") closeSummaryPanel();
+  rememberReturnTab();
+  state.activeSpecialView = "about";
+  state.activeTabId = null;
+  document
+    .querySelectorAll(".conv-item.active")
+    .forEach((el) => el.classList.remove("active"));
+  state.activeId = null;
+  await ensureSpecialTab("about", "About");
+  hideAllPanels();
+  aboutPanel.hidden = false;
+}
+
+const checkUpdateBtn = $("check-update-btn");
+const updateStatus = $("update-status");
+
+checkUpdateBtn?.addEventListener("click", async () => {
+  checkUpdateBtn.disabled = true;
+  updateStatus.className = "update-status update-status-checking";
+  updateStatus.innerHTML =
+    '<span class="update-spinner" aria-hidden="true"></span><span>Checking for Updates.</span>';
+  try {
+    const response = await fetch("/api/update", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CHV-Update": "1",
+      },
+      body: "{}",
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error();
+    updateStatus.textContent = data.message || "Update Failed: The result was not understood.";
+    updateStatus.className =
+      data.status === "error"
+        ? "update-status update-status-error"
+        : "update-status update-status-success";
+    if (data.status === "updated") {
+      try {
+        sessionStorage.setItem("chv-update-result", data.message || "Update successful!");
+      } catch (_) {}
+    }
+  } catch (_) {
+    updateStatus.textContent = "Update Failed: The app stopped responding. Please try again.";
+    updateStatus.className = "update-status update-status-error";
+  } finally {
+    checkUpdateBtn.disabled = false;
+  }
+});
+
 function saveCompareColors() {
   applyCompareColors();
   renderTabs();
@@ -5131,6 +5192,7 @@ sidebarMenu.querySelectorAll(".sidebar-menu-item").forEach((item) => {
     else if (action === "import-audit") openImportAudit(false);
     else if (action === "import-new") openImportNew();
     else if (action === "settings") openSettings();
+    else if (action === "about") openAbout();
     else if (action === "claude-models") openClaudeModels();
     else if (action === "labels") openLabels();
   });
@@ -5967,9 +6029,18 @@ async function initApp() {
   await loadFolders();
   await loadTabs();
   await loadConversations(false);
+  let updateResult = "";
+  try {
+    updateResult = sessionStorage.getItem("chv-update-result") || "";
+    if (updateResult) sessionStorage.removeItem("chv-update-result");
+  } catch (_) {}
   // Restore the last conversation viewed, else open the most recent so the
   // reading pane is never empty on a populated database.
-  if (state.activeSpecialView) {
+  if (updateResult) {
+    await openAbout();
+    updateStatus.textContent = updateResult;
+    updateStatus.className = "update-status update-status-success";
+  } else if (state.activeSpecialView) {
     await activateActiveTab();
   } else if (state.lastConversationId) {
     await openConversation(
@@ -5999,4 +6070,3 @@ window.addEventListener("beforeunload", () => {
     lastConversationId: state.lastConversationId,
   });
 });
-

@@ -9,7 +9,7 @@ from pathlib import Path
 # Reusable business/data logic for the labeling features. server.py stays the
 # HTTP/routing shell; these modules own the SQL, validation, and transactions
 # and raise ApiError for error responses.
-import labels, bulk_labels, snapshots, gizmos
+import labels, bulk_labels, snapshots, gizmos, updater
 from api_common import ApiError
 
 # Set CHV_TIMING=1 to log each request's method, path, and duration to stderr.
@@ -37,7 +37,8 @@ def _code_signature() -> str:
     here = Path(__file__).resolve().parent
     h = hashlib.sha256()
     for name in ("server.py", "build_db.py", "api_common.py",
-                 "labels.py", "bulk_labels.py", "snapshots.py", "gizmos.py"):
+                 "labels.py", "bulk_labels.py", "snapshots.py", "gizmos.py",
+                 "updater.py"):
         try:
             h.update((here / name).read_bytes())
         except OSError:
@@ -53,8 +54,9 @@ def _static_signature() -> str:
     import hashlib
     static_dir = Path(__file__).resolve().parent / "static"
     h = hashlib.sha256()
-    for name in ("index.html", "app.js", "style.css",
-                 "labels_screen.js", "bulk_labels.js", "snapshots.js", "gizmos.js"):
+    for name in ("index.html", "app.js", "style.css", "settings.css",
+                 "labels_screen.js", "bulk_labels.js", "snapshots.js",
+                 "gizmos.js", "bookmarks.js", "bookmarks_hub.js"):
         try:
             h.update((static_dir / name).read_bytes())
         except OSError:
@@ -1338,6 +1340,11 @@ class Handler(BaseHTTPRequestHandler):
             self._api_snapshot_restore(urllib.parse.unquote(inner))
         elif path == "/api/import-new":
             self._api_import_new()
+        elif path == "/api/update":
+            if not self._authorized_update_request():
+                self.send_json({"error": "Update request not authorized."}, 403)
+            else:
+                self.send_json(updater.check_and_update(Path(__file__).resolve().parent))
         elif path == "/api/recycle-bin/restore":
             self._api_recycle_restore()
         elif path == "/api/recycle-bin/purge":
@@ -1439,6 +1446,28 @@ class Handler(BaseHTTPRequestHandler):
             return json.loads(body.decode("utf-8", errors="replace"))
         except Exception:
             return {}
+
+    def _authorized_update_request(self) -> bool:
+        """Allow the executable-code updater only from this app's own page.
+
+        JSON plus the custom header makes a cross-origin browser request require
+        a CORS preflight, which this local server does not grant. Origin and
+        Sec-Fetch-Site checks provide a second guard when browsers send them.
+        """
+        content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            return False
+        if self.headers.get("X-CHV-Update") != "1":
+            return False
+        if self.headers.get("Sec-Fetch-Site", "").lower() == "cross-site":
+            return False
+
+        origin = self.headers.get("Origin", "").rstrip("/")
+        if origin:
+            host = self.headers.get("Host", "")
+            if origin not in (f"http://{host}", f"https://{host}"):
+                return False
+        return True
 
     def _parse_multipart_form(self, body: bytes, boundary: bytes) -> dict[str, list[dict]]:
         fields: dict[str, list[dict]] = {}
