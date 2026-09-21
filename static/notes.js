@@ -21,6 +21,7 @@ let _notesSideSaveQueue = Promise.resolve();
 let _notesAutosaveTimers = new Map();
 let _notesPendingValues = new Map();
 let _notesOutstandingSaves = 0;
+let _notesWriteGeneration = 0;
 let _sidebarWasCollapsed = null;
 let _sideWasOpenBeforeFullNotes = false;
 let _notesUnsavedResolve = null;
@@ -175,6 +176,7 @@ function queueSideSave(field, value) {
   if (!convId) return _notesSideSaveQueue;
   _notesVisit.current[field] = value;
   _notesPendingValues.set(field, value);
+  _notesWriteGeneration += 1;
   _notesOutstandingSaves += 1;
   _notesSideSaveQueue = _notesSideSaveQueue
     .catch(() => {})
@@ -228,6 +230,7 @@ function queueFullNotesSave(convId, fields) {
     _notesAutosaveTimers.delete(field);
     _notesPendingValues.delete(field);
   }
+  _notesWriteGeneration += 1;
   _notesOutstandingSaves += 1;
   _notesSideSaveQueue = _notesSideSaveQueue
     .catch(() => {})
@@ -306,6 +309,8 @@ async function openNotesSidePanel() {
 
   if (_notesVisit.baseline === null) {
     const token = ++_notesSideLoadToken;
+    const generationAtOpen = _notesWriteGeneration;
+    const writesWereOutstanding = _notesOutstandingSaves > 0;
     let data;
     try {
       data = await apiGetNotes(convId);
@@ -319,9 +324,35 @@ async function openNotesSidePanel() {
       return;
     }
     if (token !== _notesSideLoadToken || _notesVisit.convId !== convId) return;
-    const values = noteValues(data);
-    _notesVisit.baseline = { ...values };
-    setSideNotesValues(values);
+    const openingValues = noteValues(data);
+    let currentValues = openingValues;
+
+    // The first response remains the visit's revert baseline. If a full-editor
+    // or programmatic save overlapped it, wait for the shared write queue and
+    // refetch until no newer write generation raced that refresh.
+    if (writesWereOutstanding || generationAtOpen !== _notesWriteGeneration) {
+      let observedGeneration;
+      do {
+        observedGeneration = _notesWriteGeneration;
+        await _notesSideSaveQueue.catch(() => {});
+        let latest;
+        try {
+          latest = await apiGetNotes(convId);
+        } catch (_) {
+          if (token === _notesSideLoadToken) {
+            setSideNotesLoading(false);
+            notesSidePanel.hidden = true;
+            updateNotesSideIcon(false);
+            restoreSidebarCollapsedState();
+          }
+          return;
+        }
+        if (token !== _notesSideLoadToken || _notesVisit.convId !== convId) return;
+        currentValues = noteValues(latest);
+      } while (observedGeneration !== _notesWriteGeneration);
+    }
+    _notesVisit.baseline = { ...openingValues };
+    setSideNotesValues(currentValues);
     setSideNotesLoading(false);
   }
 }
