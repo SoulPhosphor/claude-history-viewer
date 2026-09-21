@@ -218,6 +218,30 @@ function scheduleSideAutosave(field, value) {
   }, 350));
 }
 
+function queueFullNotesSave(convId, fields) {
+  // An explicit full-editor save wins over side-panel values that were pending
+  // when Save was clicked. Already-dispatched side writes finish first; this
+  // save is appended to the same queue so it commits afterward.
+  for (const field of Object.keys(fields)) {
+    const timer = _notesAutosaveTimers.get(field);
+    if (timer) clearTimeout(timer);
+    _notesAutosaveTimers.delete(field);
+    _notesPendingValues.delete(field);
+  }
+  _notesOutstandingSaves += 1;
+  _notesSideSaveQueue = _notesSideSaveQueue
+    .catch(() => {})
+    .then(async () => {
+      try {
+        return await apiSaveNotes(convId, fields);
+      } finally {
+        _notesOutstandingSaves -= 1;
+      }
+    });
+  _notesSideSaveQueue.catch(() => {});
+  return _notesSideSaveQueue;
+}
+
 async function flushNotesSideAutosaves() {
   for (const [field, timer] of _notesAutosaveTimers.entries()) {
     clearTimeout(timer);
@@ -331,15 +355,16 @@ async function saveFullNote(field) {
   const input = fullNotesInput(field);
   if (!input) return;
   const value = input.value;
-  await apiSaveNotes(_notesConvId, { [field]: value });
+  await queueFullNotesSave(_notesConvId, { [field]: value });
   _savedNotes[field] = value;
   if (_notesVisit.convId === _notesConvId) {
-    const timer = _notesAutosaveTimers.get(field);
-    if (timer) clearTimeout(timer);
-    _notesAutosaveTimers.delete(field);
-    _notesVisit.current[field] = value;
-    const sideInput = sideNotesInput(field);
-    if (sideInput) sideInput.value = value;
+    // A side edit made after Save was clicked is later user input and stays
+    // queued to win. Only mirror the full value when no newer edit exists.
+    if (!_notesPendingValues.has(field)) {
+      _notesVisit.current[field] = value;
+      const sideInput = sideNotesInput(field);
+      if (sideInput) sideInput.value = value;
+    }
   }
   updateFullNotesButtons(field);
 }
@@ -352,10 +377,10 @@ async function saveAllUnsavedNotes() {
     if (input && input.value !== _savedNotes[field]) fields[field] = input.value;
   }
   if (!Object.keys(fields).length) return;
-  await apiSaveNotes(_notesConvId, fields);
+  await queueFullNotesSave(_notesConvId, fields);
   for (const [field, value] of Object.entries(fields)) {
     _savedNotes[field] = value;
-    if (_notesVisit.convId === _notesConvId) {
+    if (_notesVisit.convId === _notesConvId && !_notesPendingValues.has(field)) {
       _notesVisit.current[field] = value;
       const sideInput = sideNotesInput(field);
       if (sideInput) sideInput.value = value;
