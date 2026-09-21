@@ -119,6 +119,13 @@
   --notes-panel-field-gap: 6px;
   --notes-panel-heading-gap: 8px;
   --notes-panel-line-height: 1.5;
+  --notes-panel-disabled-opacity: 0.55;
+  --notes-panel-status-bg: var(--bg);
+  --notes-panel-status-border: var(--accent);
+  --notes-panel-status-radius: 6px;
+  --notes-panel-status-padding: 8px;
+  --notes-panel-status-size: 11px;
+  --notes-panel-status-gap: 8px;
   --notes-full-min-height: 150px;
   --thread-chevron-size: 20px;
   --thread-chevron-hit-size: 32px;
@@ -1735,6 +1742,32 @@ kbd {
   min-height: 0;
   overflow-y: auto;
 }
+.notes-side-save-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--notes-panel-status-gap);
+  margin-bottom: var(--notes-panel-gap);
+  padding: var(--notes-panel-status-padding);
+  border: 1px solid var(--notes-panel-status-border);
+  border-radius: var(--notes-panel-status-radius);
+  background: var(--notes-panel-status-bg);
+  color: var(--text);
+  font-size: var(--notes-panel-status-size);
+}
+.notes-side-save-status[hidden] {
+  display: none;
+}
+.notes-side-save-status button {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+}
 .notes-side-section {
   display: flex;
   flex-direction: column;
@@ -1765,6 +1798,11 @@ kbd {
 }
 .notes-side-revert:hover {
   text-decoration: underline;
+}
+.notes-side-revert:disabled,
+.notes-side-section textarea:disabled {
+  cursor: default;
+  opacity: var(--notes-panel-disabled-opacity);
 }
 .notes-side-section textarea {
   min-height: var(--notes-panel-textarea-min-height);
