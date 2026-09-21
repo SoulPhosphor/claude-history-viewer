@@ -22,6 +22,7 @@ let _notesAutosaveTimers = new Map();
 let _notesPendingValues = new Map();
 let _notesOutstandingSaves = 0;
 let _notesWriteGeneration = 0;
+let _notesSaveFailed = false;
 let _sidebarWasCollapsed = null;
 let _sideWasOpenBeforeFullNotes = false;
 let _notesUnsavedResolve = null;
@@ -160,6 +161,7 @@ function setSideNotesLoading(loading) {
 }
 
 function setNotesSideSaveError(error = null) {
+  _notesSaveFailed = !!error;
   const status = $("notes-side-save-status");
   if (!status) return;
   status.hidden = !error;
@@ -596,7 +598,13 @@ window.addEventListener("beforeunload", (event) => {
   const pendingBody = JSON.stringify(pending);
   const pendingIsOversized = new TextEncoder().encode(pendingBody).length > NOTES_KEEPALIVE_MAX_BYTES;
   const pendingHasQueuedWrites = _notesOutstandingSaves > 0 && Object.keys(pending).length > 0;
-  if (notesHasUnsavedChanges() || pendingIsOversized || pendingHasQueuedWrites) {
+  const pendingHasKnownFailure = _notesSaveFailed && Object.keys(pending).length > 0;
+  if (
+    notesHasUnsavedChanges()
+    || pendingIsOversized
+    || pendingHasQueuedWrites
+    || pendingHasKnownFailure
+  ) {
     event.preventDefault();
     event.returnValue = "";
   }
