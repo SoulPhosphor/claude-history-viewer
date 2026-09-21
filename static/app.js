@@ -2287,6 +2287,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   threadTags.innerHTML = "";
 
   const data = await apiConversation(id);
+  if (state.activeId !== id) return;
   if (data.error) {
     messagesEl.innerHTML = `<div class="no-results">Error: ${escHtml(data.error)}</div>`;
     return;
@@ -2324,6 +2325,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
 
   if (typeof finishOpeningNotesConversationVisit === "function") {
     await finishOpeningNotesConversationVisit(id);
+    if (state.activeId !== id) return;
   }
 
   messagesEl.innerHTML = "";
