@@ -100,7 +100,7 @@ class NotesUiContractTests(unittest.TestCase):
             self.assertGreaterEqual(INDEX.count(f'data-note-field="{field}"'), 5)
 
     def test_side_panel_revert_uses_visit_baseline_and_autosave(self):
-        self.assertIn("_notesVisit.baseline = { ...values }", NOTES_JS)
+        self.assertIn("_notesVisit.baseline = { ...openingValues }", NOTES_JS)
         self.assertIn("const value = _notesVisit.baseline[field]", NOTES_JS)
         self.assertIn("scheduleSideAutosave", NOTES_JS)
         self.assertIn("if (_notesVisit.convId === convId) return", NOTES_JS)
@@ -138,6 +138,11 @@ class NotesUiContractTests(unittest.TestCase):
         self.assertIn("function queueFullNotesSave", NOTES_JS)
         self.assertIn("_notesPendingValues.delete(field)", NOTES_JS)
         self.assertIn("await queueFullNotesSave(_notesConvId, fields)", NOTES_JS)
+
+    def test_sidebar_load_reconciles_saves_without_losing_visit_baseline(self):
+        self.assertIn("const openingValues = noteValues(data)", NOTES_JS)
+        self.assertIn("observedGeneration !== _notesWriteGeneration", NOTES_JS)
+        self.assertIn("_notesVisit.baseline = { ...openingValues }", NOTES_JS)
 
     def test_canceled_history_navigation_restores_the_conversation_entry(self):
         self.assertIn("_gbRestoringCanceledPopstate", BOOKMARKS_HUB_JS)
