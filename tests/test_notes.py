@@ -134,6 +134,10 @@ class NotesUiContractTests(unittest.TestCase):
         self.assertIn("pendingHasQueuedWrites", NOTES_JS)
         self.assertIn("!pendingHasQueuedWrites", NOTES_JS)
 
+    def test_unload_warns_when_a_pending_save_has_already_failed(self):
+        self.assertIn("_notesSaveFailed = !!error", NOTES_JS)
+        self.assertIn("pendingHasKnownFailure", NOTES_JS)
+
     def test_full_editor_save_is_serialized_after_sidebar_writes(self):
         self.assertIn("function queueFullNotesSave", NOTES_JS)
         self.assertIn("_notesPendingValues.delete(field)", NOTES_JS)
