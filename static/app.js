@@ -36,6 +36,7 @@ const state = {
     includeCondensedSummary: false,
     showSummaryHints: true,
     showSummaryAuthor: false,
+    autoOpenNotesPanel: false,
     // Chat Snippet in sidebar rows and Labels in the chat header. Default
     // state only applies when the user has not chosen otherwise (the loaded
     // preference overwrites these on startup, and the choice persists).
@@ -145,9 +146,20 @@ const settingsPanel = $("settings-panel");
 const aboutPanel = $("about-panel");
 const labelsPanel = $("labels-panel");
 const summaryBodyPanel = $("summary-body");
+const notesBodyPanel = $("notes-body");
 const artifactPanel = $("artifact-panel");
 const artifactPanelTitle = $("artifact-panel-title");
 const artifactPanelBody = $("artifact-panel-body");
+
+// Temporary sidebar surfaces (Bookmarks and Notes) form a small visual stack.
+// Whichever one the user opens next rises above the others; closing it reveals
+// the previous surface with its state intact.
+let _sidebarOverlayLayer = 6;
+function raiseSidebarOverlay(element) {
+  if (!element) return;
+  _sidebarOverlayLayer += 1;
+  element.style.zIndex = String(_sidebarOverlayLayer);
+}
 
 // ── Available local files (source/files/) ────────────────────────────────────
 // Maps normalizedName → realFilename. Normalized = lowercase + spaces→underscores.
@@ -1692,6 +1704,7 @@ async function loadUiPreferences() {
   state.preferences.includeCondensedSummary = Boolean(p.includeCondensedSummary);
   state.preferences.showSummaryHints = p.showSummaryHints !== false;
   state.preferences.showSummaryAuthor = Boolean(p.showSummaryAuthor);
+  state.preferences.autoOpenNotesPanel = Boolean(p.autoOpenNotesPanel);
   state.preferences.showChatSnippet = Boolean(p.showChatSnippet);
   state.preferences.showHeaderLabels = Boolean(p.showHeaderLabels);
   state.scrollByConversation =
@@ -1760,6 +1773,11 @@ function rememberSearchQuery(q) {
 async function saveUiPreferences(partial) {
   state.preferences = { ...state.preferences, ...partial };
   await apiUpdatePreferences(state.preferences);
+}
+
+async function leaveNotesForSpecialView() {
+  if (typeof notesNavigationGuard !== "function") return true;
+  return notesNavigationGuard({ endVisit: true });
 }
 
 function getTabById(tabId) {
@@ -2087,6 +2105,7 @@ function hideAllPanels() {
   emptyState.hidden = true;
   thread.hidden = true;
   if (summaryBodyPanel) summaryBodyPanel.hidden = true;
+  if (notesBodyPanel) notesBodyPanel.hidden = true;
   galleryPanel.hidden = true;
   memoriesPanel.hidden = true;
   projectsPanel.hidden = true;
@@ -2240,6 +2259,14 @@ async function openConversation(id, clickedEl, targetSeq = null) {
     if (r === "save") await saveAllUnsaved();
   }
   if (typeof closeSummaryPanel === "function") closeSummaryPanel();
+  if (typeof notesNavigationGuard === "function") {
+    const canLeave = await notesNavigationGuard({ endVisit: false });
+    if (!canLeave) return;
+  }
+  if (typeof beginNotesConversationVisit === "function") {
+    const beganVisit = await beginNotesConversationVisit(id);
+    if (!beganVisit) return;
+  }
   state.activeSpecialView = null;
   // Update sidebar selection (main list and folder tree)
   document
@@ -2260,6 +2287,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   threadTags.innerHTML = "";
 
   const data = await apiConversation(id);
+  if (state.activeId !== id) return;
   if (data.error) {
     messagesEl.innerHTML = `<div class="no-results">Error: ${escHtml(data.error)}</div>`;
     return;
@@ -2294,6 +2322,11 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   state.tags = data.tags || [];
   state.moodTags = data.mood_tags || [];
   renderThreadTags();
+
+  if (typeof finishOpeningNotesConversationVisit === "function") {
+    await finishOpeningNotesConversationVisit(id);
+    if (state.activeId !== id) return;
+  }
 
   messagesEl.innerHTML = "";
   if (!messages.length) {
@@ -3025,6 +3058,7 @@ async function openGallery(fromButton = false) {
     if (r === "save") await saveAllUnsaved();
   }
   if (typeof closeSummaryPanel === "function") closeSummaryPanel();
+  if (!(await leaveNotesForSpecialView())) return;
   if (fromButton && state.activeSpecialView === "gallery") {
     await returnFromSpecialView();
     return;
@@ -3070,6 +3104,7 @@ $("gallery-btn")?.addEventListener("click", () => openGallery(true));
 // ── Attachment Report ─────────────────────────────────────────────────────────
 
 async function openAttReport(forceRefresh, fromButton = false) {
+  if (!(await leaveNotesForSpecialView())) return;
   if (fromButton && state.activeSpecialView === "attachment_report") {
     await returnFromSpecialView();
     return;
@@ -3210,6 +3245,7 @@ $("att-report-refresh-btn").addEventListener("click", () =>
 // Chrome setup shared by opening the audit panel fresh and restoring it on a
 // browser Back/Forward (popstate) — only the content rendered inside differs.
 async function showImportAuditPanel() {
+  if (!(await leaveNotesForSpecialView())) return false;
   rememberReturnTab();
   state.activeSpecialView = "import_audit";
   state.activeTabId = null;
@@ -3220,10 +3256,11 @@ async function showImportAuditPanel() {
   await ensureSpecialTab("import_audit", "Import Audit");
   hideAllPanels();
   importAuditPanel.hidden = false;
+  return true;
 }
 
 async function openImportAudit() {
-  await showImportAuditPanel();
+  if (!(await showImportAuditPanel())) return;
   renderImportAuditSummary();
 }
 
@@ -3399,16 +3436,25 @@ function openConversationFromAudit(convId, status, label) {
 // Browser Back/Forward through audit-originated navigation: restore the same
 // category list (with scroll position) or reopen the conversation, rather
 // than falling through to whatever the SPA happens to have on screen.
-window.addEventListener("popstate", (e) => {
+let _auditRestoringCanceledPopstate = false;
+window.addEventListener("popstate", async (e) => {
   const st = e.state;
   if (!st || !st.auditNav) return;
+  if (_auditRestoringCanceledPopstate) {
+    _auditRestoringCanceledPopstate = false;
+    return;
+  }
   if (st.view === "audit-list") {
-    showImportAuditPanel().then(() =>
-      renderImportAuditList(st.status, st.label, {
-        push: false,
-        scrollTop: st.scrollTop ?? 0,
-      }),
-    );
+    const opened = await showImportAuditPanel();
+    if (!opened) {
+      _auditRestoringCanceledPopstate = true;
+      history.forward();
+      return;
+    }
+    renderImportAuditList(st.status, st.label, {
+      push: false,
+      scrollTop: st.scrollTop ?? 0,
+    });
   } else if (st.view === "conversation") {
     openConversation(st.convId, null);
   }
@@ -3953,6 +3999,7 @@ async function openSettings() {
     if (r === "save") await saveAllUnsaved();
   }
   if (typeof closeSummaryPanel === "function") closeSummaryPanel();
+  if (!(await leaveNotesForSpecialView())) return;
   rememberReturnTab();
   state.activeSpecialView = "settings";
   state.activeTabId = null;
@@ -3973,6 +4020,8 @@ async function openSettings() {
   if (hintsToggle) hintsToggle.checked = state.preferences.showSummaryHints;
   const authorToggle = $("setting-summary-author");
   if (authorToggle) authorToggle.checked = state.preferences.showSummaryAuthor;
+  const autoNotesToggle = $("setting-auto-notes-panel");
+  if (autoNotesToggle) autoNotesToggle.checked = state.preferences.autoOpenNotesPanel;
   const headerLabelsToggle = $("setting-header-labels");
   if (headerLabelsToggle) {
     headerLabelsToggle.checked = state.preferences.showHeaderLabels;
@@ -3992,6 +4041,7 @@ async function openAbout() {
     if (r === "save") await saveAllUnsaved();
   }
   if (typeof closeSummaryPanel === "function") closeSummaryPanel();
+  if (!(await leaveNotesForSpecialView())) return;
   rememberReturnTab();
   state.activeSpecialView = "about";
   state.activeTabId = null;
@@ -4084,6 +4134,9 @@ $("setting-summary-author")?.addEventListener("change", (e) => {
   if (typeof updateSummaryAuthorLabels === "function") {
     updateSummaryAuthorLabels();
   }
+});
+$("setting-auto-notes-panel")?.addEventListener("change", (e) => {
+  saveUiPreferences({ autoOpenNotesPanel: e.target.checked });
 });
 $("setting-chat-snippet")?.addEventListener("change", (e) => {
   saveUiPreferences({ showChatSnippet: e.target.checked });
@@ -4571,6 +4624,7 @@ async function openImportNew() {
     if (r === "save") await saveAllUnsaved();
   }
   if (typeof closeSummaryPanel === "function") closeSummaryPanel();
+  if (!(await leaveNotesForSpecialView())) return;
   rememberReturnTab();
   state.activeSpecialView = "import_new";
   state.activeTabId = null;
@@ -4924,6 +4978,7 @@ importReviewSelectedBtn?.addEventListener("click", () => resolveReview({}));
 // ── Add Claude Models screen ─────────────────────────────────────────────────
 
 async function openClaudeModels() {
+  if (!(await leaveNotesForSpecialView())) return;
   rememberReturnTab();
   state.activeSpecialView = "claude_models";
   state.activeTabId = null;
@@ -5105,7 +5160,15 @@ function setThreadTitle(text) {
   threadTitlebarLabel.textContent = text;
   const summaryToggleBtn = $("summary-toggle-btn");
   if (summaryToggleBtn) summaryToggleBtn.hidden = !text;
+  const notesToggleBtn = $("notes-toggle-btn");
+  const notesSideToggleBtn = $("notes-side-toggle-btn");
+  if (notesToggleBtn) notesToggleBtn.hidden = !text;
+  if (notesSideToggleBtn) notesSideToggleBtn.hidden = !text;
   updateSummaryToggleIcon(false);
+  if (typeof updateNotesScreenIcon === "function") updateNotesScreenIcon(false);
+  if (typeof updateNotesSideIcon === "function") {
+    updateNotesSideIcon(typeof notesSidePanelIsOpen === "function" && notesSidePanelIsOpen());
+  }
 }
 
 function threadHeaderCollapsed() {
@@ -5207,6 +5270,7 @@ async function openMemories(fromButton = false) {
     if (r === "save") await saveAllUnsaved();
   }
   if (typeof closeSummaryPanel === "function") closeSummaryPanel();
+  if (!(await leaveNotesForSpecialView())) return;
   if (fromButton && state.activeSpecialView === "memories") {
     await returnFromSpecialView();
     return;
@@ -5261,6 +5325,7 @@ async function openProjects(fromButton = false) {
     if (r === "save") await saveAllUnsaved();
   }
   if (typeof closeSummaryPanel === "function") closeSummaryPanel();
+  if (!(await leaveNotesForSpecialView())) return;
   if (fromButton && state.activeSpecialView === "projects") {
     await returnFromSpecialView();
     return;

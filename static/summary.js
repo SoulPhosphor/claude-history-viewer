@@ -262,6 +262,10 @@ function refreshSummaryHintForConv(convId) {
 
 async function openSummaryForConversation(convId) {
   if (!convId) return;
+  if (typeof notesNavigationGuard === "function") {
+    const canLeaveNotes = await notesNavigationGuard({ endVisit: false });
+    if (!canLeaveNotes) return;
+  }
   if (_summaryConvId && _summaryConvId !== convId && summaryHasUnsavedChanges()) {
     const result = await openSummaryUnsavedModal();
     if (result === "cancel") return;

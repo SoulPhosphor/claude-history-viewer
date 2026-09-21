@@ -29,6 +29,7 @@ async function openLabels() {
     if (r === "save") await saveAllUnsaved();
   }
   if (typeof closeSummaryPanel === "function") closeSummaryPanel();
+  if (typeof leaveNotesForSpecialView === "function" && !(await leaveNotesForSpecialView())) return;
   rememberReturnTab();
   state.activeSpecialView = "labels";
   state.activeTabId = null;
