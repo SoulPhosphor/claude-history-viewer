@@ -20,7 +20,7 @@ let _notesFullLoadToken = 0;
 let _notesSideSaveQueue = Promise.resolve();
 let _notesAutosaveTimers = new Map();
 let _notesPendingValues = new Map();
-let _notesInFlightSave = null;
+let _notesOutstandingSaves = 0;
 let _sidebarWasCollapsed = null;
 let _sideWasOpenBeforeFullNotes = false;
 let _notesUnsavedResolve = null;
@@ -175,16 +175,15 @@ function queueSideSave(field, value) {
   if (!convId) return _notesSideSaveQueue;
   _notesVisit.current[field] = value;
   _notesPendingValues.set(field, value);
+  _notesOutstandingSaves += 1;
   _notesSideSaveQueue = _notesSideSaveQueue
     .catch(() => {})
     .then(async () => {
-      const inFlight = { convId, field, value };
-      _notesInFlightSave = inFlight;
       let result;
       try {
         result = await apiSaveNotes(convId, { [field]: value });
       } finally {
-        if (_notesInFlightSave === inFlight) _notesInFlightSave = null;
+        _notesOutstandingSaves -= 1;
       }
       if (_notesPendingValues.get(field) === value) {
         _notesPendingValues.delete(field);
@@ -540,12 +539,8 @@ window.addEventListener("beforeunload", (event) => {
   const pending = Object.fromEntries(_notesPendingValues);
   const pendingBody = JSON.stringify(pending);
   const pendingIsOversized = new TextEncoder().encode(pendingBody).length > NOTES_KEEPALIVE_MAX_BYTES;
-  const pendingWouldRace = !!(
-    _notesInFlightSave
-    && Object.hasOwn(pending, _notesInFlightSave.field)
-    && pending[_notesInFlightSave.field] !== _notesInFlightSave.value
-  );
-  if (notesHasUnsavedChanges() || pendingIsOversized || pendingWouldRace) {
+  const pendingHasQueuedWrites = _notesOutstandingSaves > 0 && Object.keys(pending).length > 0;
+  if (notesHasUnsavedChanges() || pendingIsOversized || pendingHasQueuedWrites) {
     event.preventDefault();
     event.returnValue = "";
   }
@@ -553,13 +548,13 @@ window.addEventListener("beforeunload", (event) => {
     _notesVisit.convId
     && Object.keys(pending).length
     && !pendingIsOversized
-    && !pendingWouldRace
+    && !pendingHasQueuedWrites
   ) {
     // Browsers may cancel ordinary asynchronous work during unload. A small
     // keepalive request is allowed to finish after the document is dismissed.
-    // Larger payloads and a newer value racing an older in-flight write get
-    // the unload warning above and continue through normal autosave if the
-    // user stays on the page.
+    // Larger payloads and any active/queued write get the unload warning above
+    // rather than a competing request. Normal serialized autosave continues if
+    // the user stays on the page.
     apiSaveNotes(_notesVisit.convId, pending, { keepalive: true }).catch(() => {});
   }
 });
