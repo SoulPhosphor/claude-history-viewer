@@ -20,6 +20,7 @@ let _notesFullLoadToken = 0;
 let _notesSideSaveQueue = Promise.resolve();
 let _notesAutosaveTimers = new Map();
 let _notesPendingValues = new Map();
+let _notesInFlightSave = null;
 let _sidebarWasCollapsed = null;
 let _sideWasOpenBeforeFullNotes = false;
 let _notesUnsavedResolve = null;
@@ -177,7 +178,14 @@ function queueSideSave(field, value) {
   _notesSideSaveQueue = _notesSideSaveQueue
     .catch(() => {})
     .then(async () => {
-      const result = await apiSaveNotes(convId, { [field]: value });
+      const inFlight = { convId, field, value };
+      _notesInFlightSave = inFlight;
+      let result;
+      try {
+        result = await apiSaveNotes(convId, { [field]: value });
+      } finally {
+        if (_notesInFlightSave === inFlight) _notesInFlightSave = null;
+      }
       if (_notesPendingValues.get(field) === value) {
         _notesPendingValues.delete(field);
       }
@@ -532,15 +540,26 @@ window.addEventListener("beforeunload", (event) => {
   const pending = Object.fromEntries(_notesPendingValues);
   const pendingBody = JSON.stringify(pending);
   const pendingIsOversized = new TextEncoder().encode(pendingBody).length > NOTES_KEEPALIVE_MAX_BYTES;
-  if (notesHasUnsavedChanges() || pendingIsOversized) {
+  const pendingWouldRace = !!(
+    _notesInFlightSave
+    && Object.hasOwn(pending, _notesInFlightSave.field)
+    && pending[_notesInFlightSave.field] !== _notesInFlightSave.value
+  );
+  if (notesHasUnsavedChanges() || pendingIsOversized || pendingWouldRace) {
     event.preventDefault();
     event.returnValue = "";
   }
-  if (_notesVisit.convId && Object.keys(pending).length && !pendingIsOversized) {
+  if (
+    _notesVisit.convId
+    && Object.keys(pending).length
+    && !pendingIsOversized
+    && !pendingWouldRace
+  ) {
     // Browsers may cancel ordinary asynchronous work during unload. A small
     // keepalive request is allowed to finish after the document is dismissed.
-    // Larger payloads get the unload warning above and continue through the
-    // normal autosave if the user stays on the page.
+    // Larger payloads and a newer value racing an older in-flight write get
+    // the unload warning above and continue through normal autosave if the
+    // user stays on the page.
     apiSaveNotes(_notesVisit.convId, pending, { keepalive: true }).catch(() => {});
   }
 });
