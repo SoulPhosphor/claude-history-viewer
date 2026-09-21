@@ -15,6 +15,8 @@ ROOT = Path(__file__).parents[1]
 NOTES_JS = (ROOT / "static" / "notes.js").read_text()
 INDEX = (ROOT / "static" / "index.html").read_text()
 SERVER = (ROOT / "server.py").read_text()
+APP_JS = (ROOT / "static" / "app.js").read_text()
+BOOKMARKS_HUB_JS = (ROOT / "static" / "bookmarks_hub.js").read_text()
 
 
 class NotesApiTests(unittest.TestCase):
@@ -126,6 +128,15 @@ class NotesUiContractTests(unittest.TestCase):
             "DELETE FROM udb.conversation_notes WHERE conversation_id = ?",
             SERVER,
         )
+
+    def test_unload_does_not_race_a_newer_value_with_an_inflight_save(self):
+        self.assertIn("pendingWouldRace", NOTES_JS)
+        self.assertIn("!pendingWouldRace", NOTES_JS)
+
+    def test_canceled_history_navigation_restores_the_conversation_entry(self):
+        self.assertIn("_gbRestoringCanceledPopstate", BOOKMARKS_HUB_JS)
+        self.assertIn("_auditRestoringCanceledPopstate", APP_JS)
+        self.assertIn("history.forward()", BOOKMARKS_HUB_JS)
 
 
 if __name__ == "__main__":
