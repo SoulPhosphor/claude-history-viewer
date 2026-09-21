@@ -3434,17 +3434,24 @@ function openConversationFromAudit(convId, status, label) {
 // Browser Back/Forward through audit-originated navigation: restore the same
 // category list (with scroll position) or reopen the conversation, rather
 // than falling through to whatever the SPA happens to have on screen.
-window.addEventListener("popstate", (e) => {
+let _auditRestoringCanceledPopstate = false;
+window.addEventListener("popstate", async (e) => {
   const st = e.state;
   if (!st || !st.auditNav) return;
+  if (_auditRestoringCanceledPopstate) {
+    _auditRestoringCanceledPopstate = false;
+    return;
+  }
   if (st.view === "audit-list") {
-    showImportAuditPanel().then((opened) => {
-      if (opened) {
-        renderImportAuditList(st.status, st.label, {
-          push: false,
-          scrollTop: st.scrollTop ?? 0,
-        });
-      }
+    const opened = await showImportAuditPanel();
+    if (!opened) {
+      _auditRestoringCanceledPopstate = true;
+      history.forward();
+      return;
+    }
+    renderImportAuditList(st.status, st.label, {
+      push: false,
+      scrollTop: st.scrollTop ?? 0,
     });
   } else if (st.view === "conversation") {
     openConversation(st.convId, null);
