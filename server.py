@@ -1239,6 +1239,9 @@ def _purge_conversation(conn, cid: str) -> bool:
         # Bookmarks are viewer metadata as well: a purged conversation should
         # take its message bookmarks with it.
         "DELETE FROM udb.conversation_bookmarks WHERE conversation_id = ?",
+        # Notes are conversation-owned viewer metadata and must not reappear if
+        # a purged conversation with the same stable ID is imported later.
+        "DELETE FROM udb.conversation_notes WHERE conversation_id = ?",
     ):
         try:
             conn.execute(stmt, (cid,))
