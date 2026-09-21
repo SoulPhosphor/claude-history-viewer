@@ -309,11 +309,22 @@ async function gbRestoreHistoryList(scrollTop, loadedCount) {
   }
 }
 
+let _gbRestoringCanceledPopstate = false;
 window.addEventListener("popstate", async (e) => {
   const st = e.state;
   if (!st || !st.gbNav) return;
+  if (_gbRestoringCanceledPopstate) {
+    _gbRestoringCanceledPopstate = false;
+    return;
+  }
   if (st.view === "gb-list") {
-    if (typeof leaveNotesForSpecialView === "function" && !(await leaveNotesForSpecialView())) return;
+    if (typeof leaveNotesForSpecialView === "function" && !(await leaveNotesForSpecialView())) {
+      // popstate fires after the browser moves its pointer. Put it back on the
+      // still-visible conversation entry when the user cancels leaving Notes.
+      _gbRestoringCanceledPopstate = true;
+      history.forward();
+      return;
+    }
     showGlobalBookmarksPanel();
     if (typeof renderTabs === "function") renderTabs();
     gbRestoreHistoryList(st.scrollTop, st.loadedCount);
