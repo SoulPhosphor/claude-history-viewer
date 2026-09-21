@@ -144,6 +144,12 @@ class NotesUiContractTests(unittest.TestCase):
         self.assertIn("_auditRestoringCanceledPopstate", APP_JS)
         self.assertIn("history.forward()", BOOKMARKS_HUB_JS)
 
+    def test_auto_open_cannot_resume_over_a_newer_conversation(self):
+        self.assertIn(
+            "await finishOpeningNotesConversationVisit(id);\n    if (state.activeId !== id) return;",
+            APP_JS,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
