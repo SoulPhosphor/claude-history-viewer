@@ -134,6 +134,11 @@ class NotesUiContractTests(unittest.TestCase):
         self.assertIn("pendingHasQueuedWrites", NOTES_JS)
         self.assertIn("!pendingHasQueuedWrites", NOTES_JS)
 
+    def test_full_editor_save_is_serialized_after_sidebar_writes(self):
+        self.assertIn("function queueFullNotesSave", NOTES_JS)
+        self.assertIn("_notesPendingValues.delete(field)", NOTES_JS)
+        self.assertIn("await queueFullNotesSave(_notesConvId, fields)", NOTES_JS)
+
     def test_canceled_history_navigation_restores_the_conversation_entry(self):
         self.assertIn("_gbRestoringCanceledPopstate", BOOKMARKS_HUB_JS)
         self.assertIn("_auditRestoringCanceledPopstate", APP_JS)
