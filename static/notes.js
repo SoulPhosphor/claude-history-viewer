@@ -17,6 +17,7 @@ let _notesVisit = {
 let _notesSideLoadToken = 0;
 let _notesSideSaveQueue = Promise.resolve();
 let _notesAutosaveTimers = new Map();
+let _notesPendingValues = new Map();
 let _sidebarWasCollapsed = null;
 let _sideWasOpenBeforeFullNotes = false;
 let _notesUnsavedResolve = null;
@@ -50,11 +51,12 @@ async function apiGetNotes(convId) {
   return data;
 }
 
-async function apiSaveNotes(convId, fields) {
+async function apiSaveNotes(convId, fields, { keepalive = false } = {}) {
   const response = await fetch(`/api/notes/${encodeURIComponent(convId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(fields),
+    keepalive,
   });
   const data = await response.json();
   if (!response.ok || data.error) throw new Error(data.error || "Unable to save Notes");
@@ -124,14 +126,42 @@ function setSideNotesValues(values) {
   }
 }
 
+function setSideNotesLoading(loading) {
+  notesSidePanel?.toggleAttribute("aria-busy", loading);
+  for (const field of NOTE_FIELDS) {
+    const input = sideNotesInput(field);
+    if (input) input.disabled = loading;
+    const revert = notesSidePanel?.querySelector(
+      `.notes-side-revert[data-note-field="${field}"]`,
+    );
+    if (revert) revert.disabled = loading;
+  }
+}
+
+function setNotesSideSaveError(error = null) {
+  const status = $("notes-side-save-status");
+  if (!status) return;
+  status.hidden = !error;
+  const message = status.querySelector(".notes-side-save-message");
+  if (message) {
+    message.textContent = error
+      ? "Notes could not be saved. Check the connection, then retry."
+      : "";
+  }
+}
+
 function queueSideSave(field, value) {
   const convId = _notesVisit.convId;
   if (!convId) return _notesSideSaveQueue;
   _notesVisit.current[field] = value;
+  _notesPendingValues.set(field, value);
   _notesSideSaveQueue = _notesSideSaveQueue
     .catch(() => {})
     .then(async () => {
       const result = await apiSaveNotes(convId, { [field]: value });
+      if (_notesPendingValues.get(field) === value) {
+        _notesPendingValues.delete(field);
+      }
       // Keep the full screen in sync when it is not holding its own unsaved edit.
       if (_notesConvId === convId) {
         const input = fullNotesInput(field);
@@ -139,12 +169,21 @@ function queueSideSave(field, value) {
         _savedNotes[field] = value;
         updateFullNotesButtons(field);
       }
+      if (!_notesPendingValues.size) setNotesSideSaveError();
       return result;
+    })
+    .catch((error) => {
+      if (_notesVisit.convId === convId) setNotesSideSaveError(error);
+      throw error;
     });
+  // Timer-driven saves have no direct awaiter. Retain the rejection in the
+  // queue for flush/retry, while preventing an unhandled-rejection report.
+  _notesSideSaveQueue.catch(() => {});
   return _notesSideSaveQueue;
 }
 
 function scheduleSideAutosave(field, value) {
+  _notesPendingValues.set(field, value);
   const old = _notesAutosaveTimers.get(field);
   if (old) clearTimeout(old);
   _notesAutosaveTimers.set(field, setTimeout(() => {
@@ -161,6 +200,16 @@ async function flushNotesSideAutosaves() {
     if (input) queueSideSave(field, input.value);
   }
   await _notesSideSaveQueue.catch(() => {});
+
+  // A rejected autosave remains pending. Explicit closes/navigation and the
+  // Retry button make one fresh attempt, and callers can block on the result.
+  const retries = [..._notesPendingValues.entries()].map(([field, value]) =>
+    queueSideSave(field, value),
+  );
+  if (retries.length) await Promise.allSettled(retries);
+  const saved = _notesPendingValues.size === 0;
+  if (!saved) setNotesSideSaveError(new Error("Unable to save Notes"));
+  return saved;
 }
 
 function restoreSidebarCollapsedState() {
@@ -170,23 +219,37 @@ function restoreSidebarCollapsedState() {
 }
 
 async function hideNotesSidePanel({ manual = false, restoreSidebar = true } = {}) {
+  const saved = await flushNotesSideAutosaves();
+  if (!saved) return false;
   if (manual && _notesVisit.convId === state.activeId) {
     _notesVisit.manuallyDismissed = true;
   }
-  await flushNotesSideAutosaves();
   if (notesSidePanel) notesSidePanel.hidden = true;
   updateNotesSideIcon(false);
   if (restoreSidebar) restoreSidebarCollapsedState();
+  return true;
 }
 
 async function openNotesSidePanel() {
   const convId = state.activeId;
   if (!convId) return;
-  if (_notesVisit.convId !== convId) await beginNotesConversationVisit(convId);
+  if (_notesVisit.convId !== convId) {
+    const beganVisit = await beginNotesConversationVisit(convId);
+    if (!beganVisit) return;
+  }
   if (_sidebarWasCollapsed === null) {
     _sidebarWasCollapsed = document.body.classList.contains("sidebar-collapsed");
   }
   document.body.classList.remove("sidebar-collapsed");
+  if (_notesVisit.baseline === null) {
+    // Never expose inputs containing the previous conversation's values while
+    // the new conversation is loading.
+    setSideNotesValues(emptyNotes());
+    setSideNotesLoading(true);
+  } else {
+    setSideNotesValues(_notesVisit.current);
+    setSideNotesLoading(false);
+  }
   if (typeof raiseSidebarOverlay === "function") raiseSidebarOverlay(notesSidePanel);
   notesSidePanel.hidden = false;
   updateNotesSideIcon(true);
@@ -198,6 +261,7 @@ async function openNotesSidePanel() {
       data = await apiGetNotes(convId);
     } catch (_) {
       if (token === _notesSideLoadToken) {
+        setSideNotesLoading(false);
         notesSidePanel.hidden = true;
         updateNotesSideIcon(false);
         restoreSidebarCollapsedState();
@@ -208,22 +272,25 @@ async function openNotesSidePanel() {
     const values = noteValues(data);
     _notesVisit.baseline = { ...values };
     setSideNotesValues(values);
-  } else {
-    setSideNotesValues(_notesVisit.current);
+    setSideNotesLoading(false);
   }
 }
 
 async function beginNotesConversationVisit(convId) {
-  if (_notesVisit.convId === convId) return;
+  if (_notesVisit.convId === convId) return true;
   _notesSideLoadToken += 1;
-  await hideNotesSidePanel({ manual: false });
+  const saved = await hideNotesSidePanel({ manual: false });
+  if (!saved) return false;
   _notesVisit = {
     convId,
     baseline: null,
     current: emptyNotes(),
     manuallyDismissed: false,
   };
+  _notesPendingValues = new Map();
+  setNotesSideSaveError();
   _sideWasOpenBeforeFullNotes = false;
+  return true;
 }
 
 async function finishOpeningNotesConversationVisit(convId) {
@@ -302,7 +369,8 @@ async function openNotesForConversation(convId) {
   _notesConvId = convId;
   _sideWasOpenBeforeFullNotes = notesSidePanelIsOpen();
   if (_sideWasOpenBeforeFullNotes) {
-    await hideNotesSidePanel({ manual: false, restoreSidebar: false });
+    const saved = await hideNotesSidePanel({ manual: false, restoreSidebar: false });
+    if (!saved) return;
   }
   if (messagesEl) messagesEl.hidden = true;
   if (notesBodyEl) notesBodyEl.hidden = false;
@@ -331,24 +399,29 @@ async function closeNotesScreen({ restoreSide = true } = {}) {
 
 async function endNotesConversationVisit() {
   _notesSideLoadToken += 1;
-  await hideNotesSidePanel({ manual: false });
+  const saved = await hideNotesSidePanel({ manual: false });
+  if (!saved) return false;
   _notesVisit = {
     convId: null,
     baseline: null,
     current: emptyNotes(),
     manuallyDismissed: false,
   };
+  _notesPendingValues = new Map();
+  setNotesSideSaveError();
   _sideWasOpenBeforeFullNotes = false;
+  return true;
 }
 
 async function notesNavigationGuard({ endVisit = false } = {}) {
+  if (!(await flushNotesSideAutosaves())) return false;
   if (notesHasUnsavedChanges()) {
     const result = await openNotesUnsavedModal();
     if (result === "cancel") return false;
     if (result === "save") await saveAllUnsavedNotes();
   }
   if (notesIsOpen()) await closeNotesScreen({ restoreSide: !endVisit });
-  if (endVisit) await endNotesConversationVisit();
+  if (endVisit && !(await endNotesConversationVisit())) return false;
   return true;
 }
 
@@ -389,6 +462,13 @@ notesSidePanel?.addEventListener("click", (event) => {
   if (button) revertSideNote(button.dataset.noteField);
 });
 
+$("notes-side-save-retry")?.addEventListener("click", async () => {
+  const button = $("notes-side-save-retry");
+  if (button) button.disabled = true;
+  await flushNotesSideAutosaves();
+  if (button) button.disabled = false;
+});
+
 $("notes-side-toggle-btn")?.addEventListener("click", () => {
   if (notesSidePanelIsOpen()) hideNotesSidePanel({ manual: true });
   else openNotesSidePanel();
@@ -425,5 +505,16 @@ window.addEventListener("beforeunload", (event) => {
     event.preventDefault();
     event.returnValue = "";
   }
-  flushNotesSideAutosaves();
+  const pending = Object.fromEntries(_notesPendingValues);
+  for (const [field, timer] of _notesAutosaveTimers.entries()) {
+    clearTimeout(timer);
+    const input = sideNotesInput(field);
+    if (input) pending[field] = input.value;
+  }
+  _notesAutosaveTimers.clear();
+  if (_notesVisit.convId && Object.keys(pending).length) {
+    // Browsers may cancel ordinary asynchronous work during unload. A small
+    // keepalive request is allowed to finish after the document is dismissed.
+    apiSaveNotes(_notesVisit.convId, pending, { keepalive: true }).catch(() => {});
+  }
 });
