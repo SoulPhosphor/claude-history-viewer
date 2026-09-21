@@ -106,6 +106,15 @@ class NotesUiContractTests(unittest.TestCase):
         self.assertIn("raiseSidebarOverlay(notesSidePanel)", NOTES_JS)
         self.assertNotIn("closeBookmarkViews();\n\n  if (_sidebarWasCollapsed", NOTES_JS)
 
+    def test_side_panel_protects_loading_and_failed_autosaves(self):
+        self.assertIn("setSideNotesLoading(true)", NOTES_JS)
+        self.assertIn("_notesPendingValues.set(field, value)", NOTES_JS)
+        self.assertIn("if (!saved) return false", NOTES_JS)
+        self.assertIn("notes-side-save-retry", INDEX)
+
+    def test_unload_save_uses_fetch_keepalive(self):
+        self.assertIn("{ keepalive: true }", NOTES_JS)
+
 
 if __name__ == "__main__":
     unittest.main()
