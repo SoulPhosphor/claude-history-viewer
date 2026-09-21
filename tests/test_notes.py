@@ -14,6 +14,7 @@ from server import (
 ROOT = Path(__file__).parents[1]
 NOTES_JS = (ROOT / "static" / "notes.js").read_text()
 INDEX = (ROOT / "static" / "index.html").read_text()
+SERVER = (ROOT / "server.py").read_text()
 
 
 class NotesApiTests(unittest.TestCase):
@@ -114,6 +115,17 @@ class NotesUiContractTests(unittest.TestCase):
 
     def test_unload_save_uses_fetch_keepalive(self):
         self.assertIn("{ keepalive: true }", NOTES_JS)
+
+    def test_full_editor_is_guarded_while_notes_load(self):
+        self.assertIn("setFullNotesLoading(true)", NOTES_JS)
+        self.assertIn("token !== _notesFullLoadToken", NOTES_JS)
+
+    def test_oversized_keepalive_warns_and_purge_removes_notes(self):
+        self.assertIn("pendingIsOversized", NOTES_JS)
+        self.assertIn(
+            "DELETE FROM udb.conversation_notes WHERE conversation_id = ?",
+            SERVER,
+        )
 
 
 if __name__ == "__main__":
