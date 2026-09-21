@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 55718)
-Total output lines: 6128
-
 "use strict";
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -2725,7 +2722,650 @@ if (sidebarResizeHandle) {
     dragging = false;
     document.body.style.cursor = "";
     document.body.style.userSelect = "";
-    await saveUiPreferences({ sidebarWidth: state.pr…5718 tokens truncated…t n = (data.total || 0).toLocaleString();
+    await saveUiPreferences({ sidebarWidth: state.preferences.sidebarWidth });
+  });
+}
+
+// ── Keyboard navigation ───────────────────────────────────────────────────────
+
+// True for anything the user types into: the search box, a rename dialog, the
+// model form's fields. Shortcuts must not fire from these — bare "/" and the
+// arrows would otherwise steal focus mid-word and make text like "React/Vue"
+// impossible to type.
+function isTextEntryTarget(el) {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  const tag = el.tagName;
+  if (tag === "TEXTAREA" || tag === "SELECT") return true;
+  // Buttons and checkboxes are inputs too, but nothing is typed into them.
+  return (
+    tag === "INPUT" &&
+    !["button", "submit", "reset", "checkbox", "radio"].includes(el.type)
+  );
+}
+
+document.addEventListener("keydown", (e) => {
+  // Don't intercept while the user is typing into any field
+  if (isTextEntryTarget(e.target)) return;
+
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
+    e.preventDefault();
+    sidebarToggleBtn?.click();
+    return;
+  }
+
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    searchEl.focus();
+    searchEl.select();
+    return;
+  }
+
+  if ((e.ctrlKey || e.metaKey) && e.key === "Tab") {
+    e.preventDefault();
+    const items = state.tabs.filter(isTopTab);
+    if (!items.length) return;
+    const idx = items.findIndex((t) => t.conversation_id === state.activeId);
+    const next = items[(idx + 1) % items.length];
+    openConversation(next.conversation_id, findConvItemEl(next.conversation_id));
+    return;
+  }
+
+  if (e.key === "/") {
+    e.preventDefault();
+    searchEl.focus();
+    searchEl.select();
+    return;
+  }
+
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    const items = [...convList.querySelectorAll(".conv-item")];
+    const idx = items.findIndex((el) => el.classList.contains("active"));
+    const next = e.key === "ArrowDown" ? items[idx + 1] : items[idx - 1];
+    if (next) {
+      next.click();
+      next.scrollIntoView({ block: "nearest" });
+    }
+  }
+});
+
+// ── Media hub ────────────────────────────────────────────────────────────────
+
+function resolveConversationSidebarEl(convId) {
+  return (
+    [...document.querySelectorAll(".conv-item[data-id]")].find(
+      (el) => el.dataset.id === convId,
+    ) || null
+  );
+}
+
+function mediaHubJumpToConversation(convId, seq = null) {
+  return openConversation(convId, resolveConversationSidebarEl(convId), seq);
+}
+
+function mediaHubItemMeta(item) {
+  const bits = [];
+  if (item.kind === "artifact") {
+    bits.push("Artifact");
+  }
+  if (item.kind === "image") {
+    bits.push("Image");
+  } else if (item.kind === "attachment") {
+    bits.push("Attachment");
+  }
+  if (item.type) bits.push(item.type);
+  if (item.lang) bits.push(item.lang);
+  if (item.role) bits.push(item.role);
+  if (item.seq != null) bits.push(`msg #${item.seq}`);
+  return bits.filter(Boolean).join(" · ");
+}
+
+function renderMediaHubItem(item) {
+  const row = document.createElement("div");
+  row.className = "media-hub-item";
+
+  const main = document.createElement("button");
+  main.type = "button";
+  main.className = "media-hub-item-main";
+
+  const iconWrap = document.createElement("span");
+  iconWrap.className = "media-hub-item-icon";
+  const previewUrl =
+    item.kind === "image" ? _fileUrl({ name: item.name }) : null;
+  if (previewUrl) {
+    iconWrap.innerHTML = `<img src="${previewUrl}" alt="${escHtml(item.name)}">`;
+  } else {
+    iconWrap.textContent = fileIcon(item.type || item.name);
+  }
+
+  const textWrap = document.createElement("span");
+  textWrap.className = "media-hub-item-text";
+  const titleEl = document.createElement("span");
+  titleEl.className = "media-hub-item-title";
+  titleEl.textContent =
+    item.name || item.title || item.artifact_id || "Media item";
+  const metaEl = document.createElement("span");
+  metaEl.className = "media-hub-item-meta";
+  metaEl.textContent = mediaHubItemMeta(item);
+  textWrap.append(titleEl, metaEl);
+  if (item.context) {
+    const ctxEl = document.createElement("span");
+    ctxEl.className = "media-hub-item-context";
+    ctxEl.textContent = item.context + (item.context.length >= 120 ? "…" : "");
+    textWrap.appendChild(ctxEl);
+  }
+
+  main.append(iconWrap, textWrap);
+  main.addEventListener("click", (e) => {
+    e.stopPropagation();
+    mediaHubJumpToConversation(item.conv_id, item.seq ?? item.msg_seq ?? null);
+  });
+
+  const actions = document.createElement("div");
+  actions.className = "media-hub-item-actions";
+
+  const jumpBtn = document.createElement("button");
+  jumpBtn.type = "button";
+  jumpBtn.className = "media-hub-item-action";
+  jumpBtn.textContent = "Jump";
+  jumpBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    mediaHubJumpToConversation(item.conv_id, item.seq ?? item.msg_seq ?? null);
+  });
+  actions.appendChild(jumpBtn);
+
+  if (item.kind === "artifact" && item.artifact_id) {
+    const artifactBtn = document.createElement("button");
+    artifactBtn.type = "button";
+    artifactBtn.className = "media-hub-item-action";
+    artifactBtn.textContent = "Artifact";
+    artifactBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openArtifactTab(item.artifact_id, item.name || item.artifact_id);
+    });
+    actions.appendChild(artifactBtn);
+  }
+
+  row.append(main, actions);
+  return row;
+}
+
+function renderMediaHubGroup(group) {
+  const groupEl = document.createElement("div");
+  groupEl.className = "media-hub-group";
+
+  const titleBar = document.createElement("div");
+  titleBar.className = "media-hub-group-title";
+
+  const titleBtn = document.createElement("button");
+  titleBtn.type = "button";
+  titleBtn.className = "media-hub-conv-link";
+  titleBtn.textContent = group.conv_title;
+  titleBtn.addEventListener("click", () => {
+    const firstSeq = group.items.find((item) => item.seq != null)?.seq ?? null;
+    mediaHubJumpToConversation(group.conv_id, firstSeq);
+  });
+
+  const summary = document.createElement("span");
+  summary.className = "media-hub-group-summary";
+  const count = group.items.length;
+  summary.textContent = `${count} item${count === 1 ? "" : "s"} · ${formatDate(group.update_time)}`;
+
+  titleBar.append(titleBtn, summary);
+  groupEl.appendChild(titleBar);
+
+  const preview = document.createElement("div");
+  preview.className = "media-hub-group-preview";
+  if (group.preview) preview.textContent = group.preview;
+  groupEl.appendChild(preview);
+
+  const itemsWrap = document.createElement("div");
+  itemsWrap.className = "media-hub-items";
+  for (const item of group.items) {
+    itemsWrap.appendChild(renderMediaHubItem(item));
+  }
+  groupEl.appendChild(itemsWrap);
+  return groupEl;
+}
+
+function renderMediaHubSection(section, data) {
+  const sectionEl = document.createElement("section");
+  sectionEl.className = "media-hub-section";
+
+  const header = document.createElement("div");
+  header.className = "media-hub-section-header";
+
+  const headingWrap = document.createElement("div");
+  headingWrap.className = "media-hub-section-heading-wrap";
+  const heading = document.createElement("div");
+  heading.className = "media-hub-section-heading";
+  heading.textContent = `${section.title} (${section.count || 0})`;
+  const meta = document.createElement("div");
+  meta.className = "media-hub-section-meta";
+  meta.textContent = section.meta || "";
+  headingWrap.append(heading, meta);
+
+  header.appendChild(headingWrap);
+  sectionEl.appendChild(header);
+
+  if (section.groups?.length) {
+    for (const group of section.groups) {
+      sectionEl.appendChild(renderMediaHubGroup(group));
+    }
+  } else {
+    const empty = document.createElement("div");
+    empty.className = "no-results media-hub-empty";
+    empty.textContent = `No ${section.title.toLowerCase()} found.`;
+    sectionEl.appendChild(empty);
+  }
+
+  return sectionEl;
+}
+
+function renderMediaHubSwitcher(data) {
+  const switcher = document.createElement("div");
+  switcher.className = "media-hub-switcher";
+
+  const sections = data.sections || [];
+  const unlinked = data.unlinked_images || [];
+  const buttons = sections.map((section) => ({
+    key: section.key,
+    label: `${section.title} (${section.count || 0})`,
+  }));
+  buttons.push({
+    key: "unlinked",
+    label: `Unlinked Images (${unlinked.length || 0})`,
+  });
+
+  for (const btnSpec of buttons) {
+    if (btnSpec.key === "unlinked" && !unlinked.length) continue;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className =
+      "media-hub-switcher-btn" +
+      (state.mediaHub.activeSectionKey === btnSpec.key ? " active" : "");
+    btn.textContent = btnSpec.label;
+    btn.addEventListener("click", () => {
+      state.mediaHub.activeSectionKey = btnSpec.key;
+      renderMediaHub(data);
+    });
+    switcher.appendChild(btn);
+  }
+
+  return switcher;
+}
+
+function renderMediaHub(data) {
+  const sections = data.sections || [];
+  const unlinked = data.unlinked_images || [];
+  galleryGrid.innerHTML = "";
+
+  galleryGrid.appendChild(renderMediaHubSwitcher(data));
+
+  const activeKey = state.mediaHub.activeSectionKey || "images";
+  const section = sections.find((s) => s.key === activeKey);
+
+  if (activeKey === "unlinked") {
+    const rawSection = document.createElement("section");
+    rawSection.className = "media-hub-section";
+    const header = document.createElement("div");
+    header.className = "media-hub-section-header";
+    const headingWrap = document.createElement("div");
+    headingWrap.className = "media-hub-section-heading-wrap";
+    const heading = document.createElement("div");
+    heading.className = "media-hub-section-heading";
+    heading.textContent = `Unlinked Images (${unlinked.length})`;
+    const meta = document.createElement("div");
+    meta.className = "media-hub-section-meta";
+    meta.textContent =
+      "Images found on disk without a traced source conversation.";
+    headingWrap.append(heading, meta);
+    header.appendChild(headingWrap);
+    rawSection.appendChild(header);
+
+    const rawGrid = document.createElement("div");
+    rawGrid.className = "media-hub-raw-grid";
+    for (const img of unlinked) {
+      const a = document.createElement("a");
+      a.href = img.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.className = "gallery-thumb media-hub-raw-thumb";
+      a.innerHTML = `<img src="${img.url}" alt="${escHtml(img.filename)}"><span>${escHtml(img.filename)}</span>`;
+      rawGrid.appendChild(a);
+    }
+    rawSection.appendChild(rawGrid);
+    galleryGrid.appendChild(rawSection);
+    return;
+  }
+
+  if (!section) {
+    galleryGrid.innerHTML =
+      '<div class="no-results media-hub-empty">No media found for this category.</div>';
+    return;
+  }
+
+  galleryGrid.appendChild(renderMediaHubSection(section, data));
+}
+
+async function openGallery(fromButton = false) {
+  if (typeof summaryHasUnsavedChanges === "function" && summaryHasUnsavedChanges()) {
+    const r = await openSummaryUnsavedModal();
+    if (r === "cancel") return;
+    if (r === "save") await saveAllUnsaved();
+  }
+  if (typeof closeSummaryPanel === "function") closeSummaryPanel();
+  if (!(await leaveNotesForSpecialView())) return;
+  if (fromButton && state.activeSpecialView === "gallery") {
+    await returnFromSpecialView();
+    return;
+  }
+  rememberReturnTab();
+  state.activeSpecialView = "gallery";
+  state.activeTabId = null;
+  document
+    .querySelectorAll(".conv-item.active")
+    .forEach((el) => el.classList.remove("active"));
+  state.activeId = null;
+  await ensureSpecialTab("gallery", "Media Hub");
+
+  hideAllPanels();
+  galleryPanel.hidden = false;
+
+  galleryGrid.innerHTML = '<div class="loading">Loading…</div>';
+  const data = await fetch("/api/gallery").then((r) => r.json());
+  state.mediaHub.data = data;
+
+  const sections = data.sections || [];
+  const unlinked = data.unlinked_images || [];
+  if (!sections.length && !unlinked.length) {
+    galleryGrid.innerHTML =
+      '<div class="no-results">No conversation-linked media found.</div>';
+    return;
+  }
+
+  if (
+    !sections.some((section) => section.key === state.mediaHub.activeSectionKey)
+  ) {
+    state.mediaHub.activeSectionKey =
+      sections[0]?.key || (unlinked.length ? "unlinked" : "images");
+  }
+
+  renderMediaHub(data);
+}
+
+// The Media Hub is now reached from the briefcase menu; its old footer icon is
+// gone, so wire the button only if it exists.
+$("gallery-btn")?.addEventListener("click", () => openGallery(true));
+
+// ── Attachment Report ─────────────────────────────────────────────────────────
+
+async function openAttReport(forceRefresh, fromButton = false) {
+  if (!(await leaveNotesForSpecialView())) return;
+  if (fromButton && state.activeSpecialView === "attachment_report") {
+    await returnFromSpecialView();
+    return;
+  }
+  rememberReturnTab();
+  state.activeSpecialView = "attachment_report";
+  state.activeTabId = null;
+  document
+    .querySelectorAll(".conv-item.active")
+    .forEach((el) => el.classList.remove("active"));
+  state.activeId = null;
+  await ensureSpecialTab("attachment_report", "Attachment Report");
+  hideAllPanels();
+  attReportPanel.hidden = false;
+
+  if (!forceRefresh && attReportContent.dataset.loaded) return;
+
+  attReportContent.innerHTML = '<div class="loading">Loading…</div>';
+  let data;
+  try {
+    const resp = await fetch("/api/attachment-report");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (e) {
+    attReportContent.innerHTML = `<div class="no-results">Could not load the attachment report: ${escHtml(e.message)}. Please try Refresh.</div>`;
+    attReportMeta.textContent = "Failed to load report.";
+    return; // never leave the panel stuck on "Loading…"
+  }
+  attReportContent.innerHTML = "";
+
+  const items = data.missing || [];
+  attReportMeta.textContent = items.length
+    ? `${items.length} attachment(s) cannot be displayed (no exported content and not found in source/files/)`
+    : "✅ All attachments resolved — none missing.";
+
+  if (!items.length) {
+    attReportContent.dataset.loaded = "1";
+    return;
+  }
+
+  // Group by conversation
+  const groups = new Map();
+  for (const it of items) {
+    if (!groups.has(it.conv_id))
+      groups.set(it.conv_id, { title: it.conv_title, items: [] });
+    groups.get(it.conv_id).items.push(it);
+  }
+
+  for (const [convId, { title, items: convItems }] of groups) {
+    const groupEl = document.createElement("div");
+    groupEl.className = "att-report-group";
+
+    const titleEl = document.createElement("div");
+    titleEl.className = "att-report-conv-title";
+    titleEl.innerHTML = `<button class="att-report-conv-link" data-id="${escHtml(convId)}">${escHtml(title)}</button>`;
+    groupEl.appendChild(titleEl);
+
+    for (const it of convItems) {
+      const row = document.createElement("div");
+      row.className = "att-report-row";
+      const typeLabel = it.file_type ? `(${it.file_type})` : "";
+      row.innerHTML = `
+        <span class="att-report-icon">${fileIcon(it.file_type || it.file_name)}</span>
+        <span class="att-report-name">${escHtml(it.file_name)} <span class="att-report-type">${escHtml(typeLabel)}</span></span>
+        ${it.context ? `<span class="att-report-ctx">${escHtml(it.context)}…</span>` : ""}
+        <button class="att-upload-btn" title="Upload this file to source/files/">📎 Upload</button>`;
+
+      row.querySelector(".att-report-name").addEventListener("click", () => {
+        openConversation(convId, resolveConversationSidebarEl(convId), it.seq);
+      });
+
+      // Upload button: trigger hidden file input
+      row.querySelector(".att-upload-btn").addEventListener("click", () => {
+        const inp = document.createElement("input");
+        inp.type = "file";
+        inp.accept = "*/*";
+        inp.addEventListener("change", async () => {
+          const file = inp.files[0];
+          if (!file) return;
+          const fd = new FormData();
+          fd.append("file", file, it.file_name);
+          fd.append("name", it.file_name);
+          const btn = row.querySelector(".att-upload-btn");
+          btn.disabled = true;
+          btn.textContent = "Uploading…";
+          try {
+            const res = await fetch("/api/upload-file", {
+              method: "POST",
+              body: fd,
+            }).then((r) => r.json());
+            if (res.ok) {
+              row.classList.add("att-row-resolved");
+              btn.textContent = "✅ Uploaded";
+              // Invalidate cache so next open re-fetches fresh data
+              delete attReportContent.dataset.loaded;
+            } else {
+              btn.disabled = false;
+              btn.textContent = "📎 Upload";
+              alert("Upload failed: " + (res.error || "unknown error"));
+            }
+          } catch (e) {
+            btn.disabled = false;
+            btn.textContent = "📎 Upload";
+            alert("Upload error: " + e.message);
+          }
+        });
+        inp.click();
+      });
+
+      groupEl.appendChild(row);
+    }
+    attReportContent.appendChild(groupEl);
+  }
+
+  // Wire conversation title click → open conversation
+  attReportContent.querySelectorAll(".att-report-conv-link").forEach((btn) => {
+    btn.addEventListener("click", () =>
+      openConversation(
+        btn.dataset.id,
+        resolveConversationSidebarEl(btn.dataset.id),
+        null,
+      ),
+    );
+  });
+
+  attReportContent.dataset.loaded = "1";
+}
+
+$("att-report-refresh-btn").addEventListener("click", () =>
+  openAttReport(true),
+);
+
+// ── Import Audit ────────────────────────────────────────────────────────────────
+// An inspection view: shows how every conversation in conversations.json was
+// imported, and lets you drill into each status to see (and open) the records
+// that came in as fallback / metadata_only / parse_error.
+
+// Chrome setup shared by opening the audit panel fresh and restoring it on a
+// browser Back/Forward (popstate) — only the content rendered inside differs.
+async function showImportAuditPanel() {
+  if (!(await leaveNotesForSpecialView())) return false;
+  rememberReturnTab();
+  state.activeSpecialView = "import_audit";
+  state.activeTabId = null;
+  document
+    .querySelectorAll(".conv-item.active")
+    .forEach((el) => el.classList.remove("active"));
+  state.activeId = null;
+  await ensureSpecialTab("import_audit", "Import Audit");
+  hideAllPanels();
+  importAuditPanel.hidden = false;
+  return true;
+}
+
+async function openImportAudit() {
+  if (!(await showImportAuditPanel())) return;
+  renderImportAuditSummary();
+}
+
+async function renderImportAuditSummary() {
+  importAuditContent.innerHTML = '<div class="loading">Loading…</div>';
+  let data;
+  try {
+    const resp = await fetch("/api/import-audit");
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (e) {
+    importAuditContent.innerHTML = `<div class="no-results">Could not load the import audit: ${escHtml(e.message)}.</div>`;
+    return;
+  }
+  if (data.error) {
+    importAuditContent.innerHTML = `<div class="no-results">${escHtml(data.error)}</div>`;
+    return;
+  }
+
+  const rows = [
+    { key: null, label: "Total conversations", n: data.total },
+    { key: "normal", label: "Normal", n: data.normal },
+    { key: "fallback", label: "Fallback", n: data.fallback },
+    { key: "metadata_only", label: "Metadata only", n: data.metadata_only },
+    { key: "parse_error", label: "Parse errors", n: data.parse_error },
+  ];
+
+  importAuditContent.innerHTML = "";
+  const listEl = document.createElement("div");
+  listEl.className = "audit-summary";
+  for (const r of rows) {
+    const clickable = r.key !== null;
+    const row = document.createElement(clickable ? "button" : "div");
+    row.className =
+      "audit-row" +
+      (clickable ? " audit-row-clickable" : " audit-row-total");
+    row.innerHTML = `<span class="audit-row-label">${escHtml(r.label)}</span><span class="audit-row-count">${(r.n || 0).toLocaleString()}</span>`;
+    if (clickable) {
+      row.title = `Browse the "${r.label}" conversations`;
+      row.addEventListener("click", () =>
+        renderImportAuditList(r.key, r.label),
+      );
+    }
+    listEl.appendChild(row);
+  }
+  importAuditContent.appendChild(listEl);
+
+  if (data.synthetic) {
+    const note = document.createElement("div");
+    note.className = "audit-note";
+    note.textContent = `${data.synthetic.toLocaleString()} of these have synthetic IDs (no original Claude UUID).`;
+    importAuditContent.appendChild(note);
+  }
+
+  if (data.collapsed) {
+    // The totals above count source objects; the database stores one row per
+    // distinct ID. Say so, rather than letting the two numbers silently differ.
+    const note = document.createElement("div");
+    note.className = "audit-note";
+    note.textContent =
+      `${data.collapsed.toLocaleString()} shared an ID with another record and were ` +
+      `collapsed — ${(data.stored || 0).toLocaleString()} conversations are stored.`;
+    importAuditContent.appendChild(note);
+  }
+}
+
+// `push`/`scrollTop` drive the browser-history integration: a forward click
+// on a summary row pushes a new history entry for this category so a later
+// Back returns to it; restoring that same entry on popstate re-renders it
+// without pushing again and puts the scroll position back where it was.
+async function renderImportAuditList(
+  status,
+  label,
+  { push = true, scrollTop = null } = {},
+) {
+  importAuditContent.innerHTML = '<div class="loading">Loading…</div>';
+  let data;
+  try {
+    const resp = await fetch(
+      `/api/import-audit?status=${encodeURIComponent(status)}`,
+    );
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    data = await resp.json();
+  } catch (e) {
+    importAuditContent.innerHTML = `<div class="no-results">Could not load this category: ${escHtml(e.message)}.</div>`;
+    return;
+  }
+
+  if (push) {
+    history.pushState(
+      { auditNav: true, view: "audit-list", status, label },
+      "",
+    );
+  }
+
+  importAuditContent.innerHTML = "";
+
+  const header = document.createElement("div");
+  header.className = "audit-list-header";
+  const back = document.createElement("button");
+  back.className = "audit-back-btn";
+  back.textContent = "← Back to summary";
+  back.addEventListener("click", () => renderImportAuditSummary());
+  header.appendChild(back);
+  const title = document.createElement("div");
+  title.className = "audit-list-title";
+  const n = (data.total || 0).toLocaleString();
   title.textContent = `${label} — ${n} conversation${data.total !== 1 ? "s" : ""}`;
   header.appendChild(title);
   importAuditContent.appendChild(header);
