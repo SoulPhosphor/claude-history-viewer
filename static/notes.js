@@ -613,6 +613,7 @@ window.addEventListener("beforeunload", (event) => {
     && Object.keys(pending).length
     && !pendingIsOversized
     && !pendingHasQueuedWrites
+    && !pendingHasKnownFailure
   ) {
     // Browsers may cancel ordinary asynchronous work during unload. A small
     // keepalive request is allowed to finish after the document is dismissed.
