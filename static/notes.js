@@ -5,6 +5,7 @@
 // fields with debounced autosave and keeps an independent first-open baseline
 // for each conversation visit.
 const NOTE_FIELDS = ["user_notes", "notes_to_ai", "notes_from_ai"];
+const NOTES_KEEPALIVE_MAX_BYTES = 60000;
 
 let _notesConvId = null;
 let _savedNotes = emptyNotes();
@@ -15,6 +16,7 @@ let _notesVisit = {
   manuallyDismissed: false,
 };
 let _notesSideLoadToken = 0;
+let _notesFullLoadToken = 0;
 let _notesSideSaveQueue = Promise.resolve();
 let _notesAutosaveTimers = new Map();
 let _notesPendingValues = new Map();
@@ -116,6 +118,23 @@ function setFullNotesValues(values) {
     if (input) input.value = _savedNotes[field];
   }
   updateFullNotesButtons();
+}
+
+function setFullNotesLoading(loading) {
+  notesBodyEl?.toggleAttribute("aria-busy", loading);
+  for (const field of NOTE_FIELDS) {
+    const input = fullNotesInput(field);
+    if (input) input.disabled = loading;
+    const save = notesBodyEl?.querySelector(
+      `.notes-full-save[data-note-field="${field}"]`,
+    );
+    const revert = notesBodyEl?.querySelector(
+      `.notes-full-revert[data-note-field="${field}"]`,
+    );
+    if (save) save.disabled = loading;
+    if (revert) revert.disabled = loading;
+  }
+  if (!loading) updateFullNotesButtons();
 }
 
 function setSideNotesValues(values) {
@@ -372,18 +391,27 @@ async function openNotesForConversation(convId) {
     const saved = await hideNotesSidePanel({ manual: false, restoreSidebar: false });
     if (!saved) return;
   }
+  const token = ++_notesFullLoadToken;
   if (messagesEl) messagesEl.hidden = true;
   if (notesBodyEl) notesBodyEl.hidden = false;
+  setFullNotesValues(emptyNotes());
+  setFullNotesLoading(true);
   updateNotesScreenIcon(true);
   try {
     const data = await apiGetNotes(convId);
+    if (token !== _notesFullLoadToken || _notesConvId !== convId) return;
     setFullNotesValues(data);
+    setFullNotesLoading(false);
   } catch (_) {
-    await closeNotesScreen();
+    if (token === _notesFullLoadToken && _notesConvId === convId) {
+      await closeNotesScreen();
+    }
   }
 }
 
 async function closeNotesScreen({ restoreSide = true } = {}) {
+  _notesFullLoadToken += 1;
+  setFullNotesLoading(false);
   _notesConvId = null;
   if (notesBodyEl) notesBodyEl.hidden = true;
   if (messagesEl) messagesEl.hidden = false;
@@ -501,20 +529,18 @@ document.addEventListener("keydown", (event) => {
 });
 
 window.addEventListener("beforeunload", (event) => {
-  if (notesHasUnsavedChanges()) {
+  const pending = Object.fromEntries(_notesPendingValues);
+  const pendingBody = JSON.stringify(pending);
+  const pendingIsOversized = new TextEncoder().encode(pendingBody).length > NOTES_KEEPALIVE_MAX_BYTES;
+  if (notesHasUnsavedChanges() || pendingIsOversized) {
     event.preventDefault();
     event.returnValue = "";
   }
-  const pending = Object.fromEntries(_notesPendingValues);
-  for (const [field, timer] of _notesAutosaveTimers.entries()) {
-    clearTimeout(timer);
-    const input = sideNotesInput(field);
-    if (input) pending[field] = input.value;
-  }
-  _notesAutosaveTimers.clear();
-  if (_notesVisit.convId && Object.keys(pending).length) {
+  if (_notesVisit.convId && Object.keys(pending).length && !pendingIsOversized) {
     // Browsers may cancel ordinary asynchronous work during unload. A small
     // keepalive request is allowed to finish after the document is dismissed.
+    // Larger payloads get the unload warning above and continue through the
+    // normal autosave if the user stays on the page.
     apiSaveNotes(_notesVisit.convId, pending, { keepalive: true }).catch(() => {});
   }
 });
