@@ -129,9 +129,10 @@ class NotesUiContractTests(unittest.TestCase):
             SERVER,
         )
 
-    def test_unload_does_not_race_a_newer_value_with_an_inflight_save(self):
-        self.assertIn("pendingWouldRace", NOTES_JS)
-        self.assertIn("!pendingWouldRace", NOTES_JS)
+    def test_unload_does_not_race_active_or_queued_autosaves(self):
+        self.assertIn("_notesOutstandingSaves += 1", NOTES_JS)
+        self.assertIn("pendingHasQueuedWrites", NOTES_JS)
+        self.assertIn("!pendingHasQueuedWrites", NOTES_JS)
 
     def test_canceled_history_navigation_restores_the_conversation_entry(self):
         self.assertIn("_gbRestoringCanceledPopstate", BOOKMARKS_HUB_JS)
