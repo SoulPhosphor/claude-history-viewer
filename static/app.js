@@ -90,6 +90,9 @@ const $ = (id) => document.getElementById(id);
 
 const searchEl = $("search");
 const searchHistoryListEl = $("search-history-list");
+const simpleSearchPanel = $("simple-search-panel");
+const simpleSearchToggle = $("simple-search-toggle");
+const searchClearBtn = $("search-clear-btn");
 const viewFilterEl = $("view-filter");
 const resultCount = $("result-count");
 const recycleControls = $("recycle-controls");
@@ -1951,6 +1954,7 @@ async function loadTabs() {
 }
 
 async function ensureSpecialTab(tabType, title) {
+  clearSimpleSearchForSection();
   state.activeSpecialView = tabType;
   renderTabs();
 }
@@ -2597,7 +2601,71 @@ async function openConversation(id, clickedEl, targetSeq = null) {
 // ── Search (debounced) ────────────────────────────────────────────────────────
 
 let debounce;
+function syncSearchClearButton() {
+  if (searchClearBtn) searchClearBtn.hidden = !searchEl.value;
+}
+
+function setSimpleSearchOpen(open, { focus = false } = {}) {
+  if (!simpleSearchPanel || !simpleSearchToggle) return;
+  simpleSearchPanel.hidden = !open;
+  simpleSearchToggle.setAttribute("aria-expanded", String(open));
+  if (open && focus) {
+    requestAnimationFrame(() => {
+      searchEl.focus();
+      searchEl.select();
+    });
+  }
+}
+
+function openSimpleSearch() {
+  if (document.body.classList.contains("sidebar-collapsed")) {
+    document.body.classList.remove("sidebar-collapsed");
+    state.preferences.sidebarCollapsed = false;
+    saveUiPreferences({ sidebarCollapsed: false });
+  }
+  setSimpleSearchOpen(true, { focus: true });
+}
+
+function closeSimpleSearch() {
+  setSimpleSearchOpen(false);
+  searchEl.blur();
+}
+
+function clearSimpleSearch({ reload = true } = {}) {
+  clearTimeout(debounce);
+  searchEl.value = "";
+  state.q = "";
+  syncSearchClearButton();
+  clearSearchNav();
+  syncPinnedSectionVisibility();
+  updateListSectionTitle();
+  if (reload) loadConversations(false);
+}
+
+function clearSimpleSearchForSection() {
+  const hadQuery = Boolean(state.q || searchEl.value);
+  closeSimpleSearch();
+  clearSimpleSearch({ reload: hadQuery });
+}
+
+simpleSearchToggle?.addEventListener("click", () => {
+  if (simpleSearchPanel.hidden) openSimpleSearch();
+  else closeSimpleSearch();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || simpleSearchPanel?.hidden) return;
+  e.preventDefault();
+  closeSimpleSearch();
+});
+
+searchClearBtn?.addEventListener("click", () => {
+  clearSimpleSearch();
+  searchEl.focus();
+});
+
 searchEl.addEventListener("input", () => {
+  syncSearchClearButton();
   clearTimeout(debounce);
   debounce = setTimeout(() => {
     // Searching leaves the temporary bulk Preview behind.
@@ -2617,12 +2685,8 @@ searchEl.addEventListener("input", () => {
 
 searchEl.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
-    searchEl.value = "";
-    state.q = "";
-    clearSearchNav();
-    updateListSectionTitle();
-    loadConversations(false);
-    searchEl.blur();
+    e.preventDefault();
+    closeSimpleSearch();
   }
   if (e.key === "ArrowDown") {
     e.preventDefault();
@@ -2758,8 +2822,7 @@ document.addEventListener("keydown", (e) => {
 
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
     e.preventDefault();
-    searchEl.focus();
-    searchEl.select();
+    openSimpleSearch();
     return;
   }
 
@@ -2775,8 +2838,7 @@ document.addEventListener("keydown", (e) => {
 
   if (e.key === "/") {
     e.preventDefault();
-    searchEl.focus();
-    searchEl.select();
+    openSimpleSearch();
     return;
   }
 
