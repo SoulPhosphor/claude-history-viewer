@@ -1,0 +1,767 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Advanced Search — Desktop</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-base: #0e0e1a;
+  --bg-surface: #14142a;
+  --bg-elevated: #1c1c36;
+  --bg-input: #111126;
+  --bg-sidebar: #111122;
+  --border: #262650;
+  --border-subtle: #1e1e40;
+  --border-active: #7c6df0;
+  --text-primary: #e8e6f0;
+  --text-secondary: #8a86a0;
+  --text-muted: #5c587a;
+  --accent: #7c6df0;
+  --accent-dim: rgba(124,109,240,0.14);
+  --accent-hover: #8d80f4;
+  --accent-glow: rgba(124,109,240,0.06);
+  --chip-bg: #1a1a34;
+  --chip-active-bg: rgba(124,109,240,0.18);
+  --chip-active-border: #7c6df0;
+  --destructive: #e05a5a;
+  --destructive-dim: rgba(224,90,90,0.12);
+  --success: #4ecdc4;
+  --warning: #f0a04b;
+  --claude-color: #d4a574;
+  --chatgpt-color: #74c9a8;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  box-sizing: border-box;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg-base: #f0eff5; --bg-surface: #ffffff; --bg-elevated: #eeedf5;
+    --bg-input: #f6f5fb; --bg-sidebar: #f6f5fb; --border: #d8d6e2;
+    --border-subtle: #e4e2ee; --text-primary: #1a1828; --text-secondary: #6b6780;
+    --text-muted: #9995b0; --chip-bg: #eeedf5; --accent-glow: rgba(124,109,240,0.04);
+  }
+}
+:root[data-theme="dark"] {
+  --bg-base: #0e0e1a; --bg-surface: #14142a; --bg-elevated: #1c1c36;
+  --bg-input: #111126; --bg-sidebar: #111122; --border: #262650;
+  --text-primary: #e8e6f0; --text-secondary: #8a86a0; --text-muted: #5c587a;
+}
+*,*::before,*::after{box-sizing:inherit;margin:0;padding:0;}
+html,body{height:100%;}
+body{font-family:var(--font);background:var(--bg-base);color:var(--text-primary);line-height:1.5;-webkit-font-smoothing:antialiased;overflow:hidden;}
+
+/* ═══ SHELL LAYOUT ═══ */
+.shell{display:flex;height:100vh;overflow:hidden;}
+
+/* Left app sidebar (mimics app nav) */
+.app-sidebar{
+  width:220px;flex-shrink:0;background:var(--bg-sidebar);
+  border-right:1px solid var(--border);display:flex;flex-direction:column;
+  overflow-y:auto;
+}
+.app-sidebar-header{padding:16px 14px 12px;display:flex;align-items:center;gap:8px;}
+.platform-tabs{display:flex;gap:0;margin:0 10px;border-radius:var(--radius-sm);overflow:hidden;border:1px solid var(--border);}
+.ptab{flex:1;padding:7px 0;text-align:center;font-size:12px;font-weight:500;cursor:pointer;background:var(--bg-surface);color:var(--text-muted);border:none;font-family:var(--font);transition:all .15s;}
+.ptab.active{background:var(--accent-dim);color:var(--accent);font-weight:600;}
+.ptab:not(:last-child){border-right:1px solid var(--border);}
+.sidebar-nav{padding:8px 10px;flex:1;}
+.nav-item{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:var(--radius-sm);font-size:13px;color:var(--text-secondary);cursor:pointer;transition:background .1s;margin-bottom:1px;}
+.nav-item:hover{background:var(--bg-elevated);}
+.nav-item .count{margin-left:auto;font-size:11px;color:var(--text-muted);}
+.nav-item.active{background:var(--accent-dim);color:var(--accent);}
+.nav-icon{width:16px;text-align:center;font-size:13px;flex-shrink:0;color:var(--text-muted);}
+.nav-item.active .nav-icon{color:var(--accent);}
+.nav-divider{height:1px;background:var(--border);margin:8px 10px;}
+.folder-indent{padding-left:30px;}
+.sidebar-bottom{padding:10px;border-top:1px solid var(--border);display:flex;justify-content:center;gap:6px;}
+.sidebar-icon-btn{background:none;border:none;color:var(--text-muted);padding:6px;cursor:pointer;border-radius:var(--radius-sm);}
+.sidebar-icon-btn:hover{color:var(--text-secondary);background:var(--bg-elevated);}
+.sidebar-icon-btn.active-search{color:var(--accent);background:var(--accent-dim);}
+
+/* ═══ MAIN AREA ═══ */
+.main{flex:1;display:flex;flex-direction:column;overflow:hidden;}
+
+/* Top bar */
+.top-bar{
+  display:flex;align-items:center;gap:12px;
+  padding:12px 20px;border-bottom:1px solid var(--border);
+  background:var(--bg-surface);flex-shrink:0;
+}
+.top-title{font-size:16px;font-weight:600;flex-shrink:0;}
+.top-spacer{flex:1;}
+.top-btn{
+  background:none;border:1px solid var(--border);color:var(--text-secondary);
+  padding:6px 14px;border-radius:var(--radius-sm);font-size:12px;
+  font-family:var(--font);cursor:pointer;transition:all .15s;
+}
+.top-btn:hover{border-color:var(--text-muted);color:var(--text-primary);}
+.top-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600;}
+.top-btn.primary:hover{background:var(--accent-hover);}
+
+/* ═══ CONTENT SPLIT: filters left, results right ═══ */
+.content-split{flex:1;display:flex;overflow:hidden;}
+
+/* Filter Panel */
+.filter-panel{
+  width:380px;flex-shrink:0;overflow-y:auto;
+  border-right:1px solid var(--border);background:var(--bg-surface);
+  padding-bottom:20px;
+}
+
+/* Search bar inside filter panel */
+.search-bar{padding:14px 16px 6px;}
+.search-wrap{
+  display:flex;align-items:center;background:var(--bg-input);
+  border:1px solid var(--border);border-radius:var(--radius-md);
+  padding:0 12px;transition:border-color .15s;
+}
+.search-wrap:focus-within{border-color:var(--accent);}
+.s-icon{color:var(--text-muted);flex-shrink:0;}
+.s-input{
+  flex:1;background:none;border:none;outline:none;
+  color:var(--text-primary);font-size:14px;padding:10px 10px;
+  font-family:var(--font);
+}
+.s-input::placeholder{color:var(--text-muted);}
+.s-clear{background:none;border:none;color:var(--text-muted);cursor:pointer;padding:4px;display:none;flex-shrink:0;}
+.s-clear.vis{display:flex;}
+
+.text-opts{display:flex;gap:5px;padding:6px 16px 2px;flex-wrap:wrap;align-items:center;}
+.t-chip{
+  font-size:11px;padding:3px 10px;border-radius:16px;
+  border:1px solid var(--border);background:var(--chip-bg);
+  color:var(--text-secondary);cursor:pointer;font-family:var(--font);
+  transition:all .15s;white-space:nowrap;
+}
+.t-chip.active{background:var(--chip-active-bg);border-color:var(--chip-active-border);color:var(--accent);}
+.t-chip:hover{border-color:var(--text-muted);}
+.t-divider{width:1px;height:14px;background:var(--border);margin:0 1px;}
+
+/* Platform row */
+.platform-row{display:flex;gap:0;margin:10px 16px 0;border-radius:var(--radius-md);overflow:hidden;border:1px solid var(--border);}
+.p-btn{
+  flex:1;padding:8px 0;text-align:center;font-size:12px;font-weight:500;
+  cursor:pointer;background:var(--bg-elevated);color:var(--text-secondary);
+  border:none;font-family:var(--font);transition:all .15s;position:relative;
+}
+.p-btn:not(:last-child)::after{content:'';position:absolute;right:0;top:20%;height:60%;width:1px;background:var(--border);}
+.p-btn.active{background:var(--accent-dim);color:var(--accent);font-weight:600;}
+.p-btn.active::after{display:none;}
+.p-btn.active+.p-btn::after{display:none;}
+.p-dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:4px;vertical-align:middle;}
+.p-dot.cl{background:var(--claude-color);}
+.p-dot.gp{background:var(--chatgpt-color);}
+
+/* ─── Accordion ─── */
+.acc{margin:8px 12px 0;border:1px solid var(--border);border-radius:var(--radius-md);overflow:hidden;}
+.acc+.acc{margin-top:5px;}
+.acc-head{
+  display:flex;align-items:center;padding:10px 12px;cursor:pointer;
+  user-select:none;background:var(--bg-surface);transition:background .15s;gap:8px;
+}
+.acc-head:hover{background:var(--bg-elevated);}
+.acc-icon{color:var(--text-muted);flex-shrink:0;width:16px;text-align:center;}
+.acc-title{flex:1;font-size:13px;font-weight:500;}
+.acc-badge{
+  font-size:10px;font-weight:600;padding:1px 6px;border-radius:10px;
+  background:var(--accent);color:#fff;min-width:18px;text-align:center;display:none;
+}
+.acc-badge.vis{display:inline-block;}
+.acc-chev{color:var(--text-muted);transition:transform .2s;flex-shrink:0;}
+.acc.open .acc-chev{transform:rotate(180deg);}
+.acc-body{max-height:0;overflow:hidden;transition:max-height .25s ease;background:var(--bg-surface);}
+.acc.open .acc-body{max-height:3000px;}
+.acc-inner{padding:2px 12px 12px;}
+
+/* Collapsed summary chips */
+.acc-summary{display:flex;flex-wrap:wrap;gap:3px;padding:0 12px 8px;}
+.acc.open .acc-summary{display:none;}
+.a-tag{font-size:10px;padding:2px 7px;border-radius:10px;background:var(--accent-dim);color:var(--accent);white-space:nowrap;}
+
+/* ─── Within sections ─── */
+.sub-label{
+  font-size:10px;font-weight:600;color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:.5px;margin:10px 0 5px;
+  padding-bottom:3px;border-bottom:1px solid var(--border-subtle);
+}
+.sub-label:first-child{margin-top:2px;}
+.ck-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px 6px;}
+.ck{display:flex;align-items:center;gap:7px;padding:5px 4px;cursor:pointer;border-radius:var(--radius-sm);transition:background .1s;}
+.ck:hover{background:var(--bg-elevated);}
+.ck-box{
+  width:14px;height:14px;border-radius:3px;border:1.5px solid var(--text-muted);
+  flex-shrink:0;display:flex;align-items:center;justify-content:center;
+  transition:all .15s;font-size:9px;color:transparent;
+}
+.ck.on .ck-box{background:var(--accent);border-color:var(--accent);color:#fff;}
+.ck-lbl{font-size:12px;}
+
+/* Tag controls */
+.tag-ctl{display:flex;gap:3px;margin-bottom:6px;flex-wrap:wrap;}
+.tm{
+  font-size:10px;padding:2px 8px;border-radius:12px;
+  border:1px solid var(--border);background:var(--chip-bg);
+  color:var(--text-secondary);cursor:pointer;font-family:var(--font);transition:all .15s;
+}
+.tm.active{border-color:var(--chip-active-border);background:var(--chip-active-bg);color:var(--accent);}
+.tm.ex.active{border-color:var(--destructive);background:var(--destructive-dim);color:var(--destructive);}
+.tag-area{
+  display:flex;flex-wrap:wrap;gap:4px;padding:6px 8px;
+  background:var(--bg-input);border-radius:var(--radius-sm);
+  border:1px solid var(--border);min-height:32px;align-items:center;
+}
+.tpill{
+  font-size:11px;padding:2px 8px;border-radius:10px;
+  background:var(--bg-elevated);color:var(--text-primary);
+  cursor:pointer;border:1px solid var(--border);transition:all .15s;
+  display:flex;align-items:center;gap:3px;
+}
+.tpill.sel{background:var(--accent-dim);border-color:var(--accent);color:var(--accent);}
+.tpill.excl{background:var(--destructive-dim);border-color:var(--destructive);color:var(--destructive);text-decoration:line-through;}
+.ldot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0;}
+
+/* Date */
+.date-row{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;}
+.d-chip{
+  font-size:11px;padding:4px 10px;border-radius:14px;
+  border:1px solid var(--border);background:var(--chip-bg);
+  color:var(--text-secondary);cursor:pointer;font-family:var(--font);transition:all .15s;
+}
+.d-chip.active{border-color:var(--accent);background:var(--accent-dim);color:var(--accent);}
+.custom-range{display:none;gap:6px;margin-top:6px;align-items:center;}
+.custom-range.vis{display:flex;}
+.d-input{
+  flex:1;background:var(--bg-input);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:6px 8px;color:var(--text-primary);
+  font-family:var(--font);font-size:12px;
+}
+.d-input:focus{outline:none;border-color:var(--accent);}
+.d-sep{color:var(--text-muted);font-size:11px;}
+.d-note{font-size:10px;color:var(--text-muted);margin-top:4px;font-style:italic;}
+
+/* Status chips */
+.status-row{display:flex;flex-wrap:wrap;gap:4px;}
+
+/* Provider-specific */
+.prov{margin-top:8px;padding-top:8px;border-top:1px solid var(--border-subtle);}
+.prov-label{font-size:11px;color:var(--text-muted);margin-bottom:4px;display:flex;align-items:center;gap:5px;}
+.prov-dot{width:5px;height:5px;border-radius:50%;}
+.prov-sel{
+  width:100%;background:var(--bg-input);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:6px 8px;color:var(--text-primary);
+  font-family:var(--font);font-size:12px;
+}
+
+/* Saved searches */
+.saved-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--radius-sm);cursor:pointer;transition:background .1s;}
+.saved-row:hover{background:var(--bg-elevated);}
+.saved-ico{font-size:12px;flex-shrink:0;color:var(--text-muted);}
+.saved-name{font-size:12px;flex:1;}
+.saved-meta{font-size:10px;color:var(--text-muted);}
+
+/* ═══ RESULTS PANEL ═══ */
+.results-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg-base);}
+.results-empty{
+  flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  color:var(--text-muted);gap:12px;
+}
+.results-empty-icon{font-size:40px;opacity:.4;}
+.results-empty-text{font-size:14px;text-align:center;max-width:260px;line-height:1.6;}
+
+/* Results header bar */
+.res-bar{
+  display:flex;align-items:center;gap:10px;padding:10px 16px;
+  border-bottom:1px solid var(--border);background:var(--bg-surface);flex-shrink:0;
+}
+.res-count{font-size:14px;font-weight:600;flex:1;}
+.res-sort{
+  background:var(--bg-input);border:1px solid var(--border);
+  border-radius:var(--radius-sm);padding:5px 8px;color:var(--text-secondary);
+  font-size:11px;font-family:var(--font);
+}
+.res-view{display:flex;border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;}
+.rv-btn{
+  background:var(--bg-surface);border:none;padding:5px 10px;color:var(--text-muted);
+  font-size:11px;cursor:pointer;font-family:var(--font);
+}
+.rv-btn.active{background:var(--accent-dim);color:var(--accent);}
+.rv-btn:not(:last-child){border-right:1px solid var(--border);}
+
+/* Result cards */
+.res-scroll{flex:1;overflow-y:auto;padding:8px 12px 20px;}
+.r-card{
+  padding:12px 14px;background:var(--bg-surface);border:1px solid var(--border);
+  border-radius:var(--radius-md);cursor:pointer;transition:border-color .15s;
+  margin-bottom:6px;
+}
+.r-card:hover{border-color:var(--text-muted);}
+.r-card.visited{border-left:3px solid var(--accent-dim);}
+.r-top{display:flex;align-items:flex-start;gap:8px;margin-bottom:5px;}
+.r-title{font-size:13px;font-weight:600;flex:1;}
+.r-date{font-size:10px;color:var(--text-muted);white-space:nowrap;}
+.r-chips{display:flex;flex-wrap:wrap;gap:3px;margin-bottom:6px;}
+.r-chip{font-size:10px;padding:2px 6px;border-radius:8px;background:var(--bg-elevated);color:var(--text-secondary);}
+.r-chip.cl{background:rgba(212,165,116,.12);color:var(--claude-color);}
+.r-chip.gp{background:rgba(116,201,168,.12);color:var(--chatgpt-color);}
+.r-chip.matches{background:var(--accent-dim);color:var(--accent);}
+.r-snippet{
+  font-size:12px;color:var(--text-secondary);line-height:1.5;
+  padding:6px 8px;background:var(--bg-input);border-radius:var(--radius-sm);
+  border-left:2px solid var(--accent);
+}
+.r-snippet-src{font-size:9px;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:.3px;margin-bottom:2px;}
+.r-snippet mark{background:rgba(124,109,240,.22);color:var(--accent);border-radius:2px;padding:0 1px;}
+.r-tags{display:flex;flex-wrap:wrap;gap:3px;margin-top:5px;}
+.r-tag{font-size:10px;padding:2px 6px;border-radius:8px;border:1px solid var(--border);color:var(--text-secondary);}
+
+/* ═══ SVG icons (inline) ═══ */
+.ico{display:inline-flex;align-items:center;justify-content:center;}
+
+/* ═══ Scrollbar ═══ */
+::-webkit-scrollbar{width:6px;}
+::-webkit-scrollbar-track{background:transparent;}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+::-webkit-scrollbar-thumb:hover{background:var(--text-muted);}
+</style>
+</head>
+<body>
+<div class="shell">
+
+<!-- ═══ APP SIDEBAR ═══ -->
+<div class="app-sidebar">
+  <div class="platform-tabs">
+    <button class="ptab active" onclick="setPtab(this)"><span class="p-dot cl"></span> Claude</button>
+    <button class="ptab" onclick="setPtab(this)"><span class="p-dot gp"></span> ChatGPT</button>
+  </div>
+  <div class="sidebar-nav">
+    <div class="nav-item"><span class="nav-icon">📋</span>All Conversations<span class="count">1,248</span></div>
+    <div class="nav-item"><span class="nav-icon">📌</span>Pinned<span class="count">12</span></div>
+    <div class="nav-divider"></div>
+    <div class="nav-item"><span class="nav-icon">📁</span>Folders</div>
+    <div class="nav-item folder-indent">Health<span class="count">86</span></div>
+    <div class="nav-item folder-indent">Housing<span class="count">124</span></div>
+    <div class="nav-item folder-indent">Projects<span class="count">312</span></div>
+    <div class="nav-item folder-indent">Personal<span class="count">98</span></div>
+    <div class="nav-item folder-indent">Unfiled<span class="count">628</span></div>
+  </div>
+  <div class="sidebar-bottom">
+    <button class="sidebar-icon-btn" title="Home">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 6.75L9 2.25L15 6.75V14.25C15 14.6478 14.842 15.0294 14.5607 15.3107C14.2794 15.592 13.8978 15.75 13.5 15.75H4.5C4.10218 15.75 3.72064 15.592 3.43934 15.3107C3.15804 15.0294 3 14.6478 3 14.25V6.75Z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="sidebar-icon-btn" title="Bookmarks">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4.5 2.25H13.5C13.9 2.25 14.25 2.6 14.25 3V15.75L9 12.75L3.75 15.75V3C3.75 2.6 4.1 2.25 4.5 2.25Z" stroke="currentColor" stroke-width="1.3"/></svg>
+    </button>
+    <button class="sidebar-icon-btn" title="Export">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M6 12.75L9 15.75L12 12.75M9 8.25V15.75M15.75 12.4V4.5C15.75 3.67 15.08 3 14.25 3H3.75C2.92 3 2.25 3.67 2.25 4.5V12.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <button class="sidebar-icon-btn active-search" title="Search">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="8" cy="8" r="5.5" stroke="currentColor" stroke-width="1.4"/><path d="M12.5 12.5L16 16" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+    </button>
+    <button class="sidebar-icon-btn" title="Settings">
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="2.5" stroke="currentColor" stroke-width="1.3"/><path d="M14.7 11.1a1.2 1.2 0 00.24 1.32l.04.04a1.45 1.45 0 11-2.06 2.06l-.04-.04a1.2 1.2 0 00-1.32-.24 1.2 1.2 0 00-.73 1.1v.12a1.45 1.45 0 11-2.9 0v-.06a1.2 1.2 0 00-.79-1.1 1.2 1.2 0 00-1.32.24l-.04.04a1.45 1.45 0 11-2.06-2.06l.04-.04a1.2 1.2 0 00.24-1.32 1.2 1.2 0 00-1.1-.73h-.12a1.45 1.45 0 110-2.9h.06a1.2 1.2 0 001.1-.79" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+  </div>
+</div>
+
+<!-- ═══ MAIN ═══ -->
+<div class="main">
+
+  <!-- Top bar -->
+  <div class="top-bar">
+    <div class="top-title">Advanced Search</div>
+    <div class="top-spacer"></div>
+    <button class="top-btn" onclick="clearAll()">Clear All</button>
+    <button class="top-btn" title="Save this search">Save Search</button>
+    <button class="top-btn primary" onclick="runSearch()">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" style="vertical-align:-2px;margin-right:4px;"><circle cx="6" cy="6" r="4.5" stroke="#fff" stroke-width="1.4"/><path d="M9.5 9.5L13 13" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/></svg>
+      Search
+    </button>
+  </div>
+
+  <!-- Content split -->
+  <div class="content-split">
+
+    <!-- ═══ FILTER PANEL ═══ -->
+    <div class="filter-panel">
+
+      <!-- Search text -->
+      <div class="search-bar">
+        <div class="search-wrap">
+          <svg class="s-icon" width="15" height="15" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.4"/><path d="M11 11L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          <input class="s-input" id="si" type="text" placeholder="Search text…" oninput="onSI(this)">
+          <button class="s-clear" id="sc" onclick="document.getElementById('si').value='';this.classList.remove('vis');">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3.5 3.5L10.5 10.5M10.5 3.5L3.5 10.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="text-opts">
+        <button class="t-chip active" data-group="tm" onclick="grp(this,'tm')">All words</button>
+        <button class="t-chip" data-group="tm" onclick="grp(this,'tm')">Any word</button>
+        <button class="t-chip" data-group="tm" onclick="grp(this,'tm')">Exact phrase</button>
+        <div class="t-divider"></div>
+        <button class="t-chip" onclick="this.classList.toggle('active')">Whole words</button>
+      </div>
+
+      <!-- Platform -->
+      <div class="platform-row">
+        <button class="p-btn active" onclick="plat(this)"><span class="p-dot cl"></span>Claude</button>
+        <button class="p-btn" onclick="plat(this)"><span class="p-dot gp"></span>ChatGPT</button>
+        <button class="p-btn" onclick="plat(this)">Both</button>
+      </div>
+
+      <!-- Search In -->
+      <div class="acc open" id="s-searchin">
+        <div class="acc-head" onclick="tog('s-searchin')">
+          <svg class="acc-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3.5h10M2 7h7M2 10.5h9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+          <span class="acc-title">Search In</span>
+          <span class="acc-badge vis">4</span>
+          <svg class="acc-chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="acc-summary"><span class="a-tag">Titles</span><span class="a-tag">User msgs</span><span class="a-tag">AI msgs</span><span class="a-tag">Summary</span></div>
+        <div class="acc-body"><div class="acc-inner">
+          <div class="sub-label">Conversation Content</div>
+          <div class="ck-grid">
+            <label class="ck on" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Titles</span></label>
+            <label class="ck on" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">User messages</span></label>
+            <label class="ck on" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">AI messages</span></label>
+            <label class="ck" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Attachments</span></label>
+          </div>
+          <div class="sub-label">User-Added Content</div>
+          <div class="ck-grid">
+            <label class="ck on" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Summary</span></label>
+            <label class="ck" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Condensed</span></label>
+            <label class="ck" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">User Notes</span></label>
+            <label class="ck" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Notes to AI</span></label>
+            <label class="ck" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Notes from AI</span></label>
+          </div>
+          <div class="sub-label">Metadata</div>
+          <div class="ck-grid">
+            <label class="ck" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Tags</span></label>
+            <label class="ck" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Mood Tags</span></label>
+            <label class="ck" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Bookmarks</span></label>
+          </div>
+        </div></div>
+      </div>
+
+      <!-- Tags & Labels -->
+      <div class="acc" id="s-tags">
+        <div class="acc-head" onclick="tog('s-tags')">
+          <svg class="acc-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 4C2 3.45 2.45 3 3 3H6.09c.27 0 .52.1.71.29L12.5 9a1 1 0 010 1.41l-3.59 3.59a1 1 0 01-1.41 0L1.79 8.29A1 1 0 011.5 7.59V4z" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="5.5" r=".8" fill="currentColor"/></svg>
+          <span class="acc-title">Tags & Labels</span>
+          <span class="acc-badge"></span>
+          <svg class="acc-chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="acc-summary"></div>
+        <div class="acc-body"><div class="acc-inner">
+          <div class="sub-label">Regular Tags</div>
+          <div class="tag-ctl">
+            <button class="tm active" data-group="rtm" onclick="grp(this,'rtm')">Include</button>
+            <button class="tm ex" data-group="rtm" onclick="grp(this,'rtm')">Exclude</button>
+            <div class="t-divider"></div>
+            <button class="tm active" data-group="rtl" onclick="grp(this,'rtl')">Any</button>
+            <button class="tm" data-group="rtl" onclick="grp(this,'rtl')">All</button>
+          </div>
+          <div class="tag-area">
+            <span class="tpill" onclick="this.classList.toggle('sel')">Projects</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">backup</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">data</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">restore</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">UI</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">bugs</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">design</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">voice</span>
+          </div>
+
+          <div class="sub-label" style="margin-top:14px">Mood Tags</div>
+          <div class="tag-ctl">
+            <button class="tm active" data-group="mm" onclick="grp(this,'mm')">Include</button>
+            <button class="tm ex" data-group="mm" onclick="grp(this,'mm')">Exclude</button>
+            <div class="t-divider"></div>
+            <button class="tm active" data-group="ml" onclick="grp(this,'ml')">Any</button>
+            <button class="tm" data-group="ml" onclick="grp(this,'ml')">All</button>
+          </div>
+          <div class="tag-area">
+            <span class="tpill" onclick="this.classList.toggle('sel')">Productive</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">Frustrated</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">Breakthrough</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">Exploring</span>
+          </div>
+
+          <div class="sub-label" style="margin-top:14px">Labels</div>
+          <div class="tag-ctl">
+            <button class="tm active" data-group="lm" onclick="grp(this,'lm')">Include</button>
+            <button class="tm ex" data-group="lm" onclick="grp(this,'lm')">Exclude</button>
+            <div class="t-divider"></div>
+            <button class="tm active" data-group="ll" onclick="grp(this,'ll')">Any</button>
+            <button class="tm" data-group="ll" onclick="grp(this,'ll')">All</button>
+          </div>
+          <div class="tag-area">
+            <span class="tpill" onclick="this.classList.toggle('sel')"><span class="ldot" style="background:#e05a5a"></span> Urgent</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')"><span class="ldot" style="background:#f0a04b"></span> Review</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')"><span class="ldot" style="background:#4ecdc4"></span> Done</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')"><span class="ldot" style="background:#7c6df0"></span></span>
+            <span class="tpill" onclick="this.classList.toggle('sel')"><span class="ldot" style="background:#8a86a0"></span></span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">Unlabeled</span>
+          </div>
+        </div></div>
+      </div>
+
+      <!-- Folders -->
+      <div class="acc" id="s-folders">
+        <div class="acc-head" onclick="tog('s-folders')">
+          <svg class="acc-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 4C2 3.45 2.45 3 3 3H5.5L7 4.5H11c.55 0 1 .45 1 1V10.5c0 .55-.45 1-1 1H3c-.55 0-1-.45-1-1V4z" stroke="currentColor" stroke-width="1.2"/></svg>
+          <span class="acc-title">Folders</span>
+          <span class="acc-badge"></span>
+          <svg class="acc-chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="acc-summary"></div>
+        <div class="acc-body"><div class="acc-inner">
+          <div class="tag-ctl" style="margin-bottom:8px;">
+            <button class="tm active" data-group="fm" onclick="grp(this,'fm')">All</button>
+            <button class="tm" data-group="fm" onclick="grp(this,'fm')">Selected</button>
+            <button class="tm ex" data-group="fm" onclick="grp(this,'fm')">Exclude</button>
+            <button class="tm" data-group="fm" onclick="grp(this,'fm')">No Folder</button>
+          </div>
+          <div class="tag-area">
+            <span class="tpill" onclick="this.classList.toggle('sel')">Health</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">Housing</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">Projects</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">Personal</span>
+            <span class="tpill" onclick="this.classList.toggle('sel')">Unfiled</span>
+          </div>
+        </div></div>
+      </div>
+
+      <!-- Status & Date -->
+      <div class="acc" id="s-status">
+        <div class="acc-head" onclick="tog('s-status')">
+          <svg class="acc-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="2" y="2" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M4.5 2v1.5M9.5 2v1.5M2 5.5h10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+          <span class="acc-title">Status & Date</span>
+          <span class="acc-badge"></span>
+          <svg class="acc-chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="acc-summary"></div>
+        <div class="acc-body"><div class="acc-inner">
+          <div class="sub-label">Status</div>
+          <div class="status-row">
+            <button class="t-chip active" data-group="st" onclick="grp(this,'st')">Active</button>
+            <button class="t-chip" data-group="st" onclick="grp(this,'st')">Archived</button>
+            <button class="t-chip" data-group="st" onclick="grp(this,'st')">Recycle Bin</button>
+            <div class="t-divider"></div>
+            <button class="t-chip" onclick="this.classList.toggle('active')">Pinned only</button>
+          </div>
+          <div class="sub-label" style="margin-top:12px">Last Activity Date</div>
+          <div class="date-row">
+            <button class="d-chip active" data-group="dr" onclick="dsel(this,'dr')">Any time</button>
+            <button class="d-chip" data-group="dr" onclick="dsel(this,'dr')">7 days</button>
+            <button class="d-chip" data-group="dr" onclick="dsel(this,'dr')">30 days</button>
+            <button class="d-chip" data-group="dr" onclick="dsel(this,'dr')">90 days</button>
+            <button class="d-chip" data-group="dr" onclick="dsel(this,'dr')">Custom</button>
+          </div>
+          <div class="custom-range" id="cdr">
+            <input type="date" class="d-input"><span class="d-sep">→</span><input type="date" class="d-input">
+          </div>
+          <div class="d-note">Filters by conversation's last activity date</div>
+        </div></div>
+      </div>
+
+      <!-- More Filters -->
+      <div class="acc" id="s-more">
+        <div class="acc-head" onclick="tog('s-more')">
+          <svg class="acc-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M12.25 1.75H1.75l4.38 5.17v3.58l1.75.88V6.92l4.37-5.17z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="acc-title">More Filters</span>
+          <span class="acc-badge"></span>
+          <svg class="acc-chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="acc-summary"></div>
+        <div class="acc-body"><div class="acc-inner">
+          <div class="sub-label">Conversation Must Have</div>
+          <div class="ck-grid">
+            <label class="ck" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Summary</span></label>
+            <label class="ck" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Notes</span></label>
+            <label class="ck" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Bookmarks</span></label>
+            <label class="ck" onclick="tck(this)"><span class="ck-box">✓</span><span class="ck-lbl">Attachments</span></label>
+          </div>
+          <div class="prov" id="cf">
+            <div class="prov-label"><span class="prov-dot" style="background:var(--claude-color)"></span> Claude Model</div>
+            <select class="prov-sel"><option>Any model</option><option>Opus</option><option>Sonnet</option><option>Haiku</option></select>
+          </div>
+          <div class="prov" id="gf" style="display:none">
+            <div class="prov-label"><span class="prov-dot" style="background:var(--chatgpt-color)"></span> Custom GPT</div>
+            <select class="prov-sel"><option>Any GPT</option><option>Custom GPTs only</option><option>Default ChatGPT only</option></select>
+          </div>
+        </div></div>
+      </div>
+
+      <!-- Saved Searches -->
+      <div class="acc" id="s-saved">
+        <div class="acc-head" onclick="tog('s-saved')">
+          <svg class="acc-icon" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3.5 1.75h7a1.25 1.25 0 011.25 1.25v9.33a.63.63 0 01-.95.54L7 10l-3.8 2.87a.63.63 0 01-.95-.54V3A1.25 1.25 0 013.5 1.75z" stroke="currentColor" stroke-width="1.2"/></svg>
+          <span class="acc-title">Saved Searches</span>
+          <svg class="acc-chev" width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="acc-body"><div class="acc-inner">
+          <div class="sub-label">Recent</div>
+          <div class="saved-row"><span class="saved-ico">🕐</span><span class="saved-name">backup restore strategy</span><span class="saved-meta">2d ago</span></div>
+          <div class="saved-row"><span class="saved-ico">🕐</span><span class="saved-name">UUID migration</span><span class="saved-meta">5d ago</span></div>
+          <div class="sub-label" style="margin-top:10px">Saved</div>
+          <div class="saved-row"><span class="saved-ico">⭐</span><span class="saved-name">All housing docs + notes</span><span class="saved-meta">6 filters</span></div>
+          <div class="saved-row"><span class="saved-ico">⭐</span><span class="saved-name">Project bugs, frustrated</span><span class="saved-meta">4 filters</span></div>
+        </div></div>
+      </div>
+
+    </div><!-- /filter-panel -->
+
+    <!-- ═══ RESULTS PANEL ═══ -->
+    <div class="results-panel" id="resPanel">
+
+      <!-- Empty state -->
+      <div class="results-empty" id="resEmpty">
+        <div class="results-empty-icon">🔍</div>
+        <div class="results-empty-text">Build your search criteria on the left, then hit Search. Filters work with or without search text.</div>
+      </div>
+
+      <!-- Results (hidden until search) -->
+      <div id="resContent" style="display:none;flex:1;display:flex;flex-direction:column;overflow:hidden;">
+        <div class="res-bar">
+          <div class="res-count">127 results for "backup"</div>
+          <select class="res-sort">
+            <option>Newest first</option><option>Oldest first</option><option>Relevance</option><option>Most matches</option>
+          </select>
+          <div class="res-view">
+            <button class="rv-btn active">Grouped</button>
+            <button class="rv-btn" onclick="this.classList.add('active');this.previousElementSibling.classList.remove('active');">Matches</button>
+          </div>
+        </div>
+        <div class="res-scroll">
+
+          <div class="r-card">
+            <div class="r-top"><div class="r-title">Backup and restore plan</div><div class="r-date">Sep 21, 2026</div></div>
+            <div class="r-chips">
+              <span class="r-chip cl">Claude</span>
+              <span class="r-chip matches">4 matches</span>
+            </div>
+            <div class="r-snippet">
+              <div class="r-snippet-src">User message</div>
+              Let's go over the <mark>backup</mark> strategy for the new client. I want to make sure we include all categories and keep UUIDs stable.
+            </div>
+            <div class="r-tags"><span class="r-tag">Projects</span><span class="r-tag">backup</span></div>
+          </div>
+
+          <div class="r-card">
+            <div class="r-top"><div class="r-title">LifeLogger data issue</div><div class="r-date">Sep 19, 2026</div></div>
+            <div class="r-chips">
+              <span class="r-chip cl">Claude</span>
+              <span class="r-chip matches">2 matches</span>
+            </div>
+            <div class="r-snippet">
+              <div class="r-snippet-src">Summary</div>
+              The data didn't show up after restore. Checked the <mark>backup</mark> file and found the export was missing three category tables.
+            </div>
+            <div class="r-tags"><span class="r-tag">Projects</span><span class="r-tag">data</span><span class="r-tag">restore</span></div>
+          </div>
+
+          <div class="r-card">
+            <div class="r-top"><div class="r-title">Backup screenshot</div><div class="r-date">Sep 18, 2026</div></div>
+            <div class="r-chips">
+              <span class="r-chip gp">ChatGPT</span>
+              <span class="r-chip matches">1 match</span>
+            </div>
+            <div class="r-snippet">
+              <div class="r-snippet-src">User Notes</div>
+              Here's the screenshot you asked for. The <mark>backup</mark> dialog shows the correct timestamp format now.
+            </div>
+            <div class="r-tags"><span class="r-tag">Personal</span><span class="r-tag">backup</span></div>
+          </div>
+
+          <div class="r-card visited">
+            <div class="r-top"><div class="r-title">Restore options discussion</div><div class="r-date">Aug 30, 2026</div></div>
+            <div class="r-chips">
+              <span class="r-chip cl">Claude</span>
+              <span class="r-chip matches">6 matches</span>
+            </div>
+            <div class="r-snippet">
+              <div class="r-snippet-src">AI message</div>
+              We should consider per-category restore. A selective <mark>backup</mark> restore would let you recover individual categories without overwriting the full database…
+            </div>
+            <div class="r-tags"><span class="r-tag">Projects</span><span class="r-tag">restore</span></div>
+          </div>
+
+          <div class="r-card">
+            <div class="r-top"><div class="r-title">Data migration questions</div><div class="r-date">Aug 28, 2026</div></div>
+            <div class="r-chips">
+              <span class="r-chip cl">Claude</span>
+              <span class="r-chip matches">3 matches</span>
+            </div>
+            <div class="r-snippet">
+              <div class="r-snippet-src">AI message</div>
+              What happens to UUIDs during a <mark>backup</mark>? The migration path should preserve them so cross-references stay intact.
+            </div>
+            <div class="r-tags"><span class="r-tag">Projects</span><span class="r-tag">data</span></div>
+          </div>
+
+          <div class="r-card">
+            <div class="r-top"><div class="r-title">Export format comparison</div><div class="r-date">Aug 22, 2026</div></div>
+            <div class="r-chips">
+              <span class="r-chip gp">ChatGPT</span>
+              <span class="r-chip matches">2 matches</span>
+            </div>
+            <div class="r-snippet">
+              <div class="r-snippet-src">User message</div>
+              Compare JSON vs SQLite for the <mark>backup</mark> file format. I need something that handles large conversation histories without choking.
+            </div>
+            <div class="r-tags"><span class="r-tag">Projects</span></div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+
+  </div><!-- /content-split -->
+</div><!-- /main -->
+</div><!-- /shell -->
+
+<script>
+function tog(id){document.getElementById(id).classList.toggle('open');}
+function tck(el){el.classList.toggle('on');}
+function grp(el,g){document.querySelectorAll(`[data-group="${g}"]`).forEach(b=>b.classList.remove('active'));el.classList.add('active');}
+function plat(el){
+  document.querySelectorAll('.p-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+  const t=el.textContent.trim();
+  document.getElementById('cf').style.display=(t==='ChatGPT')?'none':'';
+  document.getElementById('gf').style.display=(t==='Claude')?'none':'';
+}
+function dsel(el,g){
+  document.querySelectorAll(`[data-group="${g}"]`).forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('cdr').classList.toggle('vis',el.textContent.trim()==='Custom');
+}
+function onSI(el){document.getElementById('sc').classList.toggle('vis',el.value.length>0);}
+function setPtab(el){document.querySelectorAll('.ptab').forEach(b=>b.classList.remove('active'));el.classList.add('active');}
+function runSearch(){
+  document.getElementById('resEmpty').style.display='none';
+  const rc=document.getElementById('resContent');
+  rc.style.display='flex';
+}
+function clearAll(){
+  document.getElementById('si').value='';
+  document.getElementById('sc').classList.remove('vis');
+  document.querySelectorAll('.ck.on').forEach(el=>el.classList.remove('on'));
+  document.querySelectorAll('.tpill.sel').forEach(el=>el.classList.remove('sel'));
+  document.querySelectorAll('.t-chip.active,.d-chip.active,.tm.active').forEach(el=>el.classList.remove('active'));
+  document.querySelector('[data-group="tm"]').classList.add('active');
+  document.querySelector('[data-group="dr"]').classList.add('active');
+  document.querySelector('[data-group="st"]').classList.add('active');
+  document.getElementById('cdr').classList.remove('vis');
+  document.getElementById('resEmpty').style.display='';
+  document.getElementById('resContent').style.display='none';
+}
+</script>
+</body>
+</html>

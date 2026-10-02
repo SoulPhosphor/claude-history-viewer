@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Advanced Search</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg-base: #0e0e1a;
+  --bg-surface: #16162a;
+  --bg-elevated: #1e1e38;
+  --bg-input: #121224;
+  --border: #2a2a50;
+  --border-active: #6c5ce7;
+  --text-primary: #e8e6f0;
+  --text-secondary: #8a86a0;
+  --text-muted: #5c587a;
+  --accent: #7c6df0;
+  --accent-dim: rgba(124, 109, 240, 0.15);
+  --accent-hover: #8d80f4;
+  --chip-bg: #1e1e38;
+  --chip-active-bg: rgba(124, 109, 240, 0.2);
+  --chip-active-border: #7c6df0;
+  --destructive: #e05a5a;
+  --destructive-dim: rgba(224, 90, 90, 0.15);
+  --success: #4ecdc4;
+  --success-dim: rgba(78, 205, 196, 0.12);
+  --warning: #f0a04b;
+  --warning-dim: rgba(240, 160, 75, 0.12);
+  --claude-color: #d4a574;
+  --chatgpt-color: #74c9a8;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --font: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  box-sizing: border-box;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg-base: #f4f3f8;
+    --bg-surface: #ffffff;
+    --bg-elevated: #eeedf5;
+    --bg-input: #f8f7fc;
+    --border: #d8d6e2;
+    --border-active: #6c5ce7;
+    --text-primary: #1a1828;
+    --text-secondary: #6b6780;
+    --text-muted: #9995b0;
+    --chip-bg: #eeedf5;
+    --chip-active-bg: rgba(124, 109, 240, 0.12);
+    --bg-elevated: #eeedf5;
+  }
+}
+:root[data-theme="dark"] {
+  --bg-base: #0e0e1a;
+  --bg-surface: #16162a;
+  --bg-elevated: #1e1e38;
+  --bg-input: #12122a;
+  --border: #2a2a50;
+  --text-primary: #e8e6f0;
+  --text-secondary: #8a86a0;
+  --text-muted: #5c587a;
+  --chip-bg: #1e1e38;
+}
+*, *::before, *::after { box-sizing: inherit; margin: 0; padding: 0; }
+html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+html, body { height: 100%; }
+body {
+  font-family: var(--font);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+
+/* ─── Header ─── */
+.header {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 100;
+  background: var(--bg-surface);
+  border-bottom: 1px solid var(--border);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.header-back {
+  background: none; border: none; color: var(--text-secondary);
+  padding: 6px; cursor: pointer; display: flex; align-items: center;
+}
+.header-back:hover { color: var(--text-primary); }
+.header-title {
+  font-size: 17px; font-weight: 600; flex: 1;
+}
+.header-actions { display: flex; gap: 4px; }
+.header-btn {
+  background: none; border: none; color: var(--text-secondary);
+  padding: 6px 10px; cursor: pointer; font-size: 13px;
+  font-family: var(--font); border-radius: var(--radius-sm);
+}
+.header-btn:hover { color: var(--accent); background: var(--accent-dim); }
+
+/* ─── Scrollable body ─── */
+.scroll-body {
+  overflow-y: auto;
+  padding-bottom: 90px;
+}
+
+/* ─── Search Input Area ─── */
+.search-input-area {
+  padding: 12px 16px 0;
+}
+.search-field-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0 12px;
+  transition: border-color 0.15s;
+}
+.search-field-wrap:focus-within { border-color: var(--accent); }
+.search-icon { color: var(--text-muted); flex-shrink: 0; }
+.search-input {
+  flex: 1; background: none; border: none; outline: none;
+  color: var(--text-primary); font-size: 15px; padding: 11px 10px;
+  font-family: var(--font);
+}
+.search-input::placeholder { color: var(--text-muted); }
+.search-clear {
+  background: none; border: none; color: var(--text-muted);
+  cursor: pointer; padding: 4px; display: none; flex-shrink: 0;
+}
+.search-clear.visible { display: flex; }
+.search-clear:hover { color: var(--text-secondary); }
+
+/* Text match options row */
+.text-match-row {
+  display: flex; gap: 6px; padding: 8px 0 4px; flex-wrap: wrap;
+  align-items: center;
+}
+.match-chip {
+  font-size: 12px; padding: 4px 10px; border-radius: 20px;
+  border: 1px solid var(--border); background: var(--chip-bg);
+  color: var(--text-secondary); cursor: pointer;
+  font-family: var(--font); transition: all 0.15s;
+  white-space: nowrap;
+}
+.match-chip.active {
+  background: var(--chip-active-bg);
+  border-color: var(--chip-active-border);
+  color: var(--accent);
+}
+.match-chip:hover { border-color: var(--text-muted); }
+.match-divider {
+  width: 1px; height: 16px; background: var(--border); margin: 0 2px;
+}
+
+/* ─── Platform Selector ─── */
+.platform-bar {
+  display: flex; gap: 0; margin: 12px 16px 0;
+  border-radius: var(--radius-md); overflow: hidden;
+  border: 1px solid var(--border);
+}
+.platform-btn {
+  flex: 1; padding: 9px 0; text-align: center;
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  background: var(--bg-surface); color: var(--text-secondary);
+  border: none; font-family: var(--font); transition: all 0.15s;
+  position: relative;
+}
+.platform-btn:not(:last-child)::after {
+  content: ''; position: absolute; right: 0; top: 20%; height: 60%;
+  width: 1px; background: var(--border);
+}
+.platform-btn.active {
+  background: var(--accent-dim); color: var(--accent); font-weight: 600;
+}
+.platform-btn.active::after { display: none; }
+.platform-btn.active + .platform-btn::after { display: none; }
+.platform-dot {
+  display: inline-block; width: 7px; height: 7px;
+  border-radius: 50%; margin-right: 5px; vertical-align: middle;
+}
+.platform-dot.claude { background: var(--claude-color); }
+.platform-dot.gpt { background: var(--chatgpt-color); }
+
+/* ─── Accordion Sections ─── */
+.section {
+  margin: 8px 16px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  transition: margin 0.15s;
+}
+.section + .section { margin-top: 6px; }
+.section-header {
+  display: flex; align-items: center; padding: 11px 14px;
+  cursor: pointer; user-select: none; background: var(--bg-surface);
+  transition: background 0.15s; gap: 10px;
+}
+.section-header:hover { background: var(--bg-elevated); }
+.section-icon {
+  color: var(--text-muted); flex-shrink: 0; width: 18px; text-align: center;
+  font-size: 14px;
+}
+.section-title {
+  flex: 1; font-size: 14px; font-weight: 500; color: var(--text-primary);
+}
+.section-badge {
+  font-size: 11px; font-weight: 600; padding: 1px 7px;
+  border-radius: 10px; background: var(--accent);
+  color: #fff; min-width: 20px; text-align: center;
+  display: none;
+}
+.section-badge.visible { display: inline-block; }
+.section-chevron {
+  color: var(--text-muted); transition: transform 0.2s; flex-shrink: 0;
+}
+.section.open .section-chevron { transform: rotate(180deg); }
+.section-body {
+  max-height: 0; overflow: hidden; transition: max-height 0.25s ease;
+  background: var(--bg-surface);
+}
+.section.open .section-body { max-height: 2000px; }
+.section-body-inner { padding: 2px 14px 14px; }
+
+/* Active filters summary (shown when collapsed) */
+.section-active-summary {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  padding: 0 14px 10px;
+}
+.section.open .section-active-summary { display: none; }
+.active-tag {
+  font-size: 11px; padding: 2px 8px; border-radius: 12px;
+  background: var(--accent-dim); color: var(--accent);
+  white-space: nowrap;
+}
+
+/* ─── Within sections ─── */
+.subsection-label {
+  font-size: 11px; font-weight: 600; color: var(--text-muted);
+  text-transform: uppercase; letter-spacing: 0.5px;
+  margin: 12px 0 6px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.subsection-label:first-child { margin-top: 4px; }
+
+.check-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 2px 8px;
+}
+.check-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 4px; cursor: pointer; border-radius: var(--radius-sm);
+  transition: background 0.1s;
+}
+.check-item:hover { background: var(--bg-elevated); }
+.check-box {
+  width: 16px; height: 16px; border-radius: 4px;
+  border: 1.5px solid var(--text-muted); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  transition: all 0.15s; font-size: 10px; color: transparent;
+}
+.check-item.checked .check-box {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.check-label { font-size: 13px; color: var(--text-primary); }
+
+/* Tag filter sections */
+.tag-filter-controls {
+  display: flex; gap: 4px; margin-bottom: 8px; flex-wrap: wrap;
+}
+.tag-mode-chip {
+  font-size: 11px; padding: 3px 9px; border-radius: 14px;
+  border: 1px solid var(--border); background: var(--chip-bg);
+  color: var(--text-secondary); cursor: pointer;
+  font-family: var(--font); transition: all 0.15s;
+}
+.tag-mode-chip.active {
+  border-color: var(--chip-active-border);
+  background: var(--chip-active-bg);
+  color: var(--accent);
+}
+.tag-mode-chip.exclude.active {
+  border-color: var(--destructive);
+  background: var(--destructive-dim);
+  color: var(--destructive);
+}
+.tag-select-area {
+  display: flex; flex-wrap: wrap; gap: 5px;
+  padding: 8px; background: var(--bg-input);
+  border-radius: var(--radius-sm); border: 1px solid var(--border);
+  min-height: 36px; align-items: center;
+}
+.tag-placeholder {
+  font-size: 12px; color: var(--text-muted); font-style: italic;
+}
+.tag-pill {
+  font-size: 12px; padding: 3px 8px; border-radius: 12px;
+  background: var(--bg-elevated); color: var(--text-primary);
+  cursor: pointer; border: 1px solid var(--border);
+  transition: all 0.15s; display: flex; align-items: center; gap: 4px;
+}
+.tag-pill.selected {
+  background: var(--accent-dim); border-color: var(--accent); color: var(--accent);
+}
+.tag-pill.excluded {
+  background: var(--destructive-dim); border-color: var(--destructive);
+  color: var(--destructive); text-decoration: line-through;
+}
+.tag-pill .remove { font-size: 10px; opacity: 0.6; }
+.tag-pill:hover .remove { opacity: 1; }
+
+/* Label color dots */
+.label-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  display: inline-block; flex-shrink: 0;
+}
+
+/* ─── Date section ─── */
+.date-chips {
+  display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px;
+}
+.date-chip {
+  font-size: 12px; padding: 5px 12px; border-radius: 16px;
+  border: 1px solid var(--border); background: var(--chip-bg);
+  color: var(--text-secondary); cursor: pointer;
+  font-family: var(--font); transition: all 0.15s;
+}
+.date-chip.active {
+  border-color: var(--accent); background: var(--accent-dim); color: var(--accent);
+}
+.date-range-row {
+  display: none; gap: 8px; margin-top: 8px; align-items: center;
+}
+.date-range-row.visible { display: flex; }
+.date-input {
+  flex: 1; background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 8px 10px;
+  color: var(--text-primary); font-family: var(--font); font-size: 13px;
+}
+.date-input:focus { outline: none; border-color: var(--accent); }
+.date-sep { color: var(--text-muted); font-size: 12px; }
+.date-note {
+  font-size: 11px; color: var(--text-muted); margin-top: 6px;
+  font-style: italic;
+}
+
+/* ─── Conversation Status ─── */
+.status-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+
+/* ─── Additional Filters (has...) ─── */
+.has-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px;
+}
+
+/* ─── Provider-specific ─── */
+.provider-filter {
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.provider-label {
+  font-size: 12px; color: var(--text-muted); margin-bottom: 6px;
+  display: flex; align-items: center; gap: 6px;
+}
+.provider-dot { width: 6px; height: 6px; border-radius: 50%; }
+.provider-select {
+  width: 100%; background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 8px 10px;
+  color: var(--text-primary); font-family: var(--font); font-size: 13px;
+}
+.provider-select:focus { outline: none; border-color: var(--accent); }
+
+/* ─── Saved Searches ─── */
+.saved-list { display: flex; flex-direction: column; gap: 4px; }
+.saved-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px; border-radius: var(--radius-sm);
+  cursor: pointer; transition: background 0.1s;
+}
+.saved-item:hover { background: var(--bg-elevated); }
+.saved-icon { color: var(--text-muted); flex-shrink: 0; font-size: 13px; }
+.saved-name { font-size: 13px; color: var(--text-primary); flex: 1; }
+.saved-meta { font-size: 11px; color: var(--text-muted); }
+
+/* ─── Bottom Action Bar ─── */
+.bottom-bar {
+  position: fixed;
+  bottom: env(safe-area-inset-bottom, 0px);
+  left: 0; right: 0; z-index: 100;
+  background: var(--bg-surface);
+  border-top: 1px solid var(--border);
+  padding: 10px 16px 12px;
+  display: flex; gap: 10px; align-items: center;
+}
+.filter-count {
+  font-size: 12px; color: var(--text-secondary);
+  white-space: nowrap;
+}
+.filter-count strong {
+  color: var(--accent); font-weight: 600;
+}
+.search-btn {
+  flex: 1; padding: 11px 0; border: none;
+  border-radius: var(--radius-md); background: var(--accent);
+  color: #fff; font-size: 15px; font-weight: 600;
+  font-family: var(--font); cursor: pointer;
+  transition: background 0.15s;
+}
+.search-btn:hover { background: var(--accent-hover); }
+.search-btn:active { transform: scale(0.98); }
+
+/* ─── Results Overlay (shown after search) ─── */
+.results-panel { display: none; }
+.results-panel.visible { display: block; }
+.results-header {
+  display: flex; align-items: center; padding: 8px 16px;
+  gap: 8px; flex-wrap: wrap;
+}
+.results-count {
+  font-size: 14px; font-weight: 600; color: var(--text-primary);
+  flex: 1;
+}
+.results-sort {
+  background: var(--bg-input); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 5px 8px;
+  color: var(--text-secondary); font-size: 12px;
+  font-family: var(--font);
+}
+.results-view-toggle {
+  display: flex; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); overflow: hidden;
+}
+.view-btn {
+  background: var(--bg-surface); border: none; padding: 5px 10px;
+  color: var(--text-muted); font-size: 12px; cursor: pointer;
+  font-family: var(--font);
+}
+.view-btn.active { background: var(--accent-dim); color: var(--accent); }
+.view-btn:not(:last-child) { border-right: 1px solid var(--border); }
+.modify-btn {
+  font-size: 12px; color: var(--accent); background: none;
+  border: 1px solid var(--accent); border-radius: var(--radius-sm);
+  padding: 5px 10px; cursor: pointer; font-family: var(--font);
+}
+
+/* Result cards */
+.result-card {
+  margin: 6px 16px; padding: 12px 14px;
+  background: var(--bg-surface); border: 1px solid var(--border);
+  border-radius: var(--radius-md); cursor: pointer;
+  transition: border-color 0.15s;
+}
+.result-card:hover { border-color: var(--text-muted); }
+.result-card-top {
+  display: flex; align-items: flex-start; gap: 8px; margin-bottom: 6px;
+}
+.result-title { font-size: 14px; font-weight: 600; flex: 1; }
+.result-date { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.result-meta {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px;
+}
+.result-meta-chip {
+  font-size: 10px; padding: 2px 6px; border-radius: 8px;
+  background: var(--bg-elevated); color: var(--text-secondary);
+}
+.result-meta-chip.platform-claude {
+  background: rgba(212, 165, 116, 0.15); color: var(--claude-color);
+}
+.result-meta-chip.platform-gpt {
+  background: rgba(116, 201, 168, 0.15); color: var(--chatgpt-color);
+}
+.result-meta-chip.matches {
+  background: var(--accent-dim); color: var(--accent);
+}
+.result-snippet {
+  font-size: 12px; color: var(--text-secondary); line-height: 1.55;
+  padding: 6px 8px; background: var(--bg-input);
+  border-radius: var(--radius-sm); border-left: 2px solid var(--accent);
+}
+.result-snippet-source {
+  font-size: 10px; color: var(--text-muted); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.3px;
+  margin-bottom: 2px;
+}
+.result-snippet mark {
+  background: rgba(124, 109, 240, 0.25); color: var(--accent);
+  border-radius: 2px; padding: 0 1px;
+}
+.result-tags {
+  display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;
+}
+.result-tag {
+  font-size: 10px; padding: 2px 7px; border-radius: 10px;
+  border: 1px solid var(--border); color: var(--text-secondary);
+}
+
+/* ─── Utilities ─── */
+.sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0,0,0,0); border: 0;
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ═══ HEADER ═══ -->
+  <div class="header">
+    <button class="header-back" aria-label="Back" onclick="toggleResults(false)">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M12.5 15L7.5 10L12.5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    </button>
+    <div class="header-title">Advanced Search</div>
+    <div class="header-actions">
+      <button class="header-btn" onclick="clearAll()">Clear All</button>
+    </div>
+  </div>
+
+  <!-- ═══ FILTER BUILDER (shown when results hidden) ═══ -->
+  <div id="filterBuilder" class="scroll-body">
+
+    <!-- Search Text -->
+    <div class="search-input-area">
+      <div class="search-field-wrap">
+        <svg class="search-icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="5.2" stroke="currentColor" stroke-width="1.5"/><path d="M11 11L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <input class="search-input" id="searchInput" type="text" placeholder="Search text…" oninput="onSearchInput(this)">
+        <button class="search-clear" id="searchClear" onclick="document.getElementById('searchInput').value='';this.classList.remove('visible');updateFilterCount();" aria-label="Clear">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+      <div class="text-match-row">
+        <button class="match-chip active" data-group="textmatch" onclick="selectInGroup(this,'textmatch')">All words</button>
+        <button class="match-chip" data-group="textmatch" onclick="selectInGroup(this,'textmatch')">Any word</button>
+        <button class="match-chip" data-group="textmatch" onclick="selectInGroup(this,'textmatch')">Exact phrase</button>
+        <div class="match-divider"></div>
+        <button class="match-chip" onclick="this.classList.toggle('active');updateFilterCount();">Whole words</button>
+      </div>
+    </div>
+
+    <!-- Platform -->
+    <div class="platform-bar">
+      <button class="platform-btn active" onclick="selectPlatform(this)"><span class="platform-dot claude"></span>Claude</button>
+      <button class="platform-btn" onclick="selectPlatform(this)"><span class="platform-dot gpt"></span>ChatGPT</button>
+      <button class="platform-btn" onclick="selectPlatform(this)">Both</button>
+    </div>
+
+    <!-- ─── Search In ─── -->
+    <div class="section open" id="sec-searchin">
+      <div class="section-header" onclick="toggleSection('sec-searchin')">
+        <span class="section-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h8M2 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </span>
+        <span class="section-title">Search In</span>
+        <span class="section-badge" id="badge-searchin">4</span>
+        <svg class="section-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3.5 5.25L7 8.75L10.5 5.25" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="section-active-summary" id="summary-searchin"></div>
+      <div class="section-body"><div class="section-body-inner">
+        <div class="subsection-label">Conversation Content</div>
+        <div class="check-grid">
+          <label class="check-item checked" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Titles</span></label>
+          <label class="check-item checked" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">User messages</span></label>
+          <label class="check-item checked" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">AI messages</span></label>
+          <label class="check-item" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Attachments</span></label>
+        </div>
+        <div class="subsection-label">User-Added Content</div>
+        <div class="check-grid">
+          <label class="check-item checked" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Summary</span></label>
+          <label class="check-item" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Condensed</span></label>
+          <label class="check-item" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">User Notes</span></label>
+          <label class="check-item" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Notes to AI</span></label>
+          <label class="check-item" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Notes from AI</span></label>
+        </div>
+        <div class="subsection-label">Metadata</div>
+        <div class="check-grid">
+          <label class="check-item" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Tags</span></label>
+          <label class="check-item" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Mood Tags</span></label>
+          <label class="check-item" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Bookmarks</span></label>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ─── Tags & Labels ─── -->
+    <div class="section" id="sec-tags">
+      <div class="section-header" onclick="toggleSection('sec-tags')">
+        <span class="section-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4.5C2 3.67 2.67 3 3.5 3H7.09c.4 0 .78.16 1.06.44L13.5 8.79a1.5 1.5 0 010 2.12l-4.59 4.59a1.5 1.5 0 01-2.12 0L1.44 10.15A1.5 1.5 0 011 9.09V4.5z" stroke="currentColor" stroke-width="1.3"/><circle cx="5" cy="6" r="1" fill="currentColor"/></svg>
+        </span>
+        <span class="section-title">Tags & Labels</span>
+        <span class="section-badge" id="badge-tags"></span>
+        <svg class="section-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3.5 5.25L7 8.75L10.5 5.25" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="section-active-summary" id="summary-tags"></div>
+      <div class="section-body"><div class="section-body-inner">
+
+        <div class="subsection-label">Regular Tags</div>
+        <div class="tag-filter-controls">
+          <button class="tag-mode-chip active" data-group="tagmode" onclick="selectInGroup(this,'tagmode')">Include</button>
+          <button class="tag-mode-chip exclude" data-group="tagmode" onclick="selectInGroup(this,'tagmode')">Exclude</button>
+          <div class="match-divider"></div>
+          <button class="tag-mode-chip active" data-group="taglogic" onclick="selectInGroup(this,'taglogic')">Match Any</button>
+          <button class="tag-mode-chip" data-group="taglogic" onclick="selectInGroup(this,'taglogic')">Match All</button>
+        </div>
+        <div class="tag-select-area">
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">Projects</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">backup</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">data</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">restore</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">UI</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">bugs</span>
+        </div>
+
+        <div class="subsection-label" style="margin-top:16px">Mood Tags</div>
+        <div class="tag-filter-controls">
+          <button class="tag-mode-chip active" data-group="moodmode" onclick="selectInGroup(this,'moodmode')">Include</button>
+          <button class="tag-mode-chip exclude" data-group="moodmode" onclick="selectInGroup(this,'moodmode')">Exclude</button>
+          <div class="match-divider"></div>
+          <button class="tag-mode-chip active" data-group="moodlogic" onclick="selectInGroup(this,'moodlogic')">Match Any</button>
+          <button class="tag-mode-chip" data-group="moodlogic" onclick="selectInGroup(this,'moodlogic')">Match All</button>
+        </div>
+        <div class="tag-select-area">
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">Productive</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">Frustrated</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">Breakthrough</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">Exploring</span>
+        </div>
+
+        <div class="subsection-label" style="margin-top:16px">Labels</div>
+        <div class="tag-filter-controls">
+          <button class="tag-mode-chip active" data-group="labelmode" onclick="selectInGroup(this,'labelmode')">Include</button>
+          <button class="tag-mode-chip exclude" data-group="labelmode" onclick="selectInGroup(this,'labelmode')">Exclude</button>
+          <div class="match-divider"></div>
+          <button class="tag-mode-chip active" data-group="labellogic" onclick="selectInGroup(this,'labellogic')">Match Any</button>
+          <button class="tag-mode-chip" data-group="labellogic" onclick="selectInGroup(this,'labellogic')">Match All</button>
+        </div>
+        <div class="tag-select-area">
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();"><span class="label-dot" style="background:#e05a5a"></span> Urgent</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();"><span class="label-dot" style="background:#f0a04b"></span> Review</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();"><span class="label-dot" style="background:#4ecdc4"></span> Done</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();"><span class="label-dot" style="background:#7c6df0"></span></span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();"><span class="label-dot" style="background:#8a86a0"></span></span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">Unlabeled</span>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ─── Folders ─── -->
+    <div class="section" id="sec-folders">
+      <div class="section-header" onclick="toggleSection('sec-folders')">
+        <span class="section-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4.5C2 3.67 2.67 3 3.5 3H6l1.5 1.5H12.5c.83 0 1.5.67 1.5 1.5v6c0 .83-.67 1.5-1.5 1.5h-9A1.5 1.5 0 012 12V4.5z" stroke="currentColor" stroke-width="1.3"/></svg>
+        </span>
+        <span class="section-title">Folders</span>
+        <span class="section-badge" id="badge-folders"></span>
+        <svg class="section-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3.5 5.25L7 8.75L10.5 5.25" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="section-active-summary" id="summary-folders"></div>
+      <div class="section-body"><div class="section-body-inner">
+        <div class="tag-filter-controls" style="margin-bottom:10px">
+          <button class="tag-mode-chip active" data-group="foldermode" onclick="selectInGroup(this,'foldermode')">All Folders</button>
+          <button class="tag-mode-chip" data-group="foldermode" onclick="selectInGroup(this,'foldermode')">Selected</button>
+          <button class="tag-mode-chip exclude" data-group="foldermode" onclick="selectInGroup(this,'foldermode')">Exclude</button>
+          <button class="tag-mode-chip" data-group="foldermode" onclick="selectInGroup(this,'foldermode')">No Folder</button>
+        </div>
+        <div class="tag-select-area" id="folderList">
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">Health</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">Housing</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">Projects</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">Personal</span>
+          <span class="tag-pill" onclick="this.classList.toggle('selected');updateFilterCount();">Unfiled</span>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ─── Status & Date ─── -->
+    <div class="section" id="sec-status">
+      <div class="section-header" onclick="toggleSection('sec-status')">
+        <span class="section-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.3"/><path d="M5 2v2M11 2v2M2 6h12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+        </span>
+        <span class="section-title">Status & Date</span>
+        <span class="section-badge" id="badge-status"></span>
+        <svg class="section-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3.5 5.25L7 8.75L10.5 5.25" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="section-active-summary" id="summary-status"></div>
+      <div class="section-body"><div class="section-body-inner">
+        <div class="subsection-label">Conversation Status</div>
+        <div class="status-chips">
+          <button class="match-chip active" data-group="status" onclick="selectInGroup(this,'status')">Active</button>
+          <button class="match-chip" data-group="status" onclick="selectInGroup(this,'status')">Archived</button>
+          <button class="match-chip" data-group="status" onclick="selectInGroup(this,'status')">Recycle Bin</button>
+          <div class="match-divider"></div>
+          <button class="match-chip" onclick="this.classList.toggle('active');updateFilterCount();">Pinned only</button>
+        </div>
+        <div class="subsection-label" style="margin-top:16px">Last Activity Date</div>
+        <div class="date-chips">
+          <button class="date-chip active" data-group="daterange" onclick="selectDate(this,'daterange')">Any time</button>
+          <button class="date-chip" data-group="daterange" onclick="selectDate(this,'daterange')">7 days</button>
+          <button class="date-chip" data-group="daterange" onclick="selectDate(this,'daterange')">30 days</button>
+          <button class="date-chip" data-group="daterange" onclick="selectDate(this,'daterange')">90 days</button>
+          <button class="date-chip" data-group="daterange" onclick="selectDate(this,'daterange')">Custom</button>
+        </div>
+        <div class="date-range-row" id="customDateRow">
+          <input type="date" class="date-input" placeholder="From">
+          <span class="date-sep">→</span>
+          <input type="date" class="date-input" placeholder="To">
+        </div>
+        <div class="date-note">Filters by conversation's last activity date</div>
+      </div></div>
+    </div>
+
+    <!-- ─── Additional Filters ─── -->
+    <div class="section" id="sec-additional">
+      <div class="section-header" onclick="toggleSection('sec-additional')">
+        <span class="section-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M14 2H2l5 5.91V12l2 1V7.91L14 2z" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </span>
+        <span class="section-title">More Filters</span>
+        <span class="section-badge" id="badge-additional"></span>
+        <svg class="section-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3.5 5.25L7 8.75L10.5 5.25" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="section-active-summary" id="summary-additional"></div>
+      <div class="section-body"><div class="section-body-inner">
+        <div class="subsection-label">Conversation Must Have</div>
+        <div class="has-grid">
+          <label class="check-item" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Summary</span></label>
+          <label class="check-item" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Notes</span></label>
+          <label class="check-item" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Bookmarks</span></label>
+          <label class="check-item" onclick="toggleCheck(this)"><span class="check-box">✓</span><span class="check-label">Attachments</span></label>
+        </div>
+        <!-- Claude-specific (shown when Claude or Both) -->
+        <div class="provider-filter" id="claudeFilter">
+          <div class="provider-label"><span class="provider-dot" style="background:var(--claude-color)"></span> Claude Model</div>
+          <select class="provider-select">
+            <option>Any model</option>
+            <option>Opus</option>
+            <option>Sonnet</option>
+            <option>Haiku</option>
+          </select>
+        </div>
+        <!-- GPT-specific (shown when ChatGPT or Both) -->
+        <div class="provider-filter" id="gptFilter" style="display:none">
+          <div class="provider-label"><span class="provider-dot" style="background:var(--chatgpt-color)"></span> Custom GPT</div>
+          <select class="provider-select">
+            <option>Any GPT</option>
+            <option>Custom GPTs only</option>
+            <option>Default ChatGPT only</option>
+          </select>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ─── Saved Searches ─── -->
+    <div class="section" id="sec-saved">
+      <div class="section-header" onclick="toggleSection('sec-saved')">
+        <span class="section-icon">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4 2h8a2 2 0 012 2v9.17a.83.83 0 01-1.32.67L8 10.5l-4.68 3.34A.83.83 0 012 13.17V4a2 2 0 012-2z" stroke="currentColor" stroke-width="1.3"/></svg>
+        </span>
+        <span class="section-title">Saved Searches</span>
+        <svg class="section-chevron" width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3.5 5.25L7 8.75L10.5 5.25" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </div>
+      <div class="section-body"><div class="section-body-inner">
+        <div class="subsection-label">Recent</div>
+        <div class="saved-list">
+          <div class="saved-item"><span class="saved-icon">🕐</span><span class="saved-name">backup restore strategy</span><span class="saved-meta">2 days ago</span></div>
+          <div class="saved-item"><span class="saved-icon">🕐</span><span class="saved-name">UUID migration</span><span class="saved-meta">5 days ago</span></div>
+        </div>
+        <div class="subsection-label" style="margin-top:12px">Saved</div>
+        <div class="saved-list">
+          <div class="saved-item"><span class="saved-icon">⭐</span><span class="saved-name">All housing docs + notes</span><span class="saved-meta">6 filters</span></div>
+          <div class="saved-item"><span class="saved-icon">⭐</span><span class="saved-name">Project bugs, frustrated</span><span class="saved-meta">4 filters</span></div>
+        </div>
+      </div></div>
+    </div>
+
+  </div><!-- /filterBuilder -->
+
+  <!-- ═══ RESULTS PANEL ═══ -->
+  <div id="resultsPanel" class="results-panel scroll-body">
+    <div class="results-header">
+      <div class="results-count">127 results</div>
+      <button class="modify-btn" onclick="toggleResults(false)">Modify Search</button>
+    </div>
+    <div class="results-header" style="padding-top:0">
+      <select class="results-sort">
+        <option>Newest first</option>
+        <option>Oldest first</option>
+        <option>Relevance</option>
+        <option>Most matches</option>
+      </select>
+      <div class="results-view-toggle">
+        <button class="view-btn active">Grouped</button>
+        <button class="view-btn" onclick="this.classList.add('active');this.previousElementSibling.classList.remove('active');">Matches</button>
+      </div>
+    </div>
+
+    <!-- Sample results -->
+    <div class="result-card">
+      <div class="result-card-top">
+        <div class="result-title">Backup and restore plan</div>
+        <div class="result-date">Sep 21</div>
+      </div>
+      <div class="result-meta">
+        <span class="result-meta-chip platform-claude">Claude</span>
+        <span class="result-meta-chip matches">4 matches</span>
+      </div>
+      <div class="result-snippet">
+        <div class="result-snippet-source">User message</div>
+        Let's go over the <mark>backup</mark> strategy for the new client. I want to make sure we include all categories and keep UUIDs stable.
+      </div>
+      <div class="result-tags">
+        <span class="result-tag">Projects</span>
+        <span class="result-tag">backup</span>
+      </div>
+    </div>
+
+    <div class="result-card">
+      <div class="result-card-top">
+        <div class="result-title">LifeLogger data issue</div>
+        <div class="result-date">Sep 19</div>
+      </div>
+      <div class="result-meta">
+        <span class="result-meta-chip platform-claude">Claude</span>
+        <span class="result-meta-chip matches">2 matches</span>
+      </div>
+      <div class="result-snippet">
+        <div class="result-snippet-source">Summary</div>
+        The data didn't show up after restore. Checked the <mark>backup</mark> file and found the export was missing three category tables.
+      </div>
+      <div class="result-tags">
+        <span class="result-tag">Projects</span>
+        <span class="result-tag">data</span>
+        <span class="result-tag">restore</span>
+      </div>
+    </div>
+
+    <div class="result-card">
+      <div class="result-card-top">
+        <div class="result-title">Backup screenshot</div>
+        <div class="result-date">Sep 18</div>
+      </div>
+      <div class="result-meta">
+        <span class="result-meta-chip platform-gpt">ChatGPT</span>
+        <span class="result-meta-chip matches">1 match</span>
+      </div>
+      <div class="result-snippet">
+        <div class="result-snippet-source">User Notes</div>
+        Here's the screenshot you asked for. The <mark>backup</mark> dialog shows the correct timestamp format now.
+      </div>
+      <div class="result-tags">
+        <span class="result-tag">Personal</span>
+        <span class="result-tag">backup</span>
+      </div>
+    </div>
+
+    <div class="result-card">
+      <div class="result-card-top">
+        <div class="result-title">Restore options discussion</div>
+        <div class="result-date">Aug 30</div>
+      </div>
+      <div class="result-meta">
+        <span class="result-meta-chip platform-claude">Claude</span>
+        <span class="result-meta-chip matches">6 matches</span>
+      </div>
+      <div class="result-snippet">
+        <div class="result-snippet-source">AI message</div>
+        We should consider per-category restore options. A selective <mark>backup</mark> restore would let you recover individual categories without overwriting…
+      </div>
+      <div class="result-tags">
+        <span class="result-tag">Projects</span>
+        <span class="result-tag">restore</span>
+      </div>
+    </div>
+
+  </div><!-- /resultsPanel -->
+
+  <!-- ═══ BOTTOM BAR ═══ -->
+  <div class="bottom-bar">
+    <div class="filter-count" id="filterCountLabel"><strong>4</strong> filters active</div>
+    <button class="search-btn" id="searchBtn" onclick="toggleResults(true)">Search</button>
+  </div>
+
+</div>
+
+<script>
+function toggleSection(id) {
+  document.getElementById(id).classList.toggle('open');
+}
+
+function toggleCheck(el) {
+  el.classList.toggle('checked');
+  updateFilterCount();
+}
+
+function selectInGroup(el, group) {
+  document.querySelectorAll(`[data-group="${group}"]`).forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  updateFilterCount();
+}
+
+function selectPlatform(el) {
+  document.querySelectorAll('.platform-btn').forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  const txt = el.textContent.trim();
+  const cf = document.getElementById('claudeFilter');
+  const gf = document.getElementById('gptFilter');
+  if (txt === 'Claude') { cf.style.display = ''; gf.style.display = 'none'; }
+  else if (txt === 'ChatGPT') { cf.style.display = 'none'; gf.style.display = ''; }
+  else { cf.style.display = ''; gf.style.display = ''; }
+  updateFilterCount();
+}
+
+function selectDate(el, group) {
+  document.querySelectorAll(`[data-group="${group}"]`).forEach(b => b.classList.remove('active'));
+  el.classList.add('active');
+  const customRow = document.getElementById('customDateRow');
+  customRow.classList.toggle('visible', el.textContent.trim() === 'Custom');
+  updateFilterCount();
+}
+
+function onSearchInput(el) {
+  document.getElementById('searchClear').classList.toggle('visible', el.value.length > 0);
+  updateFilterCount();
+}
+
+function toggleResults(show) {
+  document.getElementById('filterBuilder').style.display = show ? 'none' : '';
+  document.getElementById('resultsPanel').classList.toggle('visible', show);
+  document.getElementById('searchBtn').textContent = show ? 'Modify Search' : 'Search';
+  if (show) {
+    document.getElementById('searchBtn').onclick = () => toggleResults(false);
+  } else {
+    document.getElementById('searchBtn').onclick = () => toggleResults(true);
+  }
+}
+
+function updateFilterCount() {
+  let count = 0;
+  // Count checked items beyond defaults
+  const checked = document.querySelectorAll('.check-item.checked').length;
+  count += checked;
+  // Count selected tags/pills
+  const selectedPills = document.querySelectorAll('.tag-pill.selected').length;
+  count += selectedPills;
+  // Count non-default date
+  const dateActive = document.querySelector('[data-group="daterange"].active');
+  if (dateActive && dateActive.textContent.trim() !== 'Any time') count++;
+  // Search text
+  if (document.getElementById('searchInput').value.trim()) count++;
+
+  const label = document.getElementById('filterCountLabel');
+  label.innerHTML = `<strong>${count}</strong> filter${count !== 1 ? 's' : ''} active`;
+}
+
+function clearAll() {
+  document.getElementById('searchInput').value = '';
+  document.getElementById('searchClear').classList.remove('visible');
+  document.querySelectorAll('.check-item.checked').forEach(el => el.classList.remove('checked'));
+  document.querySelectorAll('.tag-pill.selected').forEach(el => el.classList.remove('selected'));
+  document.querySelectorAll('.match-chip.active').forEach(el => el.classList.remove('active'));
+  // Reset defaults
+  document.querySelector('[data-group="textmatch"]').classList.add('active');
+  document.querySelector('[data-group="daterange"]').classList.add('active');
+  document.querySelector('[data-group="status"]').classList.add('active');
+  document.getElementById('customDateRow').classList.remove('visible');
+  updateFilterCount();
+}
+
+updateFilterCount();
+</script>
+</body>
+</html>
