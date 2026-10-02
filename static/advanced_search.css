@@ -9,10 +9,7 @@
   --advanced-text: var(--text);
   --advanced-muted: var(--muted);
   --advanced-accent: var(--accent);
-  --advanced-exclude: var(--warning-text);
   --advanced-pill-active-bg: color-mix(in srgb, var(--advanced-accent) 16%, transparent);
-  --advanced-pill-excluded-bg: color-mix(in srgb, var(--advanced-exclude) 14%, transparent);
-  --advanced-pill-excluded-decoration: line-through;
   --advanced-accent-text: #fff;
   --advanced-radius: 9px;
   --advanced-pill-radius: 999px;
@@ -337,13 +334,6 @@
   border-color: var(--advanced-accent);
   background: var(--advanced-pill-active-bg);
   color: var(--advanced-accent);
-}
-
-.advanced-option-pill[data-assignment="exclude"] {
-  border-color: var(--advanced-exclude);
-  background: var(--advanced-pill-excluded-bg);
-  color: var(--advanced-exclude);
-  text-decoration: var(--advanced-pill-excluded-decoration);
 }
 
 .advanced-select-add {

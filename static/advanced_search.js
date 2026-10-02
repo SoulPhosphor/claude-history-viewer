@@ -240,10 +240,12 @@
     return row;
   }
 
-  function assignment(filter, value) {
-    if (filter.exclude.includes(value)) return "exclude";
-    if (filter.include.includes(value) || hasAll(filter)) return "include";
-    return "";
+  // Include and Exclude are separate screens: an option shows active only for
+  // the list of the screen being viewed. All shows every option active.
+  function activeOnScreen(screen, filter, value) {
+    if (screen === "all") return true;
+    if (screen === "include" || screen === "exclude") return filter[screen].includes(value);
+    return false;
   }
 
   function addAssignment(key, filter, value, usePills) {
@@ -268,7 +270,9 @@
 
   function renderSelectedChips(container, key, filter, optionMap, rerender) {
     container.innerHTML = "";
-    for (const mode of ["include", "exclude"]) {
+    const screen = selectedModeFor(key, filter);
+    const lists = screen === "exclude" ? ["exclude"] : screen === "none" ? [] : ["include"];
+    for (const mode of lists) {
       for (const value of filter[mode]) {
         const chip = document.createElement("span");
         chip.className = "advanced-selected-chip";
@@ -319,20 +323,22 @@
     if (usePills) {
       const pills = document.createElement("div");
       pills.className = "advanced-option-pills";
+      const screen = selectedModeFor(key, filter);
       for (const item of normalized.concat(stale)) {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "advanced-option-pill";
         btn.textContent = item.label;
-        const assigned = assignment(filter, item.value);
-        btn.setAttribute("aria-pressed", String(Boolean(assigned)));
-        if (assigned) btn.dataset.assignment = assigned;
-        btn.title = assigned ? `${assigned === "include" ? "Included" : "Excluded"}: ${item.label}` : item.label;
+        const active = activeOnScreen(screen, filter, item.value);
+        btn.setAttribute("aria-pressed", String(active));
+        btn.title = active && screen !== "all"
+          ? `${screen === "include" ? "Included" : "Excluded"}: ${item.label}`
+          : item.label;
         btn.addEventListener("click", () => {
           // While All is on, any chip click leaves All and restores the
           // selections from before it.
           if (hasAll(filter)) exitAll(key, filter, true);
-          else if (assigned) removeAssignment(filter, item.value);
+          else if (active) filter[screen] = filter[screen].filter((v) => v !== item.value);
           else addAssignment(key, filter, item.value, true);
           rerender();
         });
