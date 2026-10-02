@@ -96,6 +96,21 @@ class AdvancedSearchTests(unittest.TestCase):
         self.assertEqual(recent[0]["criteria"]["sort"], "oldest")
         self.assertEqual(recent[0]["use_count"], 2)
 
+    def test_date_choices(self):
+        import time
+        self.conn.execute("UPDATE conversations SET create_time=? WHERE id='exact'", (time.time(),))
+        self.conn.commit()
+
+        def ids(date):
+            data = advanced_search.search(self.conn, {"providers": ["chatgpt"], "date": date})
+            return {row["id"] for row in data["results"]}
+
+        self.assertEqual(ids({"range": "7"}), {"exact"})
+        self.assertEqual(ids({"range": "any", "from": "2030-01-01"}), {"exact", "gapped"})
+        self.assertEqual(ids({"range": "custom", "to": "2000-01-01"}), {"gapped"})
+        # Older saved searches without a range still use their dates.
+        self.assertEqual(ids({"to": "2000-01-01"}), {"gapped"})
+
     def test_importing_a_chatgpt_backup_stores_every_model(self):
         records = build_db.dedup_records(build_db.parse_backup(
             [conversation("imported", "Imported Chat", ["gpt-4o", "o3"])], "chatgpt",

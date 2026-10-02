@@ -16,6 +16,10 @@
   --advanced-chip-box-radius: 6px;
   --advanced-chip-box-padding: 6px 8px;
   --advanced-chip-box-min-h: 32px;
+  /* Date choices from the concept design. */
+  --advanced-date-gap: 8px;
+  --advanced-date-sep-color: var(--advanced-muted);
+  --advanced-date-note-style: italic;
   /* Section icons from the concept design. */
   --advanced-section-icon-size: 14px;
   --advanced-section-icon-color: var(--advanced-muted);
@@ -412,7 +416,7 @@
 
 .advanced-select-add select,
 .advanced-select-add button,
-.advanced-date-grid input,
+.advanced-date-range input,
 .advanced-results-actions select {
   min-height: var(--advanced-control-h);
   border: 1px solid var(--advanced-border);
@@ -464,8 +468,7 @@
   flex-direction: column;
 }
 
-.advanced-checkbox-grid label,
-.advanced-date-grid label {
+.advanced-checkbox-grid label {
   color: var(--advanced-text);
   font-size: var(--advanced-font-control);
 }
@@ -476,20 +479,33 @@
   gap: 7px;
 }
 
-.advanced-date-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 7px;
+.advanced-date-range {
+  display: flex;
+  align-items: center;
+  gap: var(--advanced-date-gap);
+  margin-top: var(--advanced-date-gap);
 }
 
-.advanced-date-grid label {
-  display: grid;
-  gap: 4px;
+.advanced-date-range[hidden] {
+  display: none;
 }
 
-.advanced-date-grid input {
+.advanced-date-range input {
+  flex: 1;
   min-width: 0;
   padding: 0 7px;
+}
+
+.advanced-date-sep {
+  color: var(--advanced-date-sep-color);
+  font-size: var(--advanced-font-control);
+}
+
+.advanced-date-note {
+  margin-top: 6px;
+  color: var(--advanced-muted);
+  font-size: var(--advanced-font-small);
+  font-style: var(--advanced-date-note-style);
 }
 
 .advanced-search-history {

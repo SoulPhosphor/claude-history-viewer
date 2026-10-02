@@ -36,6 +36,16 @@
     ["bookmarks", "Bookmarks"],
   ];
 
+  // Date choices, as in the concept design. The day counts are relative to
+  // the day the search runs, so a saved "7 days" always means the last week.
+  const DATE_RANGES = [
+    ["any", "Any time"],
+    ["7", "7 days"],
+    ["30", "30 days"],
+    ["90", "90 days"],
+    ["custom", "Custom"],
+  ];
+
   const blankFilter = () => ({ include: [], exclude: [], none: false });
   const defaultCriteria = () => ({
     query: "",
@@ -57,7 +67,7 @@
     },
     statuses: ["active"],
     pinned_only: false,
-    date: { from: "", to: "" },
+    date: { range: "any", from: "", to: "" },
     must_have: [],
     sort: "newest",
   });
@@ -110,6 +120,9 @@
       : ["active"];
     if (!merged.statuses.length) merged.statuses = ["active"];
     merged.date = { ...base.date, ...(incoming.date || {}) };
+    if (!DATE_RANGES.some(([value]) => value === merged.date.range)) {
+      merged.date.range = merged.date.from || merged.date.to ? "custom" : "any";
+    }
     merged.must_have = Array.isArray(incoming.must_have) ? incoming.must_have : [];
     merged.text_mode = ["all", "any", "exact"].includes(incoming.text_mode)
       ? incoming.text_mode
@@ -161,7 +174,9 @@
       models: (claude ? filterCount(f.claude_models) : 0)
         + (chatgpt ? filterCount(f.chatgpt_models) + filterCount(f.gizmos) : 0),
       "status-date": Number(statusChanged) + Number(Boolean(c.pinned_only))
-        + Number(Boolean(c.date.from)) + Number(Boolean(c.date.to)),
+        + (c.date.range === "custom"
+          ? Number(Boolean(c.date.from)) + Number(Boolean(c.date.to))
+          : Number(c.date.range !== "any")),
     };
   }
 
@@ -571,32 +586,61 @@
     parent.appendChild(status);
 
     const dates = makeGroup("Conversation Start Date");
-    const dateGrid = document.createElement("div");
-    dateGrid.className = "advanced-date-grid";
+    const date = ui.criteria.date;
+    const chips = document.createElement("div");
+    chips.className = "advanced-option-pills";
+    for (const [value, label] of DATE_RANGES) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "advanced-option-pill";
+      btn.textContent = label;
+      btn.setAttribute("aria-pressed", String(date.range === value));
+      btn.addEventListener("click", () => {
+        // Any time clears the date filter; Custom shows the two date boxes.
+        date.range = value;
+        renderFilters();
+      });
+      chips.appendChild(btn);
+    }
+    dates.appendChild(chips);
+
+    const range = document.createElement("div");
+    range.className = "advanced-date-range";
+    range.hidden = date.range !== "custom";
     const dateInputs = {};
     // From can't be after To (and To not before From), so the range can't
-    // be backwards.
+    // be backwards. Either box may be left empty.
     const syncDateLimits = () => {
-      dateInputs.from.max = ui.criteria.date.to || "";
-      dateInputs.to.min = ui.criteria.date.from || "";
+      dateInputs.from.max = date.to || "";
+      dateInputs.to.min = date.from || "";
     };
-    for (const [key, label] of [["from", "From"], ["to", "To"]]) {
-      const row = document.createElement("label");
-      row.textContent = label;
+    for (const [key, label] of [["from", "From date"], ["to", "To date"]]) {
       const input = document.createElement("input");
       input.type = "date";
-      input.value = ui.criteria.date[key] || "";
+      input.value = date[key] || "";
+      input.setAttribute("aria-label", label);
       input.addEventListener("change", () => {
-        ui.criteria.date[key] = input.value;
+        date[key] = input.value;
         syncDateLimits();
         updateBadges();
       });
       dateInputs[key] = input;
-      row.appendChild(input);
-      dateGrid.appendChild(row);
+      if (key === "to") {
+        const sep = document.createElement("span");
+        sep.className = "advanced-date-sep";
+        sep.setAttribute("aria-hidden", "true");
+        sep.textContent = "→";
+        range.appendChild(sep);
+      }
+      range.appendChild(input);
     }
     syncDateLimits();
-    dates.appendChild(dateGrid);
+    dates.appendChild(range);
+
+    const note = document.createElement("div");
+    note.className = "advanced-date-note";
+    note.textContent = "Filters by the date the conversation started";
+    dates.appendChild(note);
     parent.appendChild(dates);
   }
 
@@ -670,8 +714,10 @@
       parts.push(statuses.map((value) => names[value] || value).join(" + "));
     }
     if (criteria.pinned_only) parts.push("pinned");
-    if (criteria.date?.from) parts.push(`from ${criteria.date.from}`);
-    if (criteria.date?.to) parts.push(`to ${criteria.date.to}`);
+    const dateRange = criteria.date?.range || (criteria.date?.from || criteria.date?.to ? "custom" : "any");
+    if (["7", "30", "90"].includes(dateRange)) parts.push(`last ${dateRange} days`);
+    if (dateRange === "custom" && criteria.date?.from) parts.push(`from ${criteria.date.from}`);
+    if (dateRange === "custom" && criteria.date?.to) parts.push(`to ${criteria.date.to}`);
     for (const value of criteria.must_have || []) parts.push(`has ${value}`);
     return parts.length ? parts.join(", ") : "All conversations";
   }
