@@ -266,6 +266,13 @@ class AdvancedTextMatchingTests(unittest.TestCase):
         )
         self.assertEqual(row["snippet_source"], "User Message")
 
+    def test_text_is_read_only_for_conversations_that_passed_the_filters(self):
+        advanced_search._register_functions(self.conn)
+        rows = advanced_search._matching_rows(
+            self.conn, ["user_messages", "titles"], "housing", "all", False, {"split"},
+        )
+        self.assertEqual({row["conversation_id"] for row in rows}, {"split"})
+
     def test_attachment_search_ignores_json_keys(self):
         stored = json.dumps([{"name": "plan.md", "type": "markdown", "content": "rent figures"}])
         self.conn.execute(

@@ -12,58 +12,68 @@ from functools import lru_cache
 from api_common import ApiError
 
 
+# Text is read only for conversations that already passed every other filter.
+# _matching_rows fills this temporary table with their ids before the search.
+_IN_SCOPE = " IN (SELECT id FROM temp.advanced_scope)"
+
 TEXT_SOURCES = {
     "titles": (
         "Titles",
         "SELECT c.id AS conversation_id, 'titles' AS source, "
         "COALESCE(NULLIF(cm.custom_title, ''), c.title) AS text, NULL AS seq "
-        "FROM conversations c LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id",
+        "FROM conversations c LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
+        "WHERE c.id" + _IN_SCOPE,
     ),
     "user_messages": (
         "User Message",
         "SELECT conversation_id, 'user_messages' AS source, content AS text, seq "
-        "FROM messages WHERE role = 'user'",
+        "FROM messages WHERE role = 'user' AND conversation_id" + _IN_SCOPE,
     ),
     "ai_messages": (
         "AI Message",
         "SELECT conversation_id, 'ai_messages' AS source, content AS text, seq "
-        "FROM messages WHERE role IN ('assistant', 'tool')",
+        "FROM messages WHERE role IN ('assistant', 'tool') AND conversation_id" + _IN_SCOPE,
     ),
     "attachments": (
         "Attachment",
         "SELECT conversation_id, 'attachments' AS source, ADV_ATTACHMENT_TEXT(attachments) AS text, seq "
-        "FROM messages WHERE attachments IS NOT NULL AND TRIM(attachments) != ''",
+        "FROM messages WHERE attachments IS NOT NULL AND TRIM(attachments) != '' "
+        "AND conversation_id" + _IN_SCOPE,
     ),
     "summary": (
         "Summary",
         "SELECT conversation_id, 'summary' AS source, summary AS text, NULL AS seq "
-        "FROM udb.conversation_summaries WHERE summary IS NOT NULL AND TRIM(summary) != ''",
+        "FROM udb.conversation_summaries WHERE summary IS NOT NULL AND TRIM(summary) != '' "
+        "AND conversation_id" + _IN_SCOPE,
     ),
     "condensed": (
         "Condensed Summary",
         "SELECT conversation_id, 'condensed' AS source, condensed_summary AS text, NULL AS seq "
         "FROM udb.conversation_summaries WHERE condensed_summary IS NOT NULL "
-        "AND TRIM(condensed_summary) != ''",
+        "AND TRIM(condensed_summary) != '' AND conversation_id" + _IN_SCOPE,
     ),
     "user_notes": (
         "User Notes",
         "SELECT conversation_id, 'user_notes' AS source, user_notes AS text, NULL AS seq "
-        "FROM udb.conversation_notes WHERE user_notes IS NOT NULL AND TRIM(user_notes) != ''",
+        "FROM udb.conversation_notes WHERE user_notes IS NOT NULL AND TRIM(user_notes) != '' "
+        "AND conversation_id" + _IN_SCOPE,
     ),
     "notes_to_ai": (
         "Notes to AI",
         "SELECT conversation_id, 'notes_to_ai' AS source, notes_to_ai AS text, NULL AS seq "
-        "FROM udb.conversation_notes WHERE notes_to_ai IS NOT NULL AND TRIM(notes_to_ai) != ''",
+        "FROM udb.conversation_notes WHERE notes_to_ai IS NOT NULL AND TRIM(notes_to_ai) != '' "
+        "AND conversation_id" + _IN_SCOPE,
     ),
     "notes_from_ai": (
         "Notes from AI",
         "SELECT conversation_id, 'notes_from_ai' AS source, notes_from_ai AS text, NULL AS seq "
-        "FROM udb.conversation_notes WHERE notes_from_ai IS NOT NULL AND TRIM(notes_from_ai) != ''",
+        "FROM udb.conversation_notes WHERE notes_from_ai IS NOT NULL AND TRIM(notes_from_ai) != '' "
+        "AND conversation_id" + _IN_SCOPE,
     ),
     "bookmarks": (
         "Bookmark",
         "SELECT conversation_id, 'bookmarks' AS source, COALESCE(name, '') AS text, seq "
-        "FROM udb.conversation_bookmarks",
+        "FROM udb.conversation_bookmarks WHERE conversation_id" + _IN_SCOPE,
     ),
 }
 
@@ -321,10 +331,15 @@ def _base_rows(conn, criteria: dict) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def _matching_rows(conn, source_names: list[str], query: str, mode: str, whole: bool) -> list[dict]:
+def _matching_rows(conn, source_names: list[str], query: str, mode: str, whole: bool,
+                   scope_ids) -> list[dict]:
     valid = [name for name in source_names if name in TEXT_SOURCES]
-    if not valid or not _patterns(query, mode, whole):
+    if not valid or not scope_ids or not _patterns(query, mode, whole):
         return []
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS advanced_scope (id TEXT PRIMARY KEY)")
+    conn.execute("DELETE FROM temp.advanced_scope")
+    conn.executemany("INSERT OR IGNORE INTO temp.advanced_scope(id) VALUES (?)",
+                     ((cid,) for cid in scope_ids))
     union = " UNION ALL ".join(TEXT_SOURCES[name][1] for name in valid)
     rows = conn.execute(
         "WITH advanced_text AS (" + union + ") "
@@ -472,7 +487,7 @@ def search(conn, payload: dict) -> dict:
 
     # An excluded Search-In location is simply not searched. Finding the same
     # words there must not disqualify a chat that matched an included location.
-    hit_rows = _matching_rows(conn, sorted(set(allowed_sources)), query, mode, whole)
+    hit_rows = _matching_rows(conn, sorted(set(allowed_sources)), query, mode, whole, by_id)
     hits = defaultdict(list)
     for row in hit_rows:
         cid = row["conversation_id"]
