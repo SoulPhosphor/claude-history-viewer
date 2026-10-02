@@ -76,6 +76,7 @@
     total: 0,
     hasRun: false,
     lastSearchKey: null,
+    pendingSearch: null,
     resultView: "default",
     listModels: false,
     resultSize: "default",
@@ -572,6 +573,13 @@
     const dates = makeGroup("Conversation Start Date");
     const dateGrid = document.createElement("div");
     dateGrid.className = "advanced-date-grid";
+    const dateInputs = {};
+    // From can't be after To (and To not before From), so the range can't
+    // be backwards.
+    const syncDateLimits = () => {
+      dateInputs.from.max = ui.criteria.date.to || "";
+      dateInputs.to.min = ui.criteria.date.from || "";
+    };
     for (const [key, label] of [["from", "From"], ["to", "To"]]) {
       const row = document.createElement("label");
       row.textContent = label;
@@ -580,11 +588,14 @@
       input.value = ui.criteria.date[key] || "";
       input.addEventListener("change", () => {
         ui.criteria.date[key] = input.value;
+        syncDateLimits();
         updateBadges();
       });
+      dateInputs[key] = input;
       row.appendChild(input);
       dateGrid.appendChild(row);
     }
+    syncDateLimits();
     dates.appendChild(dateGrid);
     parent.appendChild(dates);
   }
@@ -653,6 +664,15 @@
       if (value?.none) parts.push(`No ${key.replaceAll("_", " ")}`);
       else if (value?.include?.length || value?.exclude?.length) parts.push(key.replaceAll("_", " "));
     }
+    const statuses = Array.isArray(criteria.statuses) ? criteria.statuses : ["active"];
+    if (!(statuses.length === 1 && statuses[0] === "active")) {
+      const names = { active: "active", archived: "archived", deleted: "recycle bin" };
+      parts.push(statuses.map((value) => names[value] || value).join(" + "));
+    }
+    if (criteria.pinned_only) parts.push("pinned");
+    if (criteria.date?.from) parts.push(`from ${criteria.date.from}`);
+    if (criteria.date?.to) parts.push(`to ${criteria.date.to}`);
+    for (const value of criteria.must_have || []) parts.push(`has ${value}`);
     return parts.length ? parts.join(", ") : "All conversations";
   }
 
@@ -691,7 +711,14 @@
         remove.setAttribute("aria-label", `Delete ${row.name}`);
         remove.addEventListener("click", async (event) => {
           event.stopPropagation();
-          await fetch(`/api/advanced-search/saved/${encodeURIComponent(row.id)}`, { method: "DELETE" });
+          const ok = await openConfirm({
+            title: "Delete saved search?",
+            text: `"${row.name}" will be removed from Saved Searches.`,
+            okLabel: "Delete",
+          });
+          if (!ok) return;
+          const response = await fetch(`/api/advanced-search/saved/${encodeURIComponent(row.id)}`, { method: "DELETE" });
+          if (!response.ok) resultsStatus.textContent = "Could not delete the saved search.";
           await loadHistory();
         });
         item.appendChild(remove);
@@ -798,7 +825,12 @@
   }
 
   async function runSearch(options = {}) {
-    if (ui.busy) return;
+    if (ui.busy) {
+      // Run it once the current search finishes, so the newest request
+      // (a sort change, a second click) is never dropped.
+      ui.pendingSearch = options || {};
+      return;
+    }
     ui.criteria.query = queryEl.value.trim();
     ui.criteria.sort = sortEl.value;
     const body = payload(0);
@@ -830,6 +862,9 @@
       resultsStatus.textContent = `Search failed: ${error.message}`;
     } finally {
       ui.busy = false;
+      const next = ui.pendingSearch;
+      ui.pendingSearch = null;
+      if (next) runSearch(next);
     }
   }
 
@@ -1009,6 +1044,7 @@
       body: JSON.stringify({ name, criteria: payload() }),
     });
     if (response.ok) await loadHistory();
+    else resultsStatus.textContent = "Could not save the search.";
   });
   $("advanced-query-submit")?.addEventListener("click", runSearch);
   queryEl.addEventListener("input", () => { queryClear.hidden = !queryEl.value; });

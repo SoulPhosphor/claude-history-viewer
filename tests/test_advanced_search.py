@@ -86,6 +86,16 @@ class AdvancedSearchTests(unittest.TestCase):
         data = advanced_search.search(self.conn, self.criteria("exact"))
         self.assertEqual(set(data["results"][0]["models"]), {"gpt-4o", "gpt-4.1"})
 
+    def test_changing_sort_or_view_reuses_the_recent_search(self):
+        for sort, view in (("newest", "default"), ("oldest", "compact")):
+            advanced_search.search(self.conn, {
+                **self.criteria("all"), "sort": sort, "result_view": view,
+            })
+        recent = advanced_search.history(self.conn)["recent"]
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(recent[0]["criteria"]["sort"], "oldest")
+        self.assertEqual(recent[0]["use_count"], 2)
+
     def test_importing_a_chatgpt_backup_stores_every_model(self):
         records = build_db.dedup_records(build_db.parse_backup(
             [conversation("imported", "Imported Chat", ["gpt-4o", "o3"])], "chatgpt",

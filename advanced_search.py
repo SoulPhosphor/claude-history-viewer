@@ -450,15 +450,21 @@ def _criteria_for_storage(payload: dict) -> dict:
     return out
 
 
+# Display settings: changing them re-uses the same recent-search entry.
+_DISPLAY_KEYS = ("sort", "result_view", "list_models")
+
+
 def _remember_recent(conn, criteria: dict) -> None:
     stored = _criteria_for_storage(criteria)
-    canonical = json.dumps(stored, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    identity = {k: v for k, v in stored.items() if k not in _DISPLAY_KEYS}
+    canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     rid = uuid.uuid5(uuid.NAMESPACE_URL, canonical).hex
     now = time.time()
+    # The entry keeps the latest display settings it was run with.
     conn.execute(
         "INSERT INTO udb.advanced_search_recent(id,criteria_json,created_at,last_used_at,use_count) "
         "VALUES (?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET last_used_at=excluded.last_used_at, "
-        "use_count=use_count+1",
+        "criteria_json=excluded.criteria_json, use_count=use_count+1",
         (rid, json.dumps(stored, ensure_ascii=False), now, now),
     )
     conn.execute(
