@@ -386,7 +386,7 @@
     const bar = document.createElement("div");
     bar.className = "advanced-segmented";
     const isBoth = ui.criteria.providers.length === 2;
-    for (const [value, label] of [["both", "Both"], ["chatgpt", "ChatGPT"], ["claude", "Claude"]]) {
+    for (const [value, label] of [["claude", "Claude"], ["chatgpt", "ChatGPT"], ["both", "Both"]]) {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = label;
