@@ -62,6 +62,10 @@
   --label-square-size: 14px;
   --label-square-size-header: 16px;
   --label-square-radius: 3px;
+  /* Unnamed labels in pick lists show a colour bar this size. */
+  --label-pick-bar-w: 4ch;
+  --label-pick-bar-h: 12px;
+  --label-choice-menu-max-h: 320px;
   --label-square-blank-border: var(--muted);
   /* Gap between a square and its own name. */
   --label-chip-gap: 5px;
@@ -4533,6 +4537,23 @@ kbd {
   display: inline-block;
   vertical-align: middle;
   margin-right: 8px;
+}
+/* An unnamed label in a pick list: a wider bar of its colour stands in for
+   the name it doesn't have. */
+.menu-label-bar {
+  box-sizing: border-box;
+  width: var(--label-pick-bar-w);
+  height: var(--label-pick-bar-h);
+  border-radius: var(--label-square-radius);
+  flex-shrink: 0;
+  display: inline-block;
+  vertical-align: middle;
+}
+/* Label dropdown list (openLabelMenu): scrolls when there are many labels. */
+.label-choice-menu {
+  min-width: 0;
+  max-height: var(--label-choice-menu-max-h);
+  overflow-y: auto;
 }
 .menu-label-dot-blank {
   background: transparent;

@@ -350,7 +350,7 @@
         const text = document.createElement("span");
         const known = optionMap.get(value);
         const isLabel = value !== ALL && known && "color" in known;
-        const label = value === ALL ? ALL_LABEL : isLabel ? labelTitle(known.label) : known?.label || value;
+        const label = value === ALL ? ALL_LABEL : isLabel ? labelAccessibleName({ name: known.label }) : known?.label || value;
         if (isLabel) {
           text.append(`${mode === "include" ? "Include" : "Exclude"}: `, labelChip({ name: known.label, color: known.color }));
         } else {
@@ -359,7 +359,7 @@
         const remove = document.createElement("button");
         remove.type = "button";
         remove.textContent = "×";
-        remove.title = `Remove ${label}`;
+        remove.title = isLabel && !String(known.label || "").trim() ? "Remove" : `Remove ${label}`;
         remove.setAttribute("aria-label", `Remove ${label}`);
         remove.addEventListener("click", () => {
           if (value === ALL) exitAll(key, filter, false);
@@ -410,11 +410,14 @@
         const active = activeOnScreen(screen, filter, item.value);
         btn.setAttribute("aria-pressed", String(active));
         if (active && screen === "exclude") btn.dataset.assignment = "exclude";
-        const shown = "color" in item ? labelTitle(item.label) : item.label;
-        btn.title = active && screen !== "all"
-          ? `${screen === "include" ? "Included" : "Excluded"}: ${shown}`
-          : shown;
-        if ("color" in item) btn.setAttribute("aria-label", btn.title);
+        const isLabel = "color" in item;
+        const prefix = active && screen !== "all"
+          ? `${screen === "include" ? "Included" : "Excluded"}: `
+          : "";
+        // An unnamed label's colour speaks for itself: no hover text for it.
+        // Screen readers still get a spoken name.
+        if (!isLabel || String(item.label || "").trim()) btn.title = prefix + item.label;
+        if (isLabel) btn.setAttribute("aria-label", prefix + labelAccessibleName({ name: item.label }));
         btn.addEventListener("click", () => {
           // While All is on, any chip click leaves All and restores the
           // selections from before it.
@@ -430,27 +433,64 @@
     } else {
       const addRow = document.createElement("div");
       addRow.className = "advanced-select-add";
-      const select = document.createElement("select");
-      select.setAttribute("aria-label", `${title} choice`);
       const mode = selectedModeFor(key, filter);
       const choices = mode === "include" && !hasAll(filter)
         ? [option(ALL, ALL_LABEL)].concat(normalized)
         : normalized;
-      for (const item of choices) {
-        const opt = document.createElement("option");
-        opt.value = item.value;
-        opt.textContent = item.label;
-        select.appendChild(opt);
+      const isLabels = normalized.some((item) => "color" in item);
+      let control;
+      let chosen = choices[0]?.value;
+      if (isLabels) {
+        // Browser dropdowns can't show colours everywhere (macOS, phones), so
+        // labels use the colour dropdown.
+        control = document.createElement("button");
+        control.type = "button";
+        control.className = "advanced-label-select";
+        control.setAttribute("aria-haspopup", "menu");
+        const menuItem = (item) => ("color" in item
+          ? { value: item.value, label: { name: item.label, color: item.color } }
+          : { value: item.value, text: item.label });
+        const show = () => {
+          const item = menuItem(choices.find((c) => c.value === chosen) || choices[0]);
+          control.replaceChildren();
+          if (item.label) control.appendChild(labelPickSwatch(item.label));
+          else control.append(item.text);
+          const arrow = document.createElement("span");
+          arrow.className = "advanced-label-select-arrow";
+          arrow.setAttribute("aria-hidden", "true");
+          arrow.textContent = "▾";
+          control.appendChild(arrow);
+          control.setAttribute("aria-label",
+            `${title} choice: ${item.label ? labelAccessibleName(item.label) : item.text}`);
+        };
+        control.addEventListener("click", () => {
+          openLabelMenu(control, choices.map(menuItem), (value) => {
+            chosen = value;
+            show();
+            control.focus();
+          });
+        });
+        show();
+      } else {
+        control = document.createElement("select");
+        control.setAttribute("aria-label", `${title} choice`);
+        for (const item of choices) {
+          const opt = document.createElement("option");
+          opt.value = item.value;
+          opt.textContent = item.label;
+          control.appendChild(opt);
+        }
+        control.addEventListener("change", () => { chosen = control.value; });
       }
       const add = document.createElement("button");
       add.type = "button";
       add.textContent = "Add";
       add.addEventListener("click", () => {
-        if (select.value === ALL) enterAll(key, filter, true);
-        else addAssignment(key, filter, select.value, false);
+        if (chosen === ALL) enterAll(key, filter, true);
+        else if (chosen !== undefined) addAssignment(key, filter, chosen, false);
         rerender();
       });
-      addRow.append(select, add);
+      addRow.append(control, add);
       group.appendChild(addRow);
       const chips = document.createElement("div");
       chips.className = "advanced-chip-area advanced-chip-box";
@@ -534,8 +574,6 @@
     }
     return chip;
   }
-
-  const labelTitle = (name) => String(name || "").trim() || "Unnamed label";
 
   function labelOptions() {
     return (ui.options.labels || []).map((item) => option(item.id, item.name, { color: item.color }));
@@ -1033,7 +1071,7 @@
       for (const value of result.mood_tags || []) appendDetailChip(detail, value);
       for (const value of result.labels || []) {
         const chip = labelChip(value, labelShowsText(value));
-        chip.title = labelTitle(value.name);
+        if (String(value.name || "").trim()) chip.title = value.name;
         detail.appendChild(chip);
       }
       if (result.bookmarked) appendDetailChip(detail, "★ Bookmarked");

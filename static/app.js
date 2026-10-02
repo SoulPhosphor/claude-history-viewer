@@ -4545,15 +4545,17 @@ function appendSetLabelToMenu(menu, convId, currentLabels, itemClass, onSelect, 
     b.className = `${itemClass} set-label-item`;
     b.setAttribute("role", "menuitem");
 
-    const dot = document.createElement("span");
-    dot.className = "menu-label-dot" + (opt.id ? "" : " menu-label-dot-blank");
-    if (opt.id) dot.style.background = _validHexColor(opt.color) ? opt.color : "#888888";
-
-    const name = document.createElement("span");
-    name.className = "sidebar-menu-item-label";
-    name.textContent = opt.id ? labelPickName(opt) : "Blank";
-
-    b.append(dot, name);
+    if (opt.id) {
+      b.appendChild(labelPickSwatch(opt));
+      b.setAttribute("aria-label", labelAccessibleName(opt));
+    } else {
+      const dot = document.createElement("span");
+      dot.className = "menu-label-dot menu-label-dot-blank";
+      const name = document.createElement("span");
+      name.className = "sidebar-menu-item-label";
+      name.textContent = "Blank";
+      b.append(dot, name);
+    }
     const ticked = opt.id ? held.has(opt.id) : held.size === 0;
     if (ticked) {
       const check = document.createElement("span");
@@ -4569,6 +4571,119 @@ function appendSetLabelToMenu(menu, convId, currentLabels, itemClass, onSelect, 
     });
     menu.appendChild(b);
   }
+}
+
+// Put a fixed-position menu just below its anchor, or above it when there is
+// no room below, keeping it inside the window.
+function placeMenuNear(menu, anchorEl) {
+  const r = anchorEl.getBoundingClientRect();
+  const mw = menu.offsetWidth;
+  let left = r.left;
+  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+  if (left < 8) left = 8;
+  let top = r.bottom + 4;
+  if (top + menu.offsetHeight > window.innerHeight - 8) {
+    top = r.top - menu.offsetHeight - 4;
+  }
+  menu.style.left = `${left}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+}
+
+// ── Label pick lists ──────────────────────────────────────────────────────────
+// A label in a pick list: a named label is its colour square and name; an
+// unnamed one is a wider bar of its colour, which identifies it on its own.
+function labelPickSwatch(label) {
+  const frag = document.createDocumentFragment();
+  const name = String(label?.name || "").trim();
+  const mark = document.createElement("span");
+  mark.className = name ? "menu-label-dot" : "menu-label-bar";
+  mark.style.background = _validHexColor(label?.color) ? label.color : "#888888";
+  frag.appendChild(mark);
+  if (name) {
+    const text = document.createElement("span");
+    text.className = "sidebar-menu-item-label";
+    text.textContent = name;
+    frag.appendChild(text);
+  }
+  return frag;
+}
+
+// Screen readers can't see the colour, so they get a spoken name instead.
+function labelAccessibleName(label) {
+  return String(label?.name || "").trim() || "Unnamed label";
+}
+
+// A dropdown list of choices that can show label colours. Browser <select>
+// menus show only text, and macOS and phones ignore option colours, so label
+// choices use this instead. Each item is { value, label } (a label object) or
+// { value, text }. onPick(value) runs when one is chosen; onClose runs when the
+// list closes without a choice.
+let _labelMenu = null;
+function closeLabelMenu(picked = false) {
+  if (!_labelMenu) return;
+  const { menu, onClose, outside, keys, scroll } = _labelMenu;
+  _labelMenu = null;
+  menu.remove();
+  document.removeEventListener("mousedown", outside, true);
+  window.removeEventListener("keydown", keys, true);
+  window.removeEventListener("scroll", scroll, true);
+  if (!picked && onClose) onClose();
+}
+function openLabelMenu(anchorEl, items, onPick, { onClose } = {}) {
+  closeLabelMenu();
+  const menu = document.createElement("div");
+  menu.className = "sidebar-menu label-choice-menu";
+  menu.setAttribute("role", "menu");
+  for (const item of items) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sidebar-menu-item set-label-item";
+    b.setAttribute("role", "menuitem");
+    if (item.label) {
+      b.appendChild(labelPickSwatch(item.label));
+      b.setAttribute("aria-label", labelAccessibleName(item.label));
+    } else {
+      const text = document.createElement("span");
+      text.className = "sidebar-menu-item-label";
+      text.textContent = item.text;
+      b.appendChild(text);
+    }
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeLabelMenu(true);
+      onPick(item.value);
+    });
+    menu.appendChild(b);
+  }
+  document.body.appendChild(menu);
+  placeMenuNear(menu, anchorEl);
+  const outside = (e) => {
+    if (!menu.contains(e.target) && !anchorEl.contains(e.target)) closeLabelMenu();
+  };
+  // Window capture runs before any page-level Escape handling, so Escape
+  // closes only this list.
+  const keys = (e) => {
+    const buttons = [...menu.querySelectorAll("button")];
+    const at = buttons.indexOf(document.activeElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      closeLabelMenu();
+      anchorEl.focus?.();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      buttons[(at + step + buttons.length) % buttons.length]?.focus();
+    }
+  };
+  const scroll = (e) => {
+    if (!menu.contains(e.target)) closeLabelMenu();
+  };
+  _labelMenu = { menu, onClose, outside, keys, scroll };
+  document.addEventListener("mousedown", outside, true);
+  window.addEventListener("keydown", keys, true);
+  window.addEventListener("scroll", scroll, true);
+  menu.querySelector("button")?.focus();
 }
 
 let _setLabelPopover = null;
@@ -4604,17 +4719,7 @@ function openSetLabelPopover(convId, currentLabels, anchorEl, activeId) {
   );
   document.body.appendChild(menu);
   _setLabelPopover = menu;
-  const r = anchorEl.getBoundingClientRect();
-  const mw = menu.offsetWidth;
-  let left = r.left;
-  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
-  if (left < 8) left = 8;
-  let top = r.bottom + 4;
-  if (top + menu.offsetHeight > window.innerHeight - 8) {
-    top = r.top - menu.offsetHeight - 4;
-  }
-  menu.style.left = `${left}px`;
-  menu.style.top = `${top}px`;
+  placeMenuNear(menu, anchorEl);
   document.addEventListener("mousedown", _onSetLabelOutside, true);
   window.addEventListener("scroll", closeSetLabelPopover, true);
 }
