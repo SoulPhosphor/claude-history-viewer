@@ -7,6 +7,7 @@ import re
 import time
 import uuid
 from collections import defaultdict
+from functools import lru_cache
 
 from api_common import ApiError
 
@@ -30,7 +31,7 @@ TEXT_SOURCES = {
     ),
     "attachments": (
         "Attachment",
-        "SELECT conversation_id, 'attachments' AS source, attachments AS text, seq "
+        "SELECT conversation_id, 'attachments' AS source, ADV_ATTACHMENT_TEXT(attachments) AS text, seq "
         "FROM messages WHERE attachments IS NOT NULL AND TRIM(attachments) != ''",
     ),
     "summary": (
@@ -67,47 +68,62 @@ TEXT_SOURCES = {
 }
 
 
+# Spaces and tabs only: an exact phrase may have several spaces between its
+# words, but never a line break.
+_PHRASE_GAP = r"[^\S\n\r\v\f\x85\u2028\u2029]+"
+
+
 def _terms(query: str) -> list[str]:
     return [part for part in re.findall(r"\S+", query.strip()) if part]
 
 
-def _term_pattern(term: str, whole: bool) -> str:
-    escaped = re.escape(term)
-    return rf"(?<!\w){escaped}(?!\w)" if whole else escaped
+def _wrap_whole(body: str, whole: bool) -> str:
+    return rf"(?<!\w){body}(?!\w)" if whole else body
+
+
+@lru_cache(maxsize=64)
+def _patterns(query: str, mode: str, whole: bool) -> tuple:
+    """Compiled patterns for a query: one phrase for exact mode, else one per
+    distinct word. Empty when there is nothing to search for."""
+    terms = _terms(query)
+    if not terms:
+        return ()
+    flags = re.IGNORECASE | re.UNICODE
+    if mode == "exact":
+        body = _PHRASE_GAP.join(re.escape(term) for term in terms)
+        return (re.compile(_wrap_whole(body, whole), flags),)
+    unique = list(dict.fromkeys(term.casefold() for term in terms))
+    return tuple(re.compile(_wrap_whole(re.escape(term), whole), flags) for term in unique)
 
 
 def _text_matches(text, query, mode, whole) -> int:
+    # Row-level test: does this text contain any of the patterns? "All words"
+    # is decided per conversation afterwards, so a row only needs one word.
     text = str(text or "")
-    query = str(query or "").strip()
-    if not query:
-        return 1
-    flags = re.IGNORECASE | re.UNICODE
-    whole = bool(whole)
-    mode = str(mode or "all")
-    if mode == "exact":
-        return int(bool(re.search(_term_pattern(query, whole), text, flags)))
-    terms = _terms(query)
-    if not terms:
-        return 1
-    found = [bool(re.search(_term_pattern(term, whole), text, flags)) for term in terms]
-    return int(any(found) if mode == "any" else all(found))
+    return int(any(p.search(text) for p in _patterns(str(query or ""), str(mode), bool(whole))))
 
 
-def _text_count(text, query, mode, whole) -> int:
-    text = str(text or "")
-    query = str(query or "").strip()
-    if not query:
-        return 0
-    flags = re.IGNORECASE | re.UNICODE
-    whole = bool(whole)
-    if str(mode or "all") == "exact":
-        return len(re.findall(_term_pattern(query, whole), text, flags))
-    return sum(len(re.findall(_term_pattern(term, whole), text, flags)) for term in _terms(query))
+def _attachment_text(value) -> str:
+    """Searchable text of a message's attachments: each file name and its
+    extracted content, never the JSON keys or file types around them."""
+    try:
+        items = json.loads(value or "[]")
+    except (TypeError, ValueError):
+        return ""
+    parts = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        for key in ("name", "content"):
+            text = str(item.get(key) or "").strip()
+            if text:
+                parts.append(text)
+    return "\n".join(parts)
 
 
 def _register_functions(conn) -> None:
-    conn.create_function("ADV_MATCH", 4, _text_matches)
-    conn.create_function("ADV_COUNT", 4, _text_count)
+    conn.create_function("ADV_MATCH", 4, _text_matches, deterministic=True)
+    conn.create_function("ADV_ATTACHMENT_TEXT", 1, _attachment_text, deterministic=True)
 
 
 def _json_list(value) -> list[str]:
@@ -289,28 +305,55 @@ def _base_rows(conn, criteria: dict) -> list[dict]:
 
 def _matching_rows(conn, source_names: list[str], query: str, mode: str, whole: bool) -> list[dict]:
     valid = [name for name in source_names if name in TEXT_SOURCES]
-    if not valid or not query:
+    if not valid or not _patterns(query, mode, whole):
         return []
     union = " UNION ALL ".join(TEXT_SOURCES[name][1] for name in valid)
     rows = conn.execute(
         "WITH advanced_text AS (" + union + ") "
-        "SELECT conversation_id, source, text, seq, ADV_COUNT(text, ?, ?, ?) AS hit_count "
+        "SELECT conversation_id, source, text, seq "
         "FROM advanced_text WHERE ADV_MATCH(text, ?, ?, ?)",
-        (query, mode, int(whole), query, mode, int(whole)),
+        (query, mode, int(whole)),
     ).fetchall()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        row = dict(r)
+        text = str(row["text"] or "")
+        counts = [sum(1 for _ in p.finditer(text)) for p in _patterns(query, mode, whole)]
+        row["terms"] = {i for i, count in enumerate(counts) if count}
+        row["hit_count"] = sum(counts)
+        out.append(row)
+    return out
 
 
-def _snippet(text: str, query: str, radius: int = 145) -> str:
-    text = re.sub(r"\s+", " ", str(text or "")).strip()
-    if len(text) <= radius * 2:
-        return text
-    positions = [text.casefold().find(term.casefold()) for term in _terms(query)]
-    positions = [p for p in positions if p >= 0]
-    center = min(positions) if positions else 0
-    start = max(0, center - radius)
-    end = min(len(text), center + radius)
-    return ("…" if start else "") + text[start:end].strip() + ("…" if end < len(text) else "")
+# Sources without a message position, in the order their text is preferred for
+# the snippet. The title is last: it is already shown on the result card.
+_UNPOSITIONED_ORDER = ["summary", "condensed", "user_notes", "notes_to_ai",
+                       "notes_from_ai", "titles"]
+
+
+def _hit_order(hit: dict) -> tuple:
+    """Which hit supplies the snippet and jump target: the one holding the most
+    of the searched words, then the earliest message, then the other sources."""
+    seq = hit.get("seq")
+    if seq is not None:
+        place = (0, seq, list(TEXT_SOURCES).index(hit["source"]))
+    else:
+        place = (1, _UNPOSITIONED_ORDER.index(hit["source"]), 0)
+    return (-len(hit["terms"]),) + place
+
+
+def _snippet(text: str, query: str, mode: str, whole: bool, radius: int = 145) -> str:
+    text = str(text or "")
+    starts = [m.start() for p in _patterns(query, mode, whole) if (m := p.search(text))]
+    center = min(starts) if starts else 0
+    # Cut the window from the original text, so the match found above is the
+    # one shown, then collapse whitespace for display.
+    start = max(0, min(center - radius, len(text) - radius * 2))
+    end = min(len(text), start + radius * 2)
+    body = re.sub(r"\s+", " ", text[start:end]).strip()
+    lead = "…" if text[:start].strip() else ""
+    tail = "…" if text[end:].strip() else ""
+    return lead + body + tail
 
 
 def _attach_metadata(conn, results: list[dict]) -> None:
@@ -418,16 +461,22 @@ def search(conn, payload: dict) -> dict:
         if cid in by_id and row["source"] in allowed_sources:
             hits[cid].append(row)
 
+    # "All words" is judged across the whole conversation: each word must
+    # appear in at least one searched location, not all in the same one.
+    needed = len(_patterns(query, mode, whole))
+
     results = []
     for cid, row in by_id.items():
-        if query and not hits.get(cid):
-            continue
         conv_hits = hits.get(cid, [])
-        first = conv_hits[0] if conv_hits else None
+        if query:
+            found = set().union(*(h["terms"] for h in conv_hits))
+            if not found or (mode == "all" and len(found) < needed):
+                continue
+        first = min(conv_hits, key=_hit_order) if conv_hits else None
         results.append({
             **row,
             "match_count": sum(int(h.get("hit_count") or 0) for h in conv_hits),
-            "snippet": _snippet(first["text"], query) if first else "",
+            "snippet": _snippet(first["text"], query, mode, whole) if first else "",
             "snippet_source": TEXT_SOURCES[first["source"]][0] if first else "",
             "target_seq": first.get("seq") if first else None,
         })

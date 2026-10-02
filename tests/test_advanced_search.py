@@ -107,5 +107,120 @@ class AdvancedSearchTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in data["results"]], ["exact"])
 
 
+def chat(cid, texts, attachments=None):
+    """A ChatGPT conversation with one message per (role, text) pair."""
+    rows = []
+    parent = None
+    for index, (role, text) in enumerate(texts):
+        node_id = f"{cid}-{index}"
+        rows.append(message(node_id, parent, role, text))
+        parent = node_id
+    mapping = dict(rows)
+    for node_id, node in rows[1:]:
+        mapping[node["parent"]]["children"].append(node_id)
+    return {
+        "id": cid,
+        "title": cid,
+        "create_time": 1,
+        "update_time": 2,
+        "current_node": parent,
+        "mapping": mapping,
+    }
+
+
+class AdvancedTextMatchingTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        source = root / "conversations.json"
+        filler = "filler " * 100
+        source.write_text(
+            json.dumps([
+                chat("split", [("user", "tell me about housing"), ("assistant", "the project is big")]),
+                chat("one-word", [("user", "only housing here")]),
+                chat("spaced", [("user", "Housing   Project plan")]),
+                chat("newline", [("user", "Housing\nProject plan")]),
+                chat("snippet", [("user", "project first. " + filler + "housing project later")]),
+                chat("ordered", [
+                    ("user", "housing"),
+                    ("assistant", "housing project"),
+                    ("user", "housing project again"),
+                ]),
+            ]),
+            encoding="utf-8",
+        )
+        self.db_path = root / "history.db"
+        build_db.build(source, self.db_path)
+        _ensure_runtime_schema(self.db_path)
+        _ensure_userdata_schema(self.db_path)
+        self.conn = open_db(self.db_path)
+
+    def tearDown(self):
+        self.conn.close()
+        self.temp.cleanup()
+
+    def search(self, query, mode, sources=("user_messages", "ai_messages"), whole=False):
+        return advanced_search.search(self.conn, {
+            "query": query,
+            "text_mode": mode,
+            "whole_words": whole,
+            "providers": ["chatgpt"],
+            "search_in": {"include": list(sources), "exclude": []},
+        })["results"]
+
+    def ids(self, *args, **kwargs):
+        return {row["id"] for row in self.search(*args, **kwargs)}
+
+    def test_all_words_may_be_spread_across_the_conversation(self):
+        found = self.ids("housing project", "all")
+        self.assertIn("split", found)
+        self.assertNotIn("one-word", found)
+
+    def test_any_word_matches_a_single_word(self):
+        self.assertIn("one-word", self.ids("housing project", "any"))
+
+    def test_exact_phrase_allows_several_spaces(self):
+        self.assertIn("spaced", self.ids("housing project", "exact"))
+
+    def test_exact_phrase_does_not_cross_a_line_break(self):
+        self.assertNotIn("newline", self.ids("housing project", "exact"))
+
+    def test_exact_phrase_does_not_allow_words_between(self):
+        self.assertNotIn("split", self.ids("housing project", "exact"))
+
+    def test_snippet_shows_the_exact_phrase_match(self):
+        row = next(r for r in self.search("housing project", "exact") if r["id"] == "snippet")
+        self.assertIn("housing project later", row["snippet"])
+
+    def test_snippet_respects_whole_words(self):
+        text = "start " + "x " * 200 + "art here"
+        self.assertIn("art here", advanced_search._snippet(text, "art", "all", True))
+
+    def test_snippet_comes_from_earliest_message_with_most_words(self):
+        row = next(r for r in self.search("housing project", "all") if r["id"] == "ordered")
+        self.assertEqual(row["snippet"], "housing project")
+        self.assertEqual(row["snippet_source"], "AI Message")
+
+    def test_title_is_the_last_choice_for_the_snippet(self):
+        row = next(
+            r for r in self.search("housing", "all", sources=("titles", "user_messages"))
+            if r["id"] == "one-word"
+        )
+        self.assertEqual(row["snippet_source"], "User Message")
+
+    def test_attachment_search_ignores_json_keys(self):
+        stored = json.dumps([{"name": "plan.md", "type": "markdown", "content": "rent figures"}])
+        self.conn.execute(
+            "UPDATE messages SET attachments=? WHERE conversation_id='one-word'", (stored,)
+        )
+        self.conn.commit()
+        self.assertNotIn("one-word", self.ids("content", "all", sources=("attachments",)))
+        self.assertNotIn("one-word", self.ids("markdown", "all", sources=("attachments",)))
+        self.assertIn("one-word", self.ids("rent", "all", sources=("attachments",)))
+        self.assertIn("one-word", self.ids("plan.md", "all", sources=("attachments",)))
+        row = self.search("rent", "all", sources=("attachments",))[0]
+        self.assertNotIn("{", row["snippet"])
+
+
 if __name__ == "__main__":
     unittest.main()
