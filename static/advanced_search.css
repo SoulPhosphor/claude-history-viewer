@@ -16,6 +16,9 @@
   --advanced-chip-box-radius: 6px;
   --advanced-chip-box-padding: 6px 8px;
   --advanced-chip-box-min-h: 32px;
+  /* Line under each heading inside a section, as in the concept design. */
+  --advanced-group-title-rule: var(--advanced-border);
+  --advanced-group-title-rule-gap: 4px;
   /* Thin line between chip groups, as in the concept design. */
   --advanced-chip-divider-color: var(--advanced-border);
   --advanced-chip-divider-h: 16px;
@@ -353,6 +356,8 @@
 
 .advanced-filter-group-title {
   margin-bottom: 6px;
+  padding-bottom: var(--advanced-group-title-rule-gap);
+  border-bottom: 1px solid var(--advanced-group-title-rule);
   color: var(--advanced-muted);
   font-size: var(--advanced-font-small);
   font-weight: 700;
