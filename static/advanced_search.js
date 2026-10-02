@@ -372,13 +372,13 @@
     }
   }
 
-  function renderChoiceGroup(parent, { key, title, filter, options, allowNone = true, alwaysDropdown = false, knownLabels = new Map() }) {
+  function renderChoiceGroup(parent, { key, title, filter, options, allowNone = true, alwaysDropdown = false, alwaysChips = false, knownLabels = new Map() }) {
     const group = makeGroup(title);
     const rerender = () => renderFilters();
     const normalized = options.map((item) =>
       typeof item === "string" ? option(item) : item,
     );
-    const usePills = !alwaysDropdown && normalized.length <= 8;
+    const usePills = alwaysChips || (!alwaysDropdown && normalized.length <= 8);
     group.appendChild(makeModeBar(key, filter, allowNone, usePills, rerender));
     const map = new Map(normalized.map((item) => [item.value, item]));
     // Selections that are no longer offered still filter the search, so they
@@ -437,57 +437,20 @@
       const choices = mode === "include" && !hasAll(filter)
         ? [option(ALL, ALL_LABEL)].concat(normalized)
         : normalized;
-      const isLabels = normalized.some((item) => "color" in item);
-      let control;
-      let chosen = choices[0]?.value;
-      if (isLabels) {
-        // Browser dropdowns can't show colours everywhere (macOS, phones), so
-        // labels use the colour dropdown.
-        control = document.createElement("button");
-        control.type = "button";
-        control.className = "advanced-label-select";
-        control.setAttribute("aria-haspopup", "menu");
-        const menuItem = (item) => ("color" in item
-          ? { value: item.value, label: { name: item.label, color: item.color } }
-          : { value: item.value, text: item.label });
-        const show = () => {
-          const item = menuItem(choices.find((c) => c.value === chosen) || choices[0]);
-          control.replaceChildren();
-          if (item.label) control.appendChild(labelPickSwatch(item.label));
-          else control.append(item.text);
-          const arrow = document.createElement("span");
-          arrow.className = "advanced-label-select-arrow";
-          arrow.setAttribute("aria-hidden", "true");
-          arrow.textContent = "▾";
-          control.appendChild(arrow);
-          control.setAttribute("aria-label",
-            `${title} choice: ${item.label ? labelAccessibleName(item.label) : item.text}`);
-        };
-        control.addEventListener("click", () => {
-          openLabelMenu(control, choices.map(menuItem), (value) => {
-            chosen = value;
-            show();
-            control.focus();
-          });
-        });
-        show();
-      } else {
-        control = document.createElement("select");
-        control.setAttribute("aria-label", `${title} choice`);
-        for (const item of choices) {
-          const opt = document.createElement("option");
-          opt.value = item.value;
-          opt.textContent = item.label;
-          control.appendChild(opt);
-        }
-        control.addEventListener("change", () => { chosen = control.value; });
+      const control = document.createElement("select");
+      control.setAttribute("aria-label", `${title} choice`);
+      for (const item of choices) {
+        const opt = document.createElement("option");
+        opt.value = item.value;
+        opt.textContent = item.label;
+        control.appendChild(opt);
       }
       const add = document.createElement("button");
       add.type = "button";
       add.textContent = "Add";
       add.addEventListener("click", () => {
-        if (chosen === ALL) enterAll(key, filter, true);
-        else if (chosen !== undefined) addAssignment(key, filter, chosen, false);
+        if (control.value === ALL) enterAll(key, filter, true);
+        else addAssignment(key, filter, control.value, false);
         rerender();
       });
       addRow.append(control, add);
@@ -729,7 +692,8 @@
     filtersEl.appendChild(tags.section);
 
     const organization = makeSection("Labels & Folders", "organization");
-    renderChoiceGroup(organization.body, { key: "labels", title: "Labels", filter: ui.criteria.filters.labels, options: labelOptions() });
+    // Labels are always chips: each shows its colour, which a dropdown can't.
+    renderChoiceGroup(organization.body, { key: "labels", title: "Labels", filter: ui.criteria.filters.labels, options: labelOptions(), alwaysChips: true });
     const folderNames = new Map((ui.options.folders || []).map((item) => [item.id, item.name]));
     const bothProviders = ui.criteria.providers.length > 1;
     for (const [provider, name] of [["claude", "Claude"], ["chatgpt", "ChatGPT"]]) {
@@ -1070,7 +1034,7 @@
       for (const value of result.tags || []) appendDetailChip(detail, value);
       for (const value of result.mood_tags || []) appendDetailChip(detail, value);
       for (const value of result.labels || []) {
-        const chip = labelChip(value, labelShowsText(value));
+        const chip = labelChip(value);
         if (String(value.name || "").trim()) chip.title = value.name;
         detail.appendChild(chip);
       }

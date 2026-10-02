@@ -423,7 +423,6 @@
 }
 
 .advanced-select-add select,
-.advanced-select-add .advanced-label-select,
 .advanced-select-add button,
 .advanced-date-range input,
 .advanced-results-actions select {
@@ -436,24 +435,10 @@
   font-size: var(--advanced-font-control);
 }
 
-.advanced-select-add select,
-.advanced-select-add .advanced-label-select {
+.advanced-select-add select {
   flex: 1;
   min-width: 0;
   padding: 0 8px;
-}
-
-/* The label dropdown's button: the chosen label's colour (and name). */
-.advanced-select-add .advanced-label-select {
-  display: flex;
-  align-items: center;
-  text-align: left;
-}
-
-.advanced-label-select-arrow {
-  margin-left: auto;
-  padding-left: 8px;
-  color: var(--advanced-muted);
 }
 
 .advanced-select-add button {

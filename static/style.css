@@ -614,7 +614,8 @@ body.sidebar-collapsed #sidebar-footer {
   height: var(--simple-search-manage-size);
 }
 
-#view-filter {
+#view-filter,
+#view-filter-button {
   width: 100%;
   margin-top: 8px;
   padding: 6px 8px;
@@ -624,9 +625,27 @@ body.sidebar-collapsed #sidebar-footer {
   background: var(--bg);
   color: var(--muted);
 }
-#view-filter:focus {
+#view-filter:focus,
+#view-filter-button:focus-visible {
   outline: none;
   border-color: var(--accent);
+}
+/* The view picker button shows the current view (or label colour). */
+#view-filter-button {
+  display: flex;
+  align-items: center;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.view-filter-arrow {
+  margin-left: auto;
+  padding-left: 8px;
+}
+#list-section-title .menu-label-dot,
+#list-section-title .menu-label-bar {
+  vertical-align: -1px;
 }
 
 #result-count {

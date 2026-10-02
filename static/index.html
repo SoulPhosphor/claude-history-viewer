@@ -147,7 +147,10 @@
               </button>
             </div>
           </div>
-          <select id="view-filter" title="Filter conversations">
+          <!-- The visible view picker. It opens a list that can show label
+               colours; the hidden select below stays the source of truth. -->
+          <button type="button" id="view-filter-button" aria-haspopup="menu" title="Filter conversations"></button>
+          <select id="view-filter" title="Filter conversations" hidden>
             <option value="recent">Recent</option>
             <option value="pinned">Pinned</option>
             <option value="archived">Archived</option>

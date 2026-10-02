@@ -1644,15 +1644,75 @@ const VIEW_LABELS = {
 // The one list header reflects whichever view the dropdown has selected, so it
 // never says "Recent" while showing Pinned/Archived/All results.
 function updateListSectionTitle() {
+  syncViewFilterButton();
   if (!listSectionTitle) return;
   if (state.bulkPreview) {
     listSectionTitle.textContent = "Bulk preview";
+    return;
+  }
+  // A label view's heading is the label itself: its colour, and its name
+  // when it has one.
+  const label = !state.q && labelForView(state.view);
+  if (label) {
+    listSectionTitle.replaceChildren(labelPickSwatch(label));
     return;
   }
   listSectionTitle.textContent = state.q
     ? "Search results"
     : labelViewTitle(state.view) || VIEW_LABELS[state.view] || "Recent";
 }
+
+// ── View picker ──────────────────────────────────────────────────────────────
+// The visible button for the hidden #view-filter select. It opens the colour
+// list so label views show their colours on every system; choosing an item
+// sets the select and fires its usual change handler.
+const viewFilterButton = $("view-filter-button");
+
+function labelForView(view) {
+  const v = String(view || "");
+  if (!v.startsWith("label:") || v === "label:__unlabeled__") return null;
+  return labelById(v.slice("label:".length)) || null;
+}
+
+function viewFilterItems() {
+  return [...(viewFilterEl?.options || [])]
+    .filter((opt) => !opt.hidden)
+    .map((opt) => {
+      const label = labelForView(opt.value);
+      return label ? { value: opt.value, label } : { value: opt.value, text: opt.textContent };
+    });
+}
+
+function syncViewFilterButton() {
+  if (!viewFilterButton || !viewFilterEl) return;
+  const value = viewFilterEl.value;
+  const label = labelForView(value);
+  viewFilterButton.replaceChildren();
+  if (label) {
+    viewFilterButton.appendChild(labelPickSwatch(label));
+  } else {
+    const text = document.createElement("span");
+    text.textContent = viewFilterEl.selectedOptions[0]?.textContent || "Recent";
+    viewFilterButton.appendChild(text);
+  }
+  const arrow = document.createElement("span");
+  arrow.className = "view-filter-arrow";
+  arrow.setAttribute("aria-hidden", "true");
+  arrow.textContent = "▾";
+  viewFilterButton.appendChild(arrow);
+  viewFilterButton.setAttribute(
+    "aria-label",
+    `Filter conversations: ${label ? labelAccessibleName(label) : viewFilterEl.selectedOptions[0]?.textContent || "Recent"}`,
+  );
+}
+
+viewFilterButton?.addEventListener("click", () => {
+  openLabelMenu(viewFilterButton, viewFilterItems(), (value) => {
+    viewFilterEl.value = value;
+    viewFilterEl.dispatchEvent(new Event("change"));
+    viewFilterButton.focus();
+  });
+});
 
 // The conversation-count row. In the Recycle Bin it also shows the current
 // selection count (e.g. "327 conversations · 12 selected"), extending the one
@@ -4317,7 +4377,7 @@ function labelChipEl(convId, label, allLabels) {
   if (label) {
     btn.style.background = _validHexColor(label.color) ? label.color : "#888888";
     const nm = String(label.name || "").trim();
-    btn.title = nm || "Unnamed label";
+    if (nm) btn.title = nm;
     btn.setAttribute(
       "aria-label",
       `Label: ${nm || "unnamed"}. Activate to change. Right-click for the full list.`,
