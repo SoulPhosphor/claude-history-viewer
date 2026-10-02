@@ -132,10 +132,20 @@ def _json_list(value) -> list[str]:
     return [str(v) for v in value if v is not None and str(v) != ""]
 
 
+# Include value meaning "every option": no include restriction, so only the
+# excluded values filter ("All" / "All Except Excluded" in the UI).
+ALL = "__all__"
+
+
+def _include_list(raw) -> list[str]:
+    values = _json_list(raw)
+    return [] if ALL in values else values
+
+
 def _mode_filter(criteria: dict, key: str) -> dict:
     raw = ((criteria.get("filters") or {}).get(key) or {})
     return {
-        "include": _json_list(raw.get("include")),
+        "include": _include_list(raw.get("include")),
         "exclude": _json_list(raw.get("exclude")),
         "none": bool(raw.get("none")),
     }
@@ -164,6 +174,16 @@ def _append_relation_filter(where: list[str], params: list, spec: dict, *, table
             f"AND afe.{value_col} IN ({_placeholders(exclude)}))"
         )
         params.extend(exclude)
+
+
+def _provider_condition(criteria: dict, provider: str, params: list) -> str:
+    """Filters that belong to one provider: its models, gizmos and folders.
+    Each applies only to that provider's conversations, so the other side's
+    choices are kept but have no effect while it is not searched."""
+    parts = [_provider_model_condition(criteria, provider, params)]
+    _append_relation_filter(parts, params, _mode_filter(criteria, f"{provider}_folders"),
+                            table="udb.folder_items", value_col="folder_id")
+    return " AND ".join(parts)
 
 
 def _provider_model_condition(criteria: dict, provider: str, params: list) -> str:
@@ -255,8 +275,6 @@ def _base_rows(conn, criteria: dict) -> list[dict]:
                             table="udb.conversation_mood_tags", value_col="tag")
     _append_relation_filter(where, params, _mode_filter(criteria, "labels"),
                             table="udb.conversation_labels", value_col="label_id")
-    _append_relation_filter(where, params, _mode_filter(criteria, "folders"),
-                            table="udb.folder_items", value_col="folder_id")
 
     date = criteria.get("date") if isinstance(criteria.get("date"), dict) else {}
     if date.get("from"):
@@ -288,9 +306,9 @@ def _base_rows(conn, criteria: dict) -> list[dict]:
 
     provider_parts = []
     if "claude" in providers:
-        provider_parts.append("(c.provider='claude' AND " + _provider_model_condition(criteria, "claude", params) + ")")
+        provider_parts.append("(c.provider='claude' AND " + _provider_condition(criteria, "claude", params) + ")")
     if "chatgpt" in providers:
-        provider_parts.append("(c.provider='chatgpt' AND " + _provider_model_condition(criteria, "chatgpt", params) + ")")
+        provider_parts.append("(c.provider='chatgpt' AND " + _provider_condition(criteria, "chatgpt", params) + ")")
     where.append("(" + " OR ".join(provider_parts) + ")")
 
     rows = conn.execute(
@@ -447,7 +465,7 @@ def search(conn, payload: dict) -> dict:
     by_id = {row["id"]: row for row in base}
 
     search_in = criteria.get("search_in") if isinstance(criteria.get("search_in"), dict) else {}
-    included = _json_list(search_in.get("include"))
+    included = _include_list(search_in.get("include"))
     excluded = _json_list(search_in.get("exclude"))
     allowed_sources = included or list(TEXT_SOURCES)
     allowed_sources = [s for s in allowed_sources if s not in excluded]

@@ -106,6 +106,52 @@ class AdvancedSearchTests(unittest.TestCase):
         data = advanced_search.search(self.conn, filtered)
         self.assertEqual([row["id"] for row in data["results"]], ["exact"])
 
+    def add_folder(self, folder_id, provider, conversation_id):
+        self.conn.execute(
+            "INSERT INTO udb.folders(id,name,provider) VALUES (?,?,?)",
+            (folder_id, folder_id, provider),
+        )
+        self.conn.execute(
+            "INSERT INTO udb.folder_items(conversation_id,folder_id) VALUES (?,?)",
+            (conversation_id, folder_id),
+        )
+        self.conn.commit()
+
+    def filtered(self, filters):
+        data = advanced_search.search(self.conn, {"providers": ["chatgpt"], "filters": filters})
+        return {row["id"] for row in data["results"]}
+
+    def test_folder_choices_apply_only_to_their_own_provider(self):
+        self.add_folder("gpt-folder", "chatgpt", "exact")
+        self.add_folder("claude-folder", "claude", "missing-claude-chat")
+        both = {
+            "chatgpt_folders": {"include": ["gpt-folder"], "exclude": [], "none": False},
+            "claude_folders": {"include": ["claude-folder"], "exclude": [], "none": False},
+        }
+        self.assertEqual(self.filtered(both), {"exact"})
+        # A remembered Claude choice has no effect while only ChatGPT is searched.
+        claude_only = {"claude_folders": both["claude_folders"]}
+        self.assertEqual(self.filtered(claude_only), {"exact", "gapped"})
+
+    def test_all_except_excluded_keeps_everything_but_the_excluded(self):
+        self.conn.execute(
+            "INSERT INTO udb.conversation_tags(conversation_id,tag,added_at) VALUES ('exact','drop',1)"
+        )
+        self.conn.commit()
+        tags = {"include": [advanced_search.ALL], "exclude": ["drop"], "none": False}
+        self.assertEqual(self.filtered({"tags": tags}), {"gapped"})
+        tags["exclude"] = []
+        self.assertEqual(self.filtered({"tags": tags}), {"exact", "gapped"})
+
+    def test_all_text_locations_searches_every_location(self):
+        data = advanced_search.search(self.conn, {
+            "query": "Housing Project",
+            "text_mode": "exact",
+            "providers": ["chatgpt"],
+            "search_in": {"include": [advanced_search.ALL], "exclude": []},
+        })
+        self.assertEqual([row["id"] for row in data["results"]], ["exact"])
+
 
 def chat(cid, texts, attachments=None):
     """A ChatGPT conversation with one message per (role, text) pair."""

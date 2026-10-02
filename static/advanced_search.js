@@ -47,7 +47,10 @@
       tags: blankFilter(),
       mood_tags: blankFilter(),
       labels: blankFilter(),
-      folders: blankFilter(),
+      // Kept per provider: switching provider keeps the other side's
+      // folder choices for when the user switches back.
+      claude_folders: blankFilter(),
+      chatgpt_folders: blankFilter(),
       claude_models: blankFilter(),
       chatgpt_models: blankFilter(),
       gizmos: blankFilter(),
@@ -68,6 +71,7 @@
     history: { recent: [], saved: [] },
     criteria: defaultCriteria(),
     editModes: {},
+    allStash: {},
     results: [],
     total: 0,
     hasRun: false,
@@ -163,17 +167,41 @@
     return group;
   }
 
-  function selectedModeFor(key, filter, allowNone) {
+  // "All" is stored as this include value. The server treats it as no
+  // include restriction, so only the excluded values (if any) filter.
+  const ALL = "__all__";
+  const ALL_LABEL = "All Except Excluded";
+  const hasAll = (filter) => filter.include.includes(ALL);
+
+  function selectedModeFor(key, filter) {
+    if (filter.none) return "none";
     const current = ui.editModes[key];
-    if (current === "include" || current === "exclude" || (allowNone && current === "none")) {
-      return current;
-    }
-    if (filter.include.length) return "include";
-    if (filter.exclude.length) return "exclude";
-    return "all";
+    if (current === "include" || current === "exclude") return current;
+    if (hasAll(filter)) return "all";
+    if (!filter.include.length && filter.exclude.length) return "exclude";
+    return "include";
   }
 
-  function makeModeBar(key, filter, allowNone, onChange) {
+  // Turning All on remembers the selections it replaces; turning it off puts
+  // them back, so All can be tried without losing earlier choices.
+  function enterAll(key, filter, keepExcludes) {
+    if (!hasAll(filter)) {
+      ui.allStash[key] = { include: [...filter.include], exclude: [...filter.exclude] };
+    }
+    filter.none = false;
+    filter.include = [ALL];
+    if (!keepExcludes) filter.exclude = [];
+    delete ui.editModes[key];
+  }
+
+  function exitAll(key, filter, restoreExcludes) {
+    const saved = ui.allStash[key];
+    filter.include = saved ? [...saved.include] : [];
+    if (restoreExcludes) filter.exclude = saved ? [...saved.exclude] : [];
+    delete ui.allStash[key];
+  }
+
+  function makeModeBar(key, filter, allowNone, usePills, onChange) {
     const row = document.createElement("div");
     row.className = "advanced-mode-row";
     const bar = document.createElement("div");
@@ -182,7 +210,7 @@
     bar.setAttribute("aria-label", `${key} include or exclude mode`);
     const modes = [["include", "Include"], ["exclude", "Exclude"], ["all", "All"]];
     if (allowNone) modes.push(["none", "None"]);
-    const active = filter.none ? "none" : selectedModeFor(key, filter, allowNone);
+    const active = selectedModeFor(key, filter);
     for (const [value, label] of modes) {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -190,16 +218,17 @@
       btn.setAttribute("aria-pressed", String(active === value));
       btn.addEventListener("click", () => {
         if (value === "all") {
-          filter.include = [];
-          filter.exclude = [];
-          filter.none = false;
-          ui.editModes[key] = "all";
+          // Chips show every option active, which can't also show excludes.
+          // The dropdown's All Except Excluded chip works alongside them.
+          enterAll(key, filter, !usePills);
         } else if (value === "none") {
           filter.include = [];
           filter.exclude = [];
           filter.none = true;
+          delete ui.allStash[key];
           ui.editModes[key] = "none";
         } else {
+          if (usePills && hasAll(filter)) exitAll(key, filter, true);
           filter.none = false;
           ui.editModes[key] = value;
         }
@@ -212,19 +241,20 @@
   }
 
   function assignment(filter, value) {
-    if (filter.include.includes(value)) return "include";
     if (filter.exclude.includes(value)) return "exclude";
+    if (filter.include.includes(value) || hasAll(filter)) return "include";
     return "";
   }
 
-  function addAssignment(key, filter, value) {
-    let mode = selectedModeFor(key, filter, true);
+  function addAssignment(key, filter, value, usePills) {
+    let mode = selectedModeFor(key, filter);
     if (mode !== "include" && mode !== "exclude") {
       // Picking an option while All or None is selected starts an Include
       // selection, so the click always takes effect.
       mode = "include";
       ui.editModes[key] = mode;
     }
+    if (mode === "include" && hasAll(filter)) exitAll(key, filter, usePills);
     filter.none = false;
     const other = mode === "include" ? "exclude" : "include";
     filter[other] = filter[other].filter((item) => item !== value);
@@ -236,22 +266,23 @@
     filter.exclude = filter.exclude.filter((item) => item !== value);
   }
 
-  function renderSelectedChips(container, filter, optionMap, rerender) {
+  function renderSelectedChips(container, key, filter, optionMap, rerender) {
     container.innerHTML = "";
     for (const mode of ["include", "exclude"]) {
       for (const value of filter[mode]) {
         const chip = document.createElement("span");
         chip.className = "advanced-selected-chip";
         const text = document.createElement("span");
-        const label = optionMap.get(value)?.label || value;
-        text.textContent = `${mode === "include" ? "Include" : "Exclude"}: ${label}`;
+        const label = value === ALL ? ALL_LABEL : optionMap.get(value)?.label || value;
+        text.textContent = value === ALL ? label : `${mode === "include" ? "Include" : "Exclude"}: ${label}`;
         const remove = document.createElement("button");
         remove.type = "button";
         remove.textContent = "×";
         remove.title = `Remove ${label}`;
         remove.setAttribute("aria-label", `Remove ${label}`);
         remove.addEventListener("click", () => {
-          removeAssignment(filter, value);
+          if (value === ALL) exitAll(key, filter, false);
+          else removeAssignment(filter, value);
           rerender();
         });
         chip.append(text, remove);
@@ -263,15 +294,16 @@
   function renderChoiceGroup(parent, { key, title, filter, options, allowNone = true, alwaysDropdown = false, knownLabels = new Map() }) {
     const group = makeGroup(title);
     const rerender = () => renderFilters();
-    group.appendChild(makeModeBar(key, filter, allowNone, rerender));
     const normalized = options.map((item) =>
       typeof item === "string" ? option(item) : item,
     );
+    const usePills = !alwaysDropdown && normalized.length <= 8;
+    group.appendChild(makeModeBar(key, filter, allowNone, usePills, rerender));
     const map = new Map(normalized.map((item) => [item.value, item]));
     // Selections that are no longer offered still filter the search, so they
     // stay visible (and removable) instead of applying unseen.
     const stale = [...filter.include, ...filter.exclude]
-      .filter((value) => !map.has(value))
+      .filter((value) => value !== ALL && !map.has(value))
       .map((value) => option(value, knownLabels.get(value) || value));
     for (const item of stale) map.set(item.value, item);
 
@@ -284,7 +316,7 @@
       return;
     }
 
-    if (!alwaysDropdown && normalized.length <= 8) {
+    if (usePills) {
       const pills = document.createElement("div");
       pills.className = "advanced-option-pills";
       for (const item of normalized.concat(stale)) {
@@ -297,8 +329,11 @@
         if (assigned) btn.dataset.assignment = assigned;
         btn.title = assigned ? `${assigned === "include" ? "Included" : "Excluded"}: ${item.label}` : item.label;
         btn.addEventListener("click", () => {
-          if (assigned) removeAssignment(filter, item.value);
-          else addAssignment(key, filter, item.value);
+          // While All is on, any chip click leaves All and restores the
+          // selections from before it.
+          if (hasAll(filter)) exitAll(key, filter, true);
+          else if (assigned) removeAssignment(filter, item.value);
+          else addAssignment(key, filter, item.value, true);
           rerender();
         });
         pills.appendChild(btn);
@@ -309,7 +344,11 @@
       addRow.className = "advanced-select-add";
       const select = document.createElement("select");
       select.setAttribute("aria-label", `${title} choice`);
-      for (const item of normalized) {
+      const mode = selectedModeFor(key, filter);
+      const choices = mode === "include" && !hasAll(filter)
+        ? [option(ALL, ALL_LABEL)].concat(normalized)
+        : normalized;
+      for (const item of choices) {
         const opt = document.createElement("option");
         opt.value = item.value;
         opt.textContent = item.label;
@@ -319,14 +358,15 @@
       add.type = "button";
       add.textContent = "Add";
       add.addEventListener("click", () => {
-        addAssignment(key, filter, select.value);
+        if (select.value === ALL) enterAll(key, filter, true);
+        else addAssignment(key, filter, select.value, false);
         rerender();
       });
       addRow.append(select, add);
       group.appendChild(addRow);
       const chips = document.createElement("div");
       chips.className = "advanced-chip-area";
-      renderSelectedChips(chips, filter, map, rerender);
+      renderSelectedChips(chips, key, filter, map, rerender);
       group.appendChild(chips);
     }
     parent.appendChild(group);
@@ -391,9 +431,9 @@
     return (ui.options.labels || []).map((item) => option(item.id, item.name, { color: item.color }));
   }
 
-  function folderOptions() {
+  function folderOptions(provider) {
     return (ui.options.folders || [])
-      .filter((item) => ui.criteria.providers.includes(item.provider))
+      .filter((item) => item.provider === provider)
       .map((item) => option(item.id, item.name));
   }
 
@@ -492,13 +532,18 @@
 
     const organization = makeSection("Labels & Folders", "organization");
     renderChoiceGroup(organization.body, { key: "labels", title: "Labels", filter: ui.criteria.filters.labels, options: labelOptions() });
-    renderChoiceGroup(organization.body, {
-      key: "folders",
-      title: "Folders",
-      filter: ui.criteria.filters.folders,
-      options: folderOptions(),
-      knownLabels: new Map((ui.options.folders || []).map((item) => [item.id, item.name])),
-    });
+    const folderNames = new Map((ui.options.folders || []).map((item) => [item.id, item.name]));
+    const bothProviders = ui.criteria.providers.length > 1;
+    for (const [provider, name] of [["claude", "Claude"], ["chatgpt", "ChatGPT"]]) {
+      if (!ui.criteria.providers.includes(provider)) continue;
+      renderChoiceGroup(organization.body, {
+        key: `${provider}_folders`,
+        title: bothProviders ? `${name} Folders` : "Folders",
+        filter: ui.criteria.filters[`${provider}_folders`],
+        options: folderOptions(provider),
+        knownLabels: folderNames,
+      });
+    }
     filtersEl.appendChild(organization.section);
 
     const hasClaude = ui.criteria.providers.includes("claude") && (ui.options.claude_models || []).length;
@@ -616,6 +661,7 @@
       : "default";
     ui.listModels = Boolean(criteria.list_models);
     ui.editModes = {};
+    ui.allStash = {};
     syncHeaderControls();
     renderFilters();
     queryEl.focus();
@@ -870,6 +916,7 @@
   $("advanced-clear-all")?.addEventListener("click", () => {
     ui.criteria = defaultCriteria();
     ui.editModes = {};
+    ui.allStash = {};
     ui.results = [];
     ui.total = 0;
     ui.hasRun = false;
