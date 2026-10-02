@@ -348,8 +348,14 @@
         const chip = document.createElement("span");
         chip.className = "advanced-selected-chip";
         const text = document.createElement("span");
-        const label = value === ALL ? ALL_LABEL : optionMap.get(value)?.label || value;
-        text.textContent = value === ALL ? label : `${mode === "include" ? "Include" : "Exclude"}: ${label}`;
+        const known = optionMap.get(value);
+        const isLabel = value !== ALL && known && "color" in known;
+        const label = value === ALL ? ALL_LABEL : isLabel ? labelTitle(known.label) : known?.label || value;
+        if (isLabel) {
+          text.append(`${mode === "include" ? "Include" : "Exclude"}: `, labelChip({ name: known.label, color: known.color }));
+        } else {
+          text.textContent = value === ALL ? label : `${mode === "include" ? "Include" : "Exclude"}: ${label}`;
+        }
         const remove = document.createElement("button");
         remove.type = "button";
         remove.textContent = "×";
@@ -399,13 +405,16 @@
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "advanced-option-pill";
-        btn.textContent = item.label;
+        if ("color" in item) btn.appendChild(labelChip({ name: item.label, color: item.color }));
+        else btn.textContent = item.label;
         const active = activeOnScreen(screen, filter, item.value);
         btn.setAttribute("aria-pressed", String(active));
         if (active && screen === "exclude") btn.dataset.assignment = "exclude";
+        const shown = "color" in item ? labelTitle(item.label) : item.label;
         btn.title = active && screen !== "all"
-          ? `${screen === "include" ? "Included" : "Excluded"}: ${item.label}`
-          : item.label;
+          ? `${screen === "include" ? "Included" : "Excluded"}: ${shown}`
+          : shown;
+        if ("color" in item) btn.setAttribute("aria-label", btn.title);
         btn.addEventListener("click", () => {
           // While All is on, any chip click leaves All and restores the
           // selections from before it.
@@ -506,6 +515,27 @@
     other.appendChild(grid);
     parent.appendChild(other);
   }
+
+  // A label shown as the app's .label-chip: its colour square, plus its name
+  // when it has one. Display only; clicking it never changes a conversation.
+  function labelChip(label, showName = true) {
+    const chip = document.createElement("span");
+    chip.className = "label-chip";
+    const square = document.createElement("span");
+    square.className = "label-square";
+    square.style.background = _validHexColor(label.color) ? label.color : "#888888";
+    chip.appendChild(square);
+    const name = String(label.name || "").trim();
+    if (showName && name) {
+      const text = document.createElement("span");
+      text.className = "label-text";
+      text.textContent = name;
+      chip.appendChild(text);
+    }
+    return chip;
+  }
+
+  const labelTitle = (name) => String(name || "").trim() || "Unnamed label";
 
   function labelOptions() {
     return (ui.options.labels || []).map((item) => option(item.id, item.name, { color: item.color }));
@@ -1001,7 +1031,11 @@
       detail.className = "advanced-detail-chips";
       for (const value of result.tags || []) appendDetailChip(detail, value);
       for (const value of result.mood_tags || []) appendDetailChip(detail, value);
-      for (const value of result.labels || []) appendDetailChip(detail, value.name);
+      for (const value of result.labels || []) {
+        const chip = labelChip(value, labelShowsText(value));
+        chip.title = labelTitle(value.name);
+        detail.appendChild(chip);
+      }
       if (result.bookmarked) appendDetailChip(detail, "★ Bookmarked");
       card.appendChild(detail);
 
