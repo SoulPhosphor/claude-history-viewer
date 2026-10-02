@@ -62,7 +62,10 @@
   --label-square-size: 14px;
   --label-square-size-header: 16px;
   --label-square-radius: 3px;
-  /* Unnamed labels in pick lists show a colour bar this size. */
+  /* Space between a label's colour square and its name in pick lists. */
+  --label-pick-gap: 0.8em;
+  /* Unnamed labels show a colour bar; in a list it runs to the end of the
+     longest name, and is never narrower than this. */
   --label-pick-bar-w: 4ch;
   --label-pick-bar-h: 12px;
   --label-choice-menu-max-h: 320px;
@@ -4555,7 +4558,7 @@ kbd {
   flex-shrink: 0;
   display: inline-block;
   vertical-align: middle;
-  margin-right: 8px;
+  margin-right: var(--label-pick-gap);
 }
 /* An unnamed label in a pick list: a wider bar of its colour stands in for
    the name it doesn't have. */
@@ -4587,6 +4590,14 @@ kbd {
 .thread-dropdown-item.set-label-item {
   display: flex;
   align-items: center;
+  /* The colour square carries its own small gap to the name. */
+  gap: 0;
+}
+/* In a list, an unnamed label's bar fills the row up to where the longest
+   name ends. */
+.set-label-item .menu-label-bar {
+  flex: 1;
+  min-width: var(--label-pick-bar-w);
 }
 
 /* ── Bulk label tool ──────────────────────────────────────────────────────── */
