@@ -63,7 +63,7 @@
   --label-square-size-header: 16px;
   --label-square-radius: 3px;
   /* Space between a label's colour square and its name in pick lists. */
-  --label-pick-gap: 0.8em;
+  --label-pick-gap: 0.4em;
   /* Unnamed labels show a colour bar; in a list it runs to the end of the
      longest name, and is never narrower than this. */
   --label-pick-bar-w: 4ch;
