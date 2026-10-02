@@ -136,6 +136,44 @@
     return '<svg class="advanced-filter-chevron" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m5 7 5 5 5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   }
 
+  let sectionBadges = {};
+
+  // Values that narrow the results. "All" on its own narrows nothing.
+  function filterCount(filter) {
+    if (!filter) return 0;
+    if (filter.none) return 1;
+    return filter.include.filter((value) => value !== ALL).length + filter.exclude.length;
+  }
+
+  function sectionCounts() {
+    const c = ui.criteria;
+    const f = c.filters;
+    const claude = c.providers.includes("claude");
+    const chatgpt = c.providers.includes("chatgpt");
+    const statusChanged = !(c.statuses.length === 1 && c.statuses[0] === "active");
+    return {
+      "search-in": filterCount(c.search_in) + c.must_have.length,
+      tags: filterCount(f.tags) + filterCount(f.mood_tags),
+      organization: filterCount(f.labels)
+        + (claude ? filterCount(f.claude_folders) : 0)
+        + (chatgpt ? filterCount(f.chatgpt_folders) : 0),
+      models: (claude ? filterCount(f.claude_models) : 0)
+        + (chatgpt ? filterCount(f.chatgpt_models) + filterCount(f.gizmos) : 0),
+      "status-date": Number(statusChanged) + Number(Boolean(c.pinned_only))
+        + Number(Boolean(c.date.from)) + Number(Boolean(c.date.to)),
+    };
+  }
+
+  function updateBadges() {
+    const counts = sectionCounts();
+    for (const [id, badge] of Object.entries(sectionBadges)) {
+      const n = counts[id] || 0;
+      badge.hidden = !n;
+      badge.textContent = String(n);
+      badge.setAttribute("aria-label", `${n} active filter${n === 1 ? "" : "s"}`);
+    }
+  }
+
   function makeSection(title, id, collapsed = false) {
     const isCollapsed = Object.hasOwn(ui.collapsed, id)
       ? ui.collapsed[id]
@@ -152,7 +190,12 @@
     const label = document.createElement("span");
     label.className = "advanced-filter-title";
     label.textContent = title;
-    heading.append(label);
+    // Count of active filters inside, as in the concept design.
+    const badge = document.createElement("span");
+    badge.className = "advanced-filter-badge";
+    badge.hidden = true;
+    sectionBadges[id] = badge;
+    heading.append(label, badge);
     heading.insertAdjacentHTML("beforeend", fixedSvgChevron());
     const body = document.createElement("div");
     body.className = "advanced-filter-body";
@@ -439,6 +482,7 @@
         ui.criteria.must_have = input.checked
           ? [...new Set([...ui.criteria.must_have, value])]
           : ui.criteria.must_have.filter((item) => item !== value);
+        updateBadges();
       });
       row.append(input, document.createTextNode(label));
       grid.appendChild(row);
@@ -507,6 +551,7 @@
           : ui.criteria.statuses.filter((item) => item !== value);
         if (next.length) ui.criteria.statuses = next;
         else input.checked = true;
+        updateBadges();
       });
       row.append(input, document.createTextNode(label));
       grid.appendChild(row);
@@ -515,7 +560,10 @@
     const pinInput = document.createElement("input");
     pinInput.type = "checkbox";
     pinInput.checked = Boolean(ui.criteria.pinned_only);
-    pinInput.addEventListener("change", () => { ui.criteria.pinned_only = pinInput.checked; });
+    pinInput.addEventListener("change", () => {
+      ui.criteria.pinned_only = pinInput.checked;
+      updateBadges();
+    });
     pinned.append(pinInput, document.createTextNode("Pinned Only"));
     grid.appendChild(pinned);
     status.appendChild(grid);
@@ -530,7 +578,10 @@
       const input = document.createElement("input");
       input.type = "date";
       input.value = ui.criteria.date[key] || "";
-      input.addEventListener("change", () => { ui.criteria.date[key] = input.value; });
+      input.addEventListener("change", () => {
+        ui.criteria.date[key] = input.value;
+        updateBadges();
+      });
       row.appendChild(input);
       dateGrid.appendChild(row);
     }
@@ -540,6 +591,7 @@
 
   function renderFilters() {
     filtersEl.innerHTML = "";
+    sectionBadges = {};
 
     const searchIn = makeSection("Search In", "search-in");
     renderSearchIn(searchIn.body);
@@ -577,6 +629,7 @@
     const status = makeSection("Status & Date", "status-date", true);
     renderStatusDate(status.body);
     filtersEl.appendChild(status.section);
+    updateBadges();
   }
 
   function syncHeaderControls() {

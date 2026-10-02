@@ -668,62 +668,6 @@ def _backfill_folder_providers(db_path: Path) -> None:
         conn.close()
 
 
-def _backfill_chatgpt_message_models(db_path: Path, source_dir: Path) -> None:
-    """Populate per-message ChatGPT models in databases made by older builds.
-
-    New builds and incremental imports write ``model_slug`` directly. This
-    one-time migration rereads the retained source backups, preserving every
-    model in a mixed-model conversation without collapsing it to one value.
-    """
-    if not source_dir.exists():
-        return
-    conn = open_db(db_path)
-    try:
-        done = conn.execute(
-            "SELECT pref_value FROM ui_preferences WHERE pref_key=?",
-            ("chatgptModelsBackfilledV1",),
-        ).fetchone()
-        if done:
-            return
-
-        import build_db
-
-        found_chatgpt = False
-        for path in sorted(source_dir.glob("*.json")):
-            if path.name in ("memories.json", "users.json"):
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if build_db.detect_provider(data) != "chatgpt":
-                    continue
-                found_chatgpt = True
-                records = build_db.dedup_records(
-                    build_db.parse_backup(data, "chatgpt")
-                )
-                for record in records:
-                    for message in record.get("msgs") or []:
-                        model = message.get("model_slug")
-                        if not model:
-                            continue
-                        conn.execute(
-                            "UPDATE messages SET model_slug=? "
-                            "WHERE conversation_id=? AND seq=?",
-                            (model, message["conversation_id"], message.get("seq")),
-                        )
-            except Exception as exc:
-                # One damaged or unrelated file must never block app startup.
-                print(f"Model backfill skipped {path.name}: {exc}", flush=True)
-
-        if found_chatgpt:
-            conn.execute(
-                "INSERT OR REPLACE INTO ui_preferences(pref_key,pref_value) VALUES (?,?)",
-                ("chatgptModelsBackfilledV1", json.dumps(True)),
-            )
-            conn.commit()
-    finally:
-        conn.close()
-
-
 # ── Claude model availability ────────────────────────────────────────────────
 
 MODEL_SEED_FILE = Path(__file__).parent / "claude_models.json"
@@ -4444,7 +4388,6 @@ def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source"),
     _ensure_runtime_schema(db_path)
     _ensure_userdata_schema(db_path)
     _backfill_folder_providers(db_path)
-    _backfill_chatgpt_message_models(db_path, source_dir)
     _build_source_index(source_dir)
     Handler.db_path = db_path
     Handler.source_dir = source_dir

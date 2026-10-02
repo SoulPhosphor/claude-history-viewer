@@ -20,6 +20,15 @@
   --advanced-section-icon-size: 14px;
   --advanced-section-icon-color: var(--advanced-muted);
   --advanced-section-icon-gap: 8px;
+  /* Active-filter count beside a section title, as in the concept design. */
+  --advanced-badge-bg: var(--advanced-accent);
+  --advanced-badge-text: var(--advanced-accent-text);
+  --advanced-badge-font: 10px;
+  --advanced-badge-weight: 600;
+  --advanced-badge-padding: 1px 6px;
+  --advanced-badge-radius: 10px;
+  --advanced-badge-min-w: 18px;
+  --advanced-badge-gap: 8px;
   --advanced-accent-text: #fff;
   --advanced-radius: 9px;
   --advanced-pill-radius: 999px;
@@ -290,6 +299,22 @@
 .advanced-filter-title {
   flex: 1;
   text-align: left;
+}
+
+.advanced-filter-badge {
+  min-width: var(--advanced-badge-min-w);
+  margin-right: var(--advanced-badge-gap);
+  padding: var(--advanced-badge-padding);
+  border-radius: var(--advanced-badge-radius);
+  background: var(--advanced-badge-bg);
+  color: var(--advanced-badge-text);
+  font-size: var(--advanced-badge-font);
+  font-weight: var(--advanced-badge-weight);
+  text-align: center;
+}
+
+.advanced-filter-badge[hidden] {
+  display: none;
 }
 
 .advanced-search-history h3 .advanced-filter-icon {

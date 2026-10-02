@@ -86,6 +86,18 @@ class AdvancedSearchTests(unittest.TestCase):
         data = advanced_search.search(self.conn, self.criteria("exact"))
         self.assertEqual(set(data["results"][0]["models"]), {"gpt-4o", "gpt-4.1"})
 
+    def test_importing_a_chatgpt_backup_stores_every_model(self):
+        records = build_db.dedup_records(build_db.parse_backup(
+            [conversation("imported", "Imported Chat", ["gpt-4o", "o3"])], "chatgpt",
+        ))
+        build_db.reconcile_backup(self.conn, records, "chatgpt")
+        self.conn.commit()
+        rows = self.conn.execute(
+            "SELECT DISTINCT model_slug FROM messages "
+            "WHERE conversation_id='imported' AND model_slug IS NOT NULL"
+        ).fetchall()
+        self.assertEqual({row[0] for row in rows}, {"gpt-4o", "o3"})
+
     def test_tag_selection_is_an_exact_filter_not_word_search_text(self):
         self.conn.execute(
             "INSERT INTO udb.conversation_tags(conversation_id,tag,added_at) VALUES (?,?,?)",
