@@ -71,6 +71,7 @@
     results: [],
     total: 0,
     hasRun: false,
+    lastSearchKey: null,
     resultView: "default",
     listModels: false,
     resultSize: "default",
@@ -217,8 +218,13 @@
   }
 
   function addAssignment(key, filter, value) {
-    const mode = selectedModeFor(key, filter, true);
-    if (mode !== "include" && mode !== "exclude") return;
+    let mode = selectedModeFor(key, filter, true);
+    if (mode !== "include" && mode !== "exclude") {
+      // Picking an option while All or None is selected starts an Include
+      // selection, so the click always takes effect.
+      mode = "include";
+      ui.editModes[key] = mode;
+    }
     filter.none = false;
     const other = mode === "include" ? "exclude" : "include";
     filter[other] = filter[other].filter((item) => item !== value);
@@ -254,7 +260,7 @@
     }
   }
 
-  function renderChoiceGroup(parent, { key, title, filter, options, allowNone = true, alwaysDropdown = false }) {
+  function renderChoiceGroup(parent, { key, title, filter, options, allowNone = true, alwaysDropdown = false, knownLabels = new Map() }) {
     const group = makeGroup(title);
     const rerender = () => renderFilters();
     group.appendChild(makeModeBar(key, filter, allowNone, rerender));
@@ -262,8 +268,14 @@
       typeof item === "string" ? option(item) : item,
     );
     const map = new Map(normalized.map((item) => [item.value, item]));
+    // Selections that are no longer offered still filter the search, so they
+    // stay visible (and removable) instead of applying unseen.
+    const stale = [...filter.include, ...filter.exclude]
+      .filter((value) => !map.has(value))
+      .map((value) => option(value, knownLabels.get(value) || value));
+    for (const item of stale) map.set(item.value, item);
 
-    if (!normalized.length) {
+    if (!normalized.length && !stale.length) {
       const empty = document.createElement("div");
       empty.className = "advanced-empty-note";
       empty.textContent = "No options have been identified yet.";
@@ -275,7 +287,7 @@
     if (!alwaysDropdown && normalized.length <= 8) {
       const pills = document.createElement("div");
       pills.className = "advanced-option-pills";
-      for (const item of normalized) {
+      for (const item of normalized.concat(stale)) {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "advanced-option-pill";
@@ -480,7 +492,13 @@
 
     const organization = makeSection("Labels & Folders", "organization");
     renderChoiceGroup(organization.body, { key: "labels", title: "Labels", filter: ui.criteria.filters.labels, options: labelOptions() });
-    renderChoiceGroup(organization.body, { key: "folders", title: "Folders", filter: ui.criteria.filters.folders, options: folderOptions() });
+    renderChoiceGroup(organization.body, {
+      key: "folders",
+      title: "Folders",
+      filter: ui.criteria.filters.folders,
+      options: folderOptions(),
+      knownLabels: new Map((ui.options.folders || []).map((item) => [item.id, item.name])),
+    });
     filtersEl.appendChild(organization.section);
 
     const hasClaude = ui.criteria.providers.includes("claude") && (ui.options.claude_models || []).length;
@@ -646,11 +664,30 @@
     return value;
   }
 
+  function stableJson(value) {
+    if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+    if (value && typeof value === "object") {
+      return `{${Object.keys(value).sort().map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(",")}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  // What decides which conversations match. View settings and paging don't.
+  function searchKey(value) {
+    const { offset, limit, result_view, list_models, ...rest } = value;
+    return stableJson(rest);
+  }
+
   async function runSearch(options = {}) {
-    const append = options?.append === true;
     if (ui.busy) return;
     ui.criteria.query = queryEl.value.trim();
     ui.criteria.sort = sortEl.value;
+    const body = payload(0);
+    const key = searchKey(body);
+    // Load More only appends when the search is unchanged since the list was
+    // built. If it changed, the list is replaced with the new search's results.
+    const append = options?.append === true && key === ui.lastSearchKey;
+    if (append) body.offset = ui.results.length;
     ui.busy = true;
     ui.hasRun = true;
     resultsStatus.textContent = append ? "Loading more…" : "Searching…";
@@ -658,7 +695,7 @@
       const response = await fetch("/api/advanced-search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload(append ? ui.results.length : 0)),
+        body: JSON.stringify(body),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
@@ -666,6 +703,7 @@
         ? ui.results.concat(data.results || [])
         : (data.results || []);
       ui.total = Number(data.total || 0);
+      ui.lastSearchKey = key;
       resultsStatus.textContent = "";
       renderResults();
       if (!append) await loadHistory();
@@ -835,6 +873,7 @@
     ui.results = [];
     ui.total = 0;
     ui.hasRun = false;
+    ui.lastSearchKey = null;
     ui.resultView = "default";
     ui.listModels = false;
     syncHeaderControls();
