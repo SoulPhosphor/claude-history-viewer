@@ -102,8 +102,13 @@ def _patterns(query: str, mode: str, whole: bool) -> tuple:
     if mode == "exact":
         body = _PHRASE_GAP.join(re.escape(term) for term in terms)
         return (re.compile(_wrap_whole(body, whole), flags),)
-    unique = list(dict.fromkeys(term.casefold() for term in terms))
-    return tuple(re.compile(_wrap_whole(re.escape(term), whole), flags) for term in unique)
+    # Drop repeated words case-insensitively, but compile each as typed:
+    # case-folding can change spelling ("Straße" -> "strasse"), which
+    # IGNORECASE would then fail to match against the original text.
+    unique = {}
+    for term in terms:
+        unique.setdefault(term.casefold(), term)
+    return tuple(re.compile(_wrap_whole(re.escape(term), whole), flags) for term in unique.values())
 
 
 def _text_matches(text, query, mode, whole) -> int:

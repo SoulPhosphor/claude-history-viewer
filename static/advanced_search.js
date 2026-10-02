@@ -843,8 +843,14 @@
     ui.listModels = Boolean(criteria.list_models);
     ui.editModes = {};
     ui.allStash = {};
+    // The previous search's results don't belong to these criteria.
+    ui.results = [];
+    ui.total = 0;
+    ui.hasRun = false;
+    ui.lastSearchKey = null;
     syncHeaderControls();
     renderFilters();
+    renderResults();
     queryEl.focus();
   }
 

@@ -316,6 +316,14 @@ class AdvancedTextMatchingTests(unittest.TestCase):
         )
         self.assertEqual({row["conversation_id"] for row in rows}, {"split"})
 
+    def test_words_whose_case_fold_changes_spelling_still_match(self):
+        for word in ("Straße", "İstanbul"):
+            for mode in ("all", "any", "exact"):
+                self.assertTrue(advanced_search._text_matches(word, word, mode, False), (word, mode))
+
+    def test_repeated_words_are_counted_once(self):
+        self.assertEqual(len(advanced_search._patterns("Housing housing", "all", False)), 1)
+
     def test_attachment_search_ignores_json_keys(self):
         stored = json.dumps([{"name": "plan.md", "type": "markdown", "content": "rent figures"}])
         self.conn.execute(
