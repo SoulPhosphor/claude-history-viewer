@@ -2688,6 +2688,11 @@ function openSimpleSearch() {
     state.preferences.sidebarCollapsed = false;
     saveUiPreferences({ sidebarCollapsed: false });
   }
+  // Only one search at a time: opening Advanced Search closes this one, so
+  // opening this one closes Advanced Search.
+  if (window.advancedSearchController?.isOpen()) {
+    window.advancedSearchController.close();
+  }
   setSimpleSearchOpen(true, { focus: true });
 }
 
