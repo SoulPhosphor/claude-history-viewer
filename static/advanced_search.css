@@ -16,6 +16,9 @@
   --advanced-chip-box-radius: 6px;
   --advanced-chip-box-padding: 6px 8px;
   --advanced-chip-box-min-h: 32px;
+  /* Thin line between chip groups, as in the concept design. */
+  --advanced-chip-divider-color: var(--advanced-border);
+  --advanced-chip-divider-h: 16px;
   /* Date choices from the concept design. */
   --advanced-date-gap: 8px;
   --advanced-date-sep-color: var(--advanced-muted);
@@ -477,6 +480,13 @@
   display: flex;
   align-items: center;
   gap: 7px;
+}
+
+.advanced-chip-divider {
+  align-self: center;
+  width: 1px;
+  height: var(--advanced-chip-divider-h);
+  background: var(--advanced-chip-divider-color);
 }
 
 .advanced-date-range {

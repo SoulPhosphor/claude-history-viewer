@@ -287,18 +287,19 @@ def _base_rows(conn, criteria: dict) -> list[dict]:
                             table="udb.conversation_labels", value_col="label_id")
 
     date = criteria.get("date") if isinstance(criteria.get("date"), dict) else {}
-    # "7"/"30"/"90" mean the last that many days, counted from today; "custom"
+    # Dates are the conversation's last activity (update time, or its start
+    # time when it has none). "7"/"30"/"90" mean the last that many days, counted from today; "custom"
     # uses the From/To boxes (either may be empty); "any" adds no date filter.
     date_range = str(date.get("range") or ("custom" if date.get("from") or date.get("to") else "any"))
     if date_range in ("7", "30", "90"):
-        where.append("date(c.create_time, 'unixepoch', 'localtime') >= date('now', 'localtime', ?)")
+        where.append("date(COALESCE(c.update_time, c.create_time), 'unixepoch', 'localtime') >= date('now', 'localtime', ?)")
         params.append(f"-{date_range} days")
     elif date_range == "custom":
         if date.get("from"):
-            where.append("date(c.create_time, 'unixepoch', 'localtime') >= date(?)")
+            where.append("date(COALESCE(c.update_time, c.create_time), 'unixepoch', 'localtime') >= date(?)")
             params.append(str(date["from"]))
         if date.get("to"):
-            where.append("date(c.create_time, 'unixepoch', 'localtime') <= date(?)")
+            where.append("date(COALESCE(c.update_time, c.create_time), 'unixepoch', 'localtime') <= date(?)")
             params.append(str(date["to"]))
 
     must_have = set(_json_list(criteria.get("must_have")))

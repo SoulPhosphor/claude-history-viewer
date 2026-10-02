@@ -554,38 +554,41 @@
 
   function renderStatusDate(parent) {
     const status = makeGroup("Conversation Status");
-    const grid = document.createElement("div");
-    grid.className = "advanced-checkbox-grid";
-    for (const [value, label] of [["active", "Active"], ["archived", "Archived"], ["deleted", "Recycle Bin"]]) {
-      const row = document.createElement("label");
-      const input = document.createElement("input");
-      input.type = "checkbox";
-      input.checked = ui.criteria.statuses.includes(value);
-      input.addEventListener("change", () => {
-        const next = input.checked
-          ? [...new Set([...ui.criteria.statuses, value])]
-          : ui.criteria.statuses.filter((item) => item !== value);
-        if (next.length) ui.criteria.statuses = next;
-        else input.checked = true;
-        updateBadges();
+    const statusChips = document.createElement("div");
+    statusChips.className = "advanced-option-pills";
+    const chip = (label, pressed, onClick) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "advanced-option-pill";
+      btn.textContent = label;
+      btn.setAttribute("aria-pressed", String(pressed));
+      btn.addEventListener("click", () => {
+        onClick();
+        renderFilters();
       });
-      row.append(input, document.createTextNode(label));
-      grid.appendChild(row);
+      statusChips.appendChild(btn);
+    };
+    for (const [value, label] of [["active", "Active"], ["archived", "Archived"], ["deleted", "Recycle Bin"]]) {
+      const on = ui.criteria.statuses.includes(value);
+      chip(label, on, () => {
+        // Several statuses can be on together; at least one always stays on.
+        const next = on
+          ? ui.criteria.statuses.filter((item) => item !== value)
+          : [...ui.criteria.statuses, value];
+        if (next.length) ui.criteria.statuses = next;
+      });
     }
-    const pinned = document.createElement("label");
-    const pinInput = document.createElement("input");
-    pinInput.type = "checkbox";
-    pinInput.checked = Boolean(ui.criteria.pinned_only);
-    pinInput.addEventListener("change", () => {
-      ui.criteria.pinned_only = pinInput.checked;
-      updateBadges();
+    const divider = document.createElement("span");
+    divider.className = "advanced-chip-divider";
+    divider.setAttribute("aria-hidden", "true");
+    statusChips.appendChild(divider);
+    chip("Pinned only", Boolean(ui.criteria.pinned_only), () => {
+      ui.criteria.pinned_only = !ui.criteria.pinned_only;
     });
-    pinned.append(pinInput, document.createTextNode("Pinned Only"));
-    grid.appendChild(pinned);
-    status.appendChild(grid);
+    status.appendChild(statusChips);
     parent.appendChild(status);
 
-    const dates = makeGroup("Conversation Start Date");
+    const dates = makeGroup("Last Activity Date");
     const date = ui.criteria.date;
     const chips = document.createElement("div");
     chips.className = "advanced-option-pills";
@@ -639,7 +642,7 @@
 
     const note = document.createElement("div");
     note.className = "advanced-date-note";
-    note.textContent = "Filters by the date the conversation started";
+    note.textContent = "Filters by conversation's last activity date";
     dates.appendChild(note);
     parent.appendChild(dates);
   }

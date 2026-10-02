@@ -98,7 +98,8 @@ class AdvancedSearchTests(unittest.TestCase):
 
     def test_date_choices(self):
         import time
-        self.conn.execute("UPDATE conversations SET create_time=? WHERE id='exact'", (time.time(),))
+        # Filtering uses the last activity time, not the start time.
+        self.conn.execute("UPDATE conversations SET update_time=? WHERE id='exact'", (time.time(),))
         self.conn.commit()
 
         def ids(date):
