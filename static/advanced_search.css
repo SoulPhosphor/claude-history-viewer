@@ -10,6 +10,20 @@
   --advanced-muted: var(--muted);
   --advanced-accent: var(--accent);
   --advanced-pill-active-bg: color-mix(in srgb, var(--advanced-accent) 16%, transparent);
+  /* Option chips sit inside a bordered box, as in the concept design. */
+  --advanced-chip-box-bg: var(--advanced-bg);
+  --advanced-chip-box-border: var(--advanced-border);
+  --advanced-chip-box-radius: 6px;
+  --advanced-chip-box-padding: 6px 8px;
+  --advanced-chip-box-min-h: 32px;
+  --advanced-chip-gap: 4px;
+  --advanced-pill-bg: var(--advanced-surface);
+  --advanced-pill-padding: 2px 8px;
+  --advanced-pill-font: 11px;
+  --advanced-sublabel-font: 10px;
+  --advanced-sublabel-weight: 600;
+  --advanced-sublabel-tracking: 0.5px;
+  --advanced-sublabel-rule: var(--advanced-border);
   --advanced-accent-text: #fff;
   --advanced-radius: 9px;
   --advanced-pill-radius: 999px;
@@ -290,9 +304,13 @@
 
 .advanced-filter-group-title {
   margin-bottom: 6px;
+  padding-bottom: 3px;
+  border-bottom: 1px solid var(--advanced-sublabel-rule);
   color: var(--advanced-muted);
-  font-size: var(--advanced-font-small);
-  font-weight: 700;
+  font-size: var(--advanced-sublabel-font);
+  font-weight: var(--advanced-sublabel-weight);
+  letter-spacing: var(--advanced-sublabel-tracking);
+  text-transform: uppercase;
 }
 
 .advanced-mode-row {
@@ -325,8 +343,20 @@
   font-size: var(--advanced-font-small);
 }
 
+.advanced-chip-box {
+  min-height: var(--advanced-chip-box-min-h);
+  align-items: center;
+  gap: var(--advanced-chip-gap);
+  padding: var(--advanced-chip-box-padding);
+  border: 1px solid var(--advanced-chip-box-border);
+  border-radius: var(--advanced-chip-box-radius);
+  background: var(--advanced-chip-box-bg);
+}
+
 .advanced-option-pill {
-  padding: 4px 9px;
+  padding: var(--advanced-pill-padding);
+  background: var(--advanced-pill-bg);
+  font-size: var(--advanced-pill-font);
   cursor: pointer;
 }
 
@@ -372,7 +402,11 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 3px 5px 3px 9px;
+  padding: 1px 3px 1px 8px;
+  border-color: var(--advanced-accent);
+  background: var(--advanced-pill-active-bg);
+  color: var(--advanced-accent);
+  font-size: var(--advanced-pill-font);
 }
 
 .advanced-selected-chip button {

@@ -278,7 +278,8 @@
         chip.className = "advanced-selected-chip";
         const text = document.createElement("span");
         const label = value === ALL ? ALL_LABEL : optionMap.get(value)?.label || value;
-        text.textContent = value === ALL ? label : `${mode === "include" ? "Include" : "Exclude"}: ${label}`;
+        // The Include / Exclude screen already says which list this is.
+        text.textContent = label;
         const remove = document.createElement("button");
         remove.type = "button";
         remove.textContent = "×";
@@ -322,7 +323,7 @@
 
     if (usePills) {
       const pills = document.createElement("div");
-      pills.className = "advanced-option-pills";
+      pills.className = "advanced-option-pills advanced-chip-box";
       const screen = selectedModeFor(key, filter);
       for (const item of normalized.concat(stale)) {
         const btn = document.createElement("button");
@@ -371,7 +372,7 @@
       addRow.append(select, add);
       group.appendChild(addRow);
       const chips = document.createElement("div");
-      chips.className = "advanced-chip-area";
+      chips.className = "advanced-chip-area advanced-chip-box";
       renderSelectedChips(chips, key, filter, map, rerender);
       group.appendChild(chips);
     }
