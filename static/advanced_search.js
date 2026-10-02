@@ -123,8 +123,17 @@
     return { value: String(value), label: String(label), ...extra };
   }
 
+  // Section icons from the concept design (advanced-search-desktop.html).
+  const SECTION_ICONS = {
+    "search-in": '<svg class="advanced-filter-icon" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2 3.5h10M2 7h7M2 10.5h9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+    tags: '<svg class="advanced-filter-icon" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2 4C2 3.45 2.45 3 3 3H6.09c.27 0 .52.1.71.29L12.5 9a1 1 0 010 1.41l-3.59 3.59a1 1 0 01-1.41 0L1.79 8.29A1 1 0 011.5 7.59V4z" stroke="currentColor" stroke-width="1.2"/><circle cx="4.5" cy="5.5" r=".8" fill="currentColor"/></svg>',
+    organization: '<svg class="advanced-filter-icon" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M2 4C2 3.45 2.45 3 3 3H5.5L7 4.5H11c.55 0 1 .45 1 1V10.5c0 .55-.45 1-1 1H3c-.55 0-1-.45-1-1V4z" stroke="currentColor" stroke-width="1.2"/></svg>',
+    models: '<svg class="advanced-filter-icon" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M12.25 1.75H1.75l4.38 5.17v3.58l1.75.88V6.92l4.37-5.17z" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    "status-date": '<svg class="advanced-filter-icon" viewBox="0 0 14 14" fill="none" aria-hidden="true"><rect x="2" y="2" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/><path d="M4.5 2v1.5M9.5 2v1.5M2 5.5h10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>',
+  };
+
   function fixedSvgChevron() {
-    return '<svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m5 7 5 5 5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    return '<svg class="advanced-filter-chevron" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="m5 7 5 5 5-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
   }
 
   function makeSection(title, id, collapsed = false) {
@@ -139,7 +148,9 @@
     heading.type = "button";
     heading.className = "advanced-filter-heading";
     heading.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+    if (SECTION_ICONS[id]) heading.insertAdjacentHTML("beforeend", SECTION_ICONS[id]);
     const label = document.createElement("span");
+    label.className = "advanced-filter-title";
     label.textContent = title;
     heading.append(label);
     heading.insertAdjacentHTML("beforeend", fixedSvgChevron());

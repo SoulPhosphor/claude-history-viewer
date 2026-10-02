@@ -16,6 +16,10 @@
   --advanced-chip-box-radius: 6px;
   --advanced-chip-box-padding: 6px 8px;
   --advanced-chip-box-min-h: 32px;
+  /* Section icons from the concept design. */
+  --advanced-section-icon-size: 14px;
+  --advanced-section-icon-color: var(--advanced-muted);
+  --advanced-section-icon-gap: 8px;
   --advanced-accent-text: #fff;
   --advanced-radius: 9px;
   --advanced-pill-radius: 999px;
@@ -272,13 +276,34 @@
   cursor: pointer;
 }
 
-.advanced-filter-heading svg {
+.advanced-filter-icon {
+  flex-shrink: 0;
+  width: var(--advanced-section-icon-size);
+  height: var(--advanced-section-icon-size);
+  color: var(--advanced-section-icon-color);
+}
+
+.advanced-filter-heading .advanced-filter-icon {
+  margin-right: var(--advanced-section-icon-gap);
+}
+
+.advanced-filter-title {
+  flex: 1;
+  text-align: left;
+}
+
+.advanced-search-history h3 .advanced-filter-icon {
+  margin-right: calc(var(--advanced-section-icon-gap) / 2);
+  vertical-align: -2px;
+}
+
+.advanced-filter-heading .advanced-filter-chevron {
   width: 16px;
   height: 16px;
   transition: transform var(--advanced-transition);
 }
 
-.advanced-filter-section[data-collapsed="true"] .advanced-filter-heading svg {
+.advanced-filter-section[data-collapsed="true"] .advanced-filter-heading .advanced-filter-chevron {
   transform: rotate(-90deg);
 }
 
