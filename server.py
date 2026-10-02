@@ -9,7 +9,7 @@ from pathlib import Path
 # Reusable business/data logic for the labeling features. server.py stays the
 # HTTP/routing shell; these modules own the SQL, validation, and transactions
 # and raise ApiError for error responses.
-import labels, bulk_labels, snapshots, gizmos, updater
+import labels, bulk_labels, snapshots, gizmos, updater, advanced_search
 from api_common import ApiError
 
 # Set CHV_TIMING=1 to log each request's method, path, and duration to stderr.
@@ -38,7 +38,7 @@ def _code_signature() -> str:
     h = hashlib.sha256()
     for name in ("server.py", "build_db.py", "api_common.py",
                  "labels.py", "bulk_labels.py", "snapshots.py", "gizmos.py",
-                 "updater.py"):
+                 "updater.py", "advanced_search.py"):
         try:
             h.update((here / name).read_bytes())
         except OSError:
@@ -55,6 +55,7 @@ def _static_signature() -> str:
     static_dir = Path(__file__).resolve().parent / "static"
     h = hashlib.sha256()
     for name in ("index.html", "app.js", "style.css", "settings.css",
+                 "advanced_search.js", "advanced_search.css",
                  "labels_screen.js", "bulk_labels.js", "snapshots.js",
                  "gizmos.js", "bookmarks.js", "bookmarks_hub.js", "notes.js"):
         try:
@@ -169,6 +170,7 @@ def _ensure_runtime_schema(db_path: Path) -> None:
             "CREATE INDEX IF NOT EXISTS idx_meta_flags  ON conversation_meta (deleted, archived)",
             "CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts (conv_id)",
             "CREATE INDEX IF NOT EXISTS idx_conv_gizmo ON conversations (gizmo_id)",
+            "CREATE INDEX IF NOT EXISTS idx_msg_model ON messages (model_slug, conversation_id)",
         ):
             try:
                 conn.execute(idx_sql)
@@ -189,6 +191,9 @@ def _ensure_runtime_schema(db_path: Path) -> None:
             # stay NULL until imported/rebuilt from a ChatGPT export.
             "ALTER TABLE conversations ADD COLUMN gizmo_id TEXT",
             "ALTER TABLE conversations ADD COLUMN gizmo_type TEXT",
+            # ChatGPT exports identify models per message. A conversation can
+            # therefore retain every model used instead of one lossy value.
+            "ALTER TABLE messages ADD COLUMN model_slug TEXT",
             # Compare items carry their own provider for tab colouring.
             "ALTER TABLE workspace_tabs ADD COLUMN provider TEXT",
             # 1 only when the user explicitly added the chat to Compare.
@@ -198,6 +203,13 @@ def _ensure_runtime_schema(db_path: Path) -> None:
                 conn.execute(col_sql)
             except sqlite3.Error:
                 pass
+        try:
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_msg_model "
+                "ON messages (model_slug, conversation_id)"
+            )
+        except sqlite3.Error:
+            pass
         # The top strip is now the Compare bar. Older versions created a tab row
         # every time a chat was opened; none of those were deliberate Compare
         # selections, so drop every non-compare row. Compare additions are
@@ -537,6 +549,26 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 updated_at      REAL,
                 UNIQUE(conversation_id, seq)
             );
+
+            -- Advanced searches intentionally live in the portable user-data
+            -- database. Recent searches survive restarts; saved searches keep
+            -- their stable id and user-supplied name across copied installs.
+            CREATE TABLE IF NOT EXISTS advanced_search_recent (
+                id            TEXT PRIMARY KEY,
+                criteria_json TEXT NOT NULL,
+                created_at    REAL NOT NULL,
+                last_used_at  REAL NOT NULL,
+                use_count     INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE INDEX IF NOT EXISTS idx_advanced_recent_used
+                ON advanced_search_recent (last_used_at DESC);
+            CREATE TABLE IF NOT EXISTS advanced_search_saved (
+                id            TEXT PRIMARY KEY,
+                name          TEXT NOT NULL,
+                criteria_json TEXT NOT NULL,
+                created_at    REAL NOT NULL,
+                updated_at    REAL NOT NULL
+            );
             """
         )
         # Add the folders.provider column on databases created before folders
@@ -632,6 +664,62 @@ def _backfill_folder_providers(db_path: Path) -> None:
         conn.commit()
     except sqlite3.Error:
         pass
+    finally:
+        conn.close()
+
+
+def _backfill_chatgpt_message_models(db_path: Path, source_dir: Path) -> None:
+    """Populate per-message ChatGPT models in databases made by older builds.
+
+    New builds and incremental imports write ``model_slug`` directly. This
+    one-time migration rereads the retained source backups, preserving every
+    model in a mixed-model conversation without collapsing it to one value.
+    """
+    if not source_dir.exists():
+        return
+    conn = open_db(db_path)
+    try:
+        done = conn.execute(
+            "SELECT pref_value FROM ui_preferences WHERE pref_key=?",
+            ("chatgptModelsBackfilledV1",),
+        ).fetchone()
+        if done:
+            return
+
+        import build_db
+
+        found_chatgpt = False
+        for path in sorted(source_dir.glob("*.json")):
+            if path.name in ("memories.json", "users.json"):
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if build_db.detect_provider(data) != "chatgpt":
+                    continue
+                found_chatgpt = True
+                records = build_db.dedup_records(
+                    build_db.parse_backup(data, "chatgpt")
+                )
+                for record in records:
+                    for message in record.get("msgs") or []:
+                        model = message.get("model_slug")
+                        if not model:
+                            continue
+                        conn.execute(
+                            "UPDATE messages SET model_slug=? "
+                            "WHERE conversation_id=? AND seq=?",
+                            (model, message["conversation_id"], message.get("seq")),
+                        )
+            except Exception as exc:
+                # One damaged or unrelated file must never block app startup.
+                print(f"Model backfill skipped {path.name}: {exc}", flush=True)
+
+        if found_chatgpt:
+            conn.execute(
+                "INSERT OR REPLACE INTO ui_preferences(pref_key,pref_value) VALUES (?,?)",
+                ("chatgptModelsBackfilledV1", json.dumps(True)),
+            )
+            conn.commit()
     finally:
         conn.close()
 
@@ -1366,6 +1454,12 @@ class Handler(BaseHTTPRequestHandler):
             self._api_review_import()
         elif path == "/api/bookmarks":
             self._api_bookmark_create()
+        elif path == "/api/advanced-search":
+            payload = self._read_json_body()
+            self._handle_db(lambda conn: advanced_search.search(conn, payload))
+        elif path == "/api/advanced-search/saved":
+            payload = self._read_json_body()
+            self._handle_db(lambda conn: advanced_search.save_search(conn, payload))
         else:
             self.send_error(404)
 
@@ -1434,6 +1528,9 @@ class Handler(BaseHTTPRequestHandler):
             self._api_snapshot_delete(urllib.parse.unquote(path[len("/api/snapshots/"):]))
         elif path.startswith("/api/bookmarks/"):
             self._api_bookmark_delete(urllib.parse.unquote(path[len("/api/bookmarks/"):]))
+        elif path.startswith("/api/advanced-search/saved/"):
+            saved_id = urllib.parse.unquote(path[len("/api/advanced-search/saved/"):])
+            self._handle_db(lambda conn: advanced_search.delete_saved(conn, saved_id))
         else:
             self.send_error(404)
 
@@ -1568,6 +1665,10 @@ class Handler(BaseHTTPRequestHandler):
             self._api_detail(urllib.parse.unquote(path[len("/api/conversation/"):]))
         elif path == "/api/search":
             self._api_search(qs)
+        elif path == "/api/advanced-search/options":
+            self._handle_db(advanced_search.options)
+        elif path == "/api/advanced-search/history":
+            self._handle_db(advanced_search.history)
         elif path == "/api/gallery":
             self._api_gallery()
         elif path == "/api/attachment-report":
@@ -4343,6 +4444,7 @@ def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source"),
     _ensure_runtime_schema(db_path)
     _ensure_userdata_schema(db_path)
     _backfill_folder_providers(db_path)
+    _backfill_chatgpt_message_models(db_path, source_dir)
     _build_source_index(source_dir)
     Handler.db_path = db_path
     Handler.source_dir = source_dir

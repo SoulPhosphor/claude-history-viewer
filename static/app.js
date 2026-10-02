@@ -1686,7 +1686,10 @@ async function loadUiPreferences() {
   const data = await apiPreferences();
   const p = data.preferences || {};
   state.preferences.sidebarCollapsed = Boolean(p.sidebarCollapsed);
-  state.preferences.sidebarWidth = Number(p.sidebarWidth || 300);
+  state.preferences.sidebarWidth = Math.max(
+    220,
+    Math.min(520, Number(p.sidebarWidth || 300)),
+  );
   const savedView = String(p.conversationView || "recent");
   state.preferences.conversationView = [
     "recent",
@@ -1741,10 +1744,7 @@ async function loadUiPreferences() {
   if (viewFilterEl) viewFilterEl.value = state.view;
   syncRecycleControls();
   updateListSectionTitle();
-  document.documentElement.style.setProperty(
-    "--sidebar-w",
-    `${Math.max(220, Math.min(520, state.preferences.sidebarWidth))}px`,
-  );
+  applySidebarWidth(state.preferences.sidebarWidth);
   document.body.classList.toggle(
     "sidebar-collapsed",
     state.preferences.sidebarCollapsed,
@@ -2271,6 +2271,11 @@ async function openConversation(id, clickedEl, targetSeq = null) {
     const beganVisit = await beginNotesConversationVisit(id);
     if (!beganVisit) return;
   }
+  // Choosing a conversation returns to the normal reading layout. Advanced
+  // Search keeps its draft and last results in memory for this browser session.
+  if (window.advancedSearchController?.isOpen()) {
+    window.advancedSearchController.close();
+  }
   state.activeSpecialView = null;
   // Update sidebar selection (main list and folder tree)
   document
@@ -2649,7 +2654,12 @@ function clearSimpleSearchForSection() {
 }
 
 simpleSearchToggle?.addEventListener("click", () => {
-  if (simpleSearchPanel.hidden) openSimpleSearch();
+  if (
+    simpleSearchPanel.hidden ||
+    document.body.classList.contains("sidebar-collapsed")
+  ) {
+    openSimpleSearch();
+  }
   else closeSimpleSearch();
 });
 
@@ -2764,8 +2774,39 @@ pinnedRefreshBtn?.addEventListener("click", () => refreshPinnedList());
 
 sidebarToggleBtn?.addEventListener("click", async () => {
   const next = !document.body.classList.contains("sidebar-collapsed");
+  if (next) closeSimpleSearch();
   document.body.classList.toggle("sidebar-collapsed", next);
   await saveUiPreferences({ sidebarCollapsed: next });
+});
+
+function applySidebarWidth(value) {
+  const next = Math.max(220, Math.min(520, Math.round(Number(value) || 300)));
+  state.preferences.sidebarWidth = next;
+  document.documentElement.style.setProperty("--sidebar-w", `${next}px`);
+  const range = $("setting-sidebar-width");
+  const number = $("setting-sidebar-width-number");
+  if (range) range.value = String(next);
+  if (number && document.activeElement !== number) number.value = String(next);
+  return next;
+}
+
+const sidebarWidthRange = $("setting-sidebar-width");
+const sidebarWidthNumber = $("setting-sidebar-width-number");
+
+sidebarWidthRange?.addEventListener("input", () => {
+  applySidebarWidth(sidebarWidthRange.value);
+});
+sidebarWidthRange?.addEventListener("change", () => {
+  saveUiPreferences({ sidebarWidth: state.preferences.sidebarWidth });
+});
+sidebarWidthNumber?.addEventListener("input", () => {
+  const value = Number(sidebarWidthNumber.value);
+  if (value >= 220 && value <= 520) applySidebarWidth(value);
+});
+sidebarWidthNumber?.addEventListener("change", () => {
+  const next = applySidebarWidth(sidebarWidthNumber.value);
+  sidebarWidthNumber.value = String(next);
+  saveUiPreferences({ sidebarWidth: next });
 });
 
 if (sidebarResizeHandle) {
@@ -2779,9 +2820,9 @@ if (sidebarResizeHandle) {
   document.addEventListener("mousemove", (e) => {
     if (!dragging || document.body.classList.contains("sidebar-collapsed"))
       return;
-    const next = Math.max(220, Math.min(520, e.clientX));
-    document.documentElement.style.setProperty("--sidebar-w", `${next}px`);
-    state.preferences.sidebarWidth = next;
+    const sidebarLeft = $("sidebar").getBoundingClientRect().left;
+    const next = Math.max(220, Math.min(520, e.clientX - sidebarLeft));
+    applySidebarWidth(next);
   });
   document.addEventListener("mouseup", async () => {
     if (!dragging) return;
@@ -4092,6 +4133,7 @@ async function openSettings() {
   if (chatSnippetToggle) {
     chatSnippetToggle.checked = state.preferences.showChatSnippet;
   }
+  applySidebarWidth(state.preferences.sidebarWidth);
 }
 
 // ── About screen ─────────────────────────────────────────────────────────────

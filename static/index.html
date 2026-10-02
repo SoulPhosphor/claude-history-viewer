@@ -6,6 +6,7 @@
     <title>Claude History</title>
     <link rel="stylesheet" href="/static/style.css" />
     <link rel="stylesheet" href="/static/settings.css" />
+    <link rel="stylesheet" href="/static/advanced_search.css" />
     <link
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
@@ -15,6 +16,46 @@
 
   <body>
     <div id="app">
+      <aside id="advanced-search-panel" aria-label="Advanced search filters" hidden>
+        <div class="advanced-search-header">
+          <div class="advanced-search-title-row">
+            <h2>Advanced Search</h2>
+            <div class="advanced-search-header-actions">
+              <button type="button" id="advanced-clear-all">Clear All</button>
+              <button type="button" id="advanced-save-search">Save Search</button>
+              <button type="button" id="advanced-close" class="advanced-icon-button" title="Close advanced search" aria-label="Close advanced search">
+                <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z" /></svg>
+              </button>
+            </div>
+          </div>
+          <div class="advanced-query-pill">
+            <input id="advanced-query" type="search" placeholder="Search conversations…" autocomplete="off" spellcheck="false" />
+            <button type="button" id="advanced-query-clear" class="advanced-query-clear" title="Clear search text" aria-label="Clear search text" hidden>
+              <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z" /></svg>
+            </button>
+            <button type="button" id="advanced-query-submit" class="advanced-query-submit" title="Search" aria-label="Run advanced search">
+              <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M784-120 532-372q-30 24-69 38t-83 14q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l252 252-56 56ZM380-400q75 0 127.5-52.5T560-580q0-75-52.5-127.5T380-760q-75 0-127.5 52.5T200-580q0 75 52.5 127.5T380-400Z" /></svg>
+            </button>
+          </div>
+          <div id="advanced-text-controls" class="advanced-text-controls" role="group" aria-label="Word matching">
+            <button type="button" data-text-mode="all" aria-pressed="true">All Words</button>
+            <button type="button" data-text-mode="any" aria-pressed="false">Any Word</button>
+            <button type="button" data-text-mode="exact" aria-pressed="false">Exact Phrase</button>
+            <button type="button" data-whole-words aria-pressed="false">Whole Words</button>
+          </div>
+        </div>
+        <div id="advanced-filter-content" class="advanced-filter-content"></div>
+        <div class="advanced-search-history">
+          <section>
+            <h3>Recent Searches</h3>
+            <div id="advanced-recent-list" class="advanced-history-list advanced-recent-list"></div>
+          </section>
+          <section>
+            <h3>Saved Searches</h3>
+            <div id="advanced-saved-list" class="advanced-history-list advanced-saved-list"></div>
+          </section>
+        </div>
+      </aside>
       <aside id="sidebar">
         <!-- Temporary bookmark panel (shown for 5+ bookmarks). While open it
              covers the normal sidebar; closing it reveals the sidebar again.
@@ -946,6 +987,16 @@
           <div id="settings-content">
             <section class="settings-section">
               <h3 class="settings-section-title">Sidebar Preferences</h3>
+              <div class="settings-setting settings-sidebar-width-setting">
+                <div class="settings-setting-text">
+                  <label class="settings-setting-title" for="setting-sidebar-width">Sidebar Width</label>
+                  <p class="settings-setting-subtext">Adjusts immediately and stays synchronized with dragging the sidebar edge.</p>
+                </div>
+                <div class="settings-sidebar-width-control">
+                  <input type="range" id="setting-sidebar-width" min="220" max="520" step="2" />
+                  <label class="settings-pixel-input"><input type="number" id="setting-sidebar-width-number" min="220" max="520" step="2" /><span>px</span></label>
+                </div>
+              </div>
               <div class="settings-setting">
                 <div class="settings-setting-text">
                   <label class="settings-setting-title" for="setting-chat-snippet">Show Chat Snippet</label>
@@ -1453,6 +1504,27 @@
             </section>
           </div>
         </div>
+        <section id="advanced-results-panel" aria-label="Advanced search results" hidden>
+          <div id="advanced-results-resize" class="advanced-results-resize" title="Drag to resize search results"></div>
+          <div class="advanced-results-toolbar">
+            <div class="advanced-results-summary">
+              <strong id="advanced-results-count">Search Results</strong>
+              <span id="advanced-results-status" role="status" aria-live="polite"></span>
+            </div>
+            <div class="advanced-results-actions">
+              <label>Sort <select id="advanced-sort"><option value="newest">Newest</option><option value="oldest">Oldest</option><option value="matches">Most Matches</option></select></label>
+              <label>View <select id="advanced-result-view"><option value="default" selected>Default</option><option value="compact">Compact</option><option value="detailed">Detailed</option></select></label>
+              <button type="button" id="advanced-list-models" class="advanced-toolbar-chip" aria-pressed="false">List Conversation Models</button>
+              <button type="button" id="advanced-results-up" class="advanced-icon-button" title="Expand search results" aria-label="Expand search results">
+                <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M296-224 240-280l240-240 240 240-56 56-184-184-184 184Zm0-240-56-56 240-240 240 240-56 56-184-184-184 184Z" /></svg>
+              </button>
+              <button type="button" id="advanced-results-down" class="advanced-icon-button" title="Minimize search results" aria-label="Minimize search results">
+                <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M480-200 240-440l56-56 184 184 184-184 56 56-240 240Zm0-240L240-680l56-56 184 184 184-184 56 56-240 240Z" /></svg>
+              </button>
+            </div>
+          </div>
+          <div id="advanced-results-list" class="advanced-results-list"></div>
+        </section>
       </main>
     </div>
 
@@ -1570,6 +1642,7 @@
     <script src="/static/notes.js"></script>
     <script src="/static/bookmarks.js"></script>
     <script src="/static/bookmarks_hub.js"></script>
+    <script src="/static/advanced_search.js"></script>
     <script
       src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
       crossorigin="anonymous"
