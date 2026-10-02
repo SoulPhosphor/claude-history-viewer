@@ -4581,11 +4581,6 @@ kbd {
   background: transparent;
   border: 1px solid var(--muted);
 }
-.menu-check {
-  margin-left: auto;
-  padding-left: 10px;
-  color: var(--accent);
-}
 .sidebar-menu-item.set-label-item,
 .thread-dropdown-item.set-label-item {
   display: flex;

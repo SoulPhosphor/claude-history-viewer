@@ -4583,14 +4583,13 @@ async function refreshActiveHeaderLabel() {
 // ── Direct label selection (⋮ menus + right-click popover) ────────────────────
 
 // Build the right-click list: Blank (clears every label) plus one toggle per
-// configured label, ticked when the conversation carries it. A conversation can
-// carry several, so these toggle rather than replace. Every option shows its
+// configured label. A conversation can carry several, so these toggle rather
+// than replace. Every option shows its
 // colour AND its name whatever the display mode is set to — this list is how
 // you pick, so it always spells the labels out. The square you right-clicked is
 // left out: it is already the active one.
 // itemClass matches the menu's own button class so styling stays consistent.
 function appendSetLabelToMenu(menu, convId, currentLabels, itemClass, onSelect, activeId) {
-  const held = new Set((currentLabels || []).map((l) => l.id));
   const cap = document.createElement("div");
   cap.className = "menu-section-caption";
   cap.textContent = "Set labels";
@@ -4615,13 +4614,6 @@ function appendSetLabelToMenu(menu, convId, currentLabels, itemClass, onSelect, 
       name.className = "sidebar-menu-item-label";
       name.textContent = "Blank";
       b.append(dot, name);
-    }
-    const ticked = opt.id ? held.has(opt.id) : held.size === 0;
-    if (ticked) {
-      const check = document.createElement("span");
-      check.className = "menu-check";
-      check.textContent = "✓";
-      b.appendChild(check);
     }
     b.addEventListener("click", (e) => {
       e.stopPropagation();
