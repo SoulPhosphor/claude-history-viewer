@@ -178,8 +178,9 @@
     const current = ui.editModes[key];
     if (current === "include" || current === "exclude") return current;
     if (hasAll(filter)) return "all";
-    if (!filter.include.length && filter.exclude.length) return "exclude";
-    return "include";
+    if (filter.include.length) return "include";
+    if (filter.exclude.length) return "exclude";
+    return "all";
   }
 
   // Turning All on remembers the selections it replaces; turning it off puts
@@ -278,8 +279,7 @@
         chip.className = "advanced-selected-chip";
         const text = document.createElement("span");
         const label = value === ALL ? ALL_LABEL : optionMap.get(value)?.label || value;
-        // The Include / Exclude screen already says which list this is.
-        text.textContent = label;
+        text.textContent = value === ALL ? label : `${mode === "include" ? "Include" : "Exclude"}: ${label}`;
         const remove = document.createElement("button");
         remove.type = "button";
         remove.textContent = "×";
@@ -332,6 +332,7 @@
         btn.textContent = item.label;
         const active = activeOnScreen(screen, filter, item.value);
         btn.setAttribute("aria-pressed", String(active));
+        if (active && screen === "exclude") btn.dataset.assignment = "exclude";
         btn.title = active && screen !== "all"
           ? `${screen === "include" ? "Included" : "Excluded"}: ${item.label}`
           : item.label;
@@ -339,6 +340,7 @@
           // While All is on, any chip click leaves All and restores the
           // selections from before it.
           if (hasAll(filter)) exitAll(key, filter, true);
+          else if (screen === "all") ui.editModes[key] = "include";
           else if (active) filter[screen] = filter[screen].filter((v) => v !== item.value);
           else addAssignment(key, filter, item.value, true);
           rerender();
@@ -380,7 +382,7 @@
   }
 
   function renderProviders(parent) {
-    const group = makeGroup("AI Companies");
+    const group = makeGroup();
     const row = document.createElement("div");
     row.className = "advanced-mode-row";
     const bar = document.createElement("div");
