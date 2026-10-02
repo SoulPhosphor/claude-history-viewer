@@ -155,13 +155,6 @@ function labelPickName(label) {
   return String(label?.name || "").trim() || "(unnamed)";
 }
 
-// Same idea, but for a picker where "(unnamed)" tells the user nothing useful
-// to tell that square apart from another — show its colour instead.
-function labelPickNameOrColor(label) {
-  const name = String(label?.name || "").trim();
-  return name || String(label?.color || "").trim() || "(unnamed)";
-}
-
 // "Enter labels below or no labels will be applied." — shown by the display
 // dropdown whenever Square + Label is selected and at least one square still
 // has no name to show. It clears itself the moment every square has a name, and
@@ -408,11 +401,14 @@ function clearLabelDropMarks() {
 
 async function deleteLabel(label) {
   const used = label.count > 0;
+  // An unnamed label has no name to quote; it's the row the user just chose.
+  const name = String(label.name || "").trim();
+  const which = name ? `the label “${name}”` : "this label";
   const msg = used
-    ? `Delete the label “${labelPickName(label)}”? ${label.count} conversation${
+    ? `Delete ${which}? ${label.count} conversation${
         label.count === 1 ? "" : "s"
       } currently use it and will be cleared back to blank.`
-    : `Delete the label “${labelPickName(label)}”?`;
+    : `Delete ${which}?`;
   const ok = await openConfirm({
     title: "Delete label?",
     text: msg,

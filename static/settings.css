@@ -43,6 +43,45 @@
   font-size: var(--settings-setting-subtext-size);
 }
 
+.settings-sidebar-width-setting {
+  align-items: flex-start;
+  flex-direction: column;
+  padding-bottom: var(--settings-setting-gap-y);
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-sidebar-width-control {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--settings-setting-gap);
+}
+
+#setting-sidebar-width {
+  flex: 1;
+  min-width: 120px;
+  accent-color: var(--accent);
+}
+
+.settings-pixel-input {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--muted);
+  font-size: var(--settings-setting-subtext-size);
+}
+
+#setting-sidebar-width-number {
+  width: 72px;
+  padding: 5px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  text-align: right;
+}
+
 /* ── Switch control ────────────────────────────────────────────────────────
    The native checkbox is the semantic control (keyboard, focus, form state,
    role="switch" in the markup); the track/thumb pair draws the requested

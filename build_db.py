@@ -701,6 +701,20 @@ def parse_conversation(conv: dict, cid: str | None = None):
         text = message_text(content)
         if not text:
             continue
+        metadata = msg.get("metadata") if isinstance(msg.get("metadata"), dict) else {}
+        model_slug = next(
+            (
+                str(value).strip()
+                for value in (
+                    metadata.get("model_slug"),
+                    metadata.get("default_model_slug"),
+                    msg.get("model_slug"),
+                    msg.get("model"),
+                )
+                if value is not None and str(value).strip()
+            ),
+            None,
+        )
         msgs.append({
             "conversation_id": cid,
             "role":            role,
@@ -710,6 +724,9 @@ def parse_conversation(conv: dict, cid: str | None = None):
             "branch_index":    1,
             "create_time":     msg.get("create_time") or 0,
             "seq":             seq,
+            # ChatGPT exports identify the model per message. Keep the exact
+            # imported value: one conversation may use several models.
+            "model_slug":      model_slug,
         })
 
     if not msgs:
@@ -867,10 +884,14 @@ CREATE TABLE messages (
     siblings        TEXT,
     branch_index    INTEGER DEFAULT 1,
     create_time     REAL,
-    seq             INTEGER
+    seq             INTEGER,
+    -- ChatGPT model recorded on this exact message (NULL for Claude or when the
+    -- export omitted it). Distinct values form the conversation's model list.
+    model_slug      TEXT
 );
 
 CREATE INDEX idx_msg_conv ON messages (conversation_id, seq);
+CREATE INDEX idx_msg_model ON messages (model_slug, conversation_id);
 
 CREATE VIRTUAL TABLE search_index USING fts5(
     conversation_id UNINDEXED,
@@ -1063,9 +1084,16 @@ def build(source: Path, db_path: Path) -> None:
         conv_rows,
     )
     db.executemany(
-        "INSERT INTO messages (conversation_id, role, content, attachments, artifact_ids, siblings, branch_index, create_time, seq) "
-        "VALUES (:conversation_id, :role, :content, :attachments, :artifact_ids, :siblings, :branch_index, :create_time, :seq)",
-        [{**m, "artifact_ids": m.get("artifact_ids")} for m in msg_rows],
+        "INSERT INTO messages (conversation_id, role, content, attachments, artifact_ids, siblings, branch_index, create_time, seq, model_slug) "
+        "VALUES (:conversation_id, :role, :content, :attachments, :artifact_ids, :siblings, :branch_index, :create_time, :seq, :model_slug)",
+        [
+            {
+                **m,
+                "artifact_ids": m.get("artifact_ids"),
+                "model_slug": m.get("model_slug"),
+            }
+            for m in msg_rows
+        ],
     )
     db.executemany("INSERT INTO search_index VALUES (?, ?, ?)", fts_rows)
     db.executemany(
@@ -1301,12 +1329,12 @@ def _insert_conv_rows(conn, meta: dict, msgs: list, artifacts: list, provider: s
     for m in msgs:
         conn.execute(
             "INSERT INTO messages "
-            "(conversation_id, role, content, attachments, artifact_ids, siblings, branch_index, create_time, seq) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(conversation_id, role, content, attachments, artifact_ids, siblings, branch_index, create_time, seq, model_slug) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 m["conversation_id"], m.get("role"), m.get("content"), m.get("attachments"),
                 m.get("artifact_ids"), m.get("siblings"), m.get("branch_index", 1),
-                m.get("create_time"), m.get("seq"),
+                m.get("create_time"), m.get("seq"), m.get("model_slug"),
             ),
         )
     conn.execute(

@@ -80,34 +80,42 @@ function exitBulkPreview(opts = {}) {
 // value adds it as a chip immediately; the "+" then reappears to add another.
 // Labels/folders pick from a live dropdown; tags/keywords are free text.
 
-// { value, name } per selected chip. `value` is what the server understands
-// (a label/folder id, "blank"/"none", or the raw tag/keyword text); `name` is
-// what the chip displays.
+// { value, name, label? } per selected chip. `value` is what the server
+// understands (a label/folder id, "blank"/"none", or the raw tag/keyword text);
+// `name` is what the chip displays. A label chip also carries its `label`
+// object and shows its colour (an unnamed label is just its colour).
 const bulkChipState = { labels: [], folders: [], tags: [], keywords: [], targetLabels: [] };
 
-// Element ids for a chip row's container/label don't all follow the plain
-// `bulk-${kind}-*` template (targetLabels' HTML ids use a hyphen).
-const BULK_CHIP_DOM_KIND = { targetLabels: "target-labels" };
+// The chip rows' HTML ids use singular, hyphenated names
+// (bulk-label-chips, bulk-target-labels-chips, ...), not the state keys.
+const BULK_CHIP_DOM_KIND = {
+  labels: "label",
+  folders: "folder",
+  tags: "tag",
+  keywords: "keyword",
+  targetLabels: "target-labels",
+};
 function bulkChipElId(kind, suffix) {
   return `bulk-${BULK_CHIP_DOM_KIND[kind] || kind}-${suffix}`;
 }
 
+// A chip for one label definition.
+function bulkLabelChip(l) {
+  return { value: l.id, name: labelAccessibleName(l), label: l };
+}
+
 function bulkChipOptions(kind) {
+  // Label choices go in the colour dropdown (openLabelMenu): items are
+  // { value, text } or { value, label }.
   if (kind === "labels") {
-    return [{ value: "blank", label: "Blank" }].concat(
-      orderedLabels().map((l) => ({ value: l.id, label: labelPickName(l) })),
+    return [{ value: "blank", text: "Blank" }].concat(
+      orderedLabels().map((l) => ({ value: l.id, label: l })),
     );
   }
   if (kind === "targetLabels") {
-    // "Which labels it should apply to" — always offers "All"; an unnamed
-    // label shows its colour (as text, and as a swatch on the option) instead
-    // of a blank/placeholder row.
-    return [{ value: "all", label: "All" }].concat(
-      orderedLabels().map((l) => ({
-        value: l.id,
-        label: labelPickNameOrColor(l),
-        swatch: String(l.name || "").trim() ? null : l.color,
-      })),
+    // "Which labels it should apply to" — always offers "All".
+    return [{ value: "all", text: "All" }].concat(
+      orderedLabels().map((l) => ({ value: l.id, label: l })),
     );
   }
   if (kind === "folders") {
@@ -127,7 +135,16 @@ function renderBulkChipRow(kind) {
     el.className = "tag-chip";
     const name = document.createElement("span");
     name.className = "tag-chip-name";
-    name.textContent = chip.name;
+    if (chip.label) {
+      const text = String(chip.label.name || "").trim();
+      const mark = document.createElement("span");
+      mark.className = text ? "menu-label-dot" : "menu-label-bar";
+      mark.style.background = _validHexColor(chip.label.color) ? chip.label.color : "#888888";
+      name.appendChild(mark);
+      if (text) name.append(text);
+    } else {
+      name.textContent = chip.name;
+    }
     const x = document.createElement("button");
     x.type = "button";
     x.className = "tag-chip-x";
@@ -148,12 +165,12 @@ function renderBulkChipRow(kind) {
   container.appendChild(addBtn);
 }
 
-function addBulkChip(kind, value, name) {
+function addBulkChip(kind, value, name, label = null) {
   if (bulkChipState[kind].some((c) => c.value === value)) {
     renderBulkChipRow(kind);
     return;
   }
-  bulkChipState[kind].push({ value, name });
+  bulkChipState[kind].push(label ? { value, name, label } : { value, name });
   renderBulkChipRow(kind);
   invalidateBulkPreview();
 }
@@ -173,6 +190,15 @@ function showBulkChipPicker(kind, addBtn) {
   }
   const used = new Set(bulkChipState[kind].map((c) => c.value));
   const opts = bulkChipOptions(kind).filter((o) => !used.has(o.value));
+  if (kind === "labels" || kind === "targetLabels") {
+    // The colour dropdown shows each label's colour on every system.
+    openLabelMenu(addBtn, opts, (value) => {
+      const chosen = opts.find((o) => o.value === value);
+      if (chosen?.label) addBulkChip(kind, value, labelAccessibleName(chosen.label), chosen.label);
+      else addBulkChip(kind, value, chosen ? chosen.text : value);
+    });
+    return;
+  }
   const sel = document.createElement("select");
   sel.className = "bulk-chip-picker";
   const placeholder = document.createElement("option");
@@ -185,12 +211,6 @@ function showBulkChipPicker(kind, addBtn) {
     const opt = document.createElement("option");
     opt.value = o.value;
     opt.textContent = o.label;
-    // An unnamed label's option shows its colour as a swatch too, not just
-    // as text, where the browser renders option background colours.
-    if (o.swatch) {
-      opt.style.backgroundColor = o.swatch;
-      opt.style.color = "#fff";
-    }
     sel.appendChild(opt);
   }
   addBtn.replaceWith(sel);
@@ -271,7 +291,7 @@ function refreshBulkLabelSelects() {
   bulkChipState.labels = bulkChipState.labels
     .filter((c) => c.value === "blank" || byId.has(c.value))
     .map((c) =>
-      c.value === "blank" ? c : { value: c.value, name: labelPickName(byId.get(c.value)) },
+      c.value === "blank" ? c : bulkLabelChip(byId.get(c.value)),
     );
   renderBulkChipRow("labels");
 
@@ -280,7 +300,7 @@ function refreshBulkLabelSelects() {
     .map((c) =>
       c.value === "all"
         ? c
-        : { value: c.value, name: labelPickNameOrColor(byId.get(c.value)) },
+        : bulkLabelChip(byId.get(c.value)),
     );
   renderBulkChipRow("targetLabels");
 }
@@ -731,7 +751,7 @@ function reuseBulkCriteria(crit) {
   const byId = new Map(orderedLabels().map((l) => [l.id, l]));
   bulkChipState.labels = toValues("labels", "label", "any")
     .filter((v) => v === "blank" || byId.has(v))
-    .map((v) => (v === "blank" ? { value: "blank", name: "Blank" } : { value: v, name: labelPickName(byId.get(v)) }));
+    .map((v) => (v === "blank" ? { value: "blank", name: "Blank" } : bulkLabelChip(byId.get(v))));
   renderBulkChipRow("labels");
 
   const folderById = new Map((state.bulkFolderOptions || []).map((f) => [f.id, f]));
@@ -779,7 +799,7 @@ function reuseBulkCriteria(crit) {
   bulkChipState.targetLabels = (targetIds || [])
     .filter((v) => v === "all" || byId.has(v))
     .map((v) =>
-      v === "all" ? { value: "all", name: "All" } : { value: v, name: labelPickNameOrColor(byId.get(v)) },
+      v === "all" ? { value: "all", name: "All" } : bulkLabelChip(byId.get(v)),
     );
   renderBulkChipRow("targetLabels");
   syncBulkTargetLabelsVisibility();

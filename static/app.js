@@ -90,6 +90,9 @@ const $ = (id) => document.getElementById(id);
 
 const searchEl = $("search");
 const searchHistoryListEl = $("search-history-list");
+const simpleSearchPanel = $("simple-search-panel");
+const simpleSearchToggle = $("simple-search-toggle");
+const searchClearBtn = $("search-clear-btn");
 const viewFilterEl = $("view-filter");
 const resultCount = $("result-count");
 const recycleControls = $("recycle-controls");
@@ -1641,15 +1644,75 @@ const VIEW_LABELS = {
 // The one list header reflects whichever view the dropdown has selected, so it
 // never says "Recent" while showing Pinned/Archived/All results.
 function updateListSectionTitle() {
+  syncViewFilterButton();
   if (!listSectionTitle) return;
   if (state.bulkPreview) {
     listSectionTitle.textContent = "Bulk preview";
+    return;
+  }
+  // A label view's heading is the label itself: its colour, and its name
+  // when it has one.
+  const label = !state.q && labelForView(state.view);
+  if (label) {
+    listSectionTitle.replaceChildren(labelPickSwatch(label));
     return;
   }
   listSectionTitle.textContent = state.q
     ? "Search results"
     : labelViewTitle(state.view) || VIEW_LABELS[state.view] || "Recent";
 }
+
+// ── View picker ──────────────────────────────────────────────────────────────
+// The visible button for the hidden #view-filter select. It opens the colour
+// list so label views show their colours on every system; choosing an item
+// sets the select and fires its usual change handler.
+const viewFilterButton = $("view-filter-button");
+
+function labelForView(view) {
+  const v = String(view || "");
+  if (!v.startsWith("label:") || v === "label:__unlabeled__") return null;
+  return labelById(v.slice("label:".length)) || null;
+}
+
+function viewFilterItems() {
+  return [...(viewFilterEl?.options || [])]
+    .filter((opt) => !opt.hidden)
+    .map((opt) => {
+      const label = labelForView(opt.value);
+      return label ? { value: opt.value, label } : { value: opt.value, text: opt.textContent };
+    });
+}
+
+function syncViewFilterButton() {
+  if (!viewFilterButton || !viewFilterEl) return;
+  const value = viewFilterEl.value;
+  const label = labelForView(value);
+  viewFilterButton.replaceChildren();
+  if (label) {
+    viewFilterButton.appendChild(labelPickSwatch(label));
+  } else {
+    const text = document.createElement("span");
+    text.textContent = viewFilterEl.selectedOptions[0]?.textContent || "Recent";
+    viewFilterButton.appendChild(text);
+  }
+  const arrow = document.createElement("span");
+  arrow.className = "view-filter-arrow";
+  arrow.setAttribute("aria-hidden", "true");
+  arrow.textContent = "▾";
+  viewFilterButton.appendChild(arrow);
+  viewFilterButton.setAttribute(
+    "aria-label",
+    `Filter conversations: ${label ? labelAccessibleName(label) : viewFilterEl.selectedOptions[0]?.textContent || "Recent"}`,
+  );
+}
+
+viewFilterButton?.addEventListener("click", () => {
+  openLabelMenu(viewFilterButton, viewFilterItems(), (value) => {
+    viewFilterEl.value = value;
+    viewFilterEl.dispatchEvent(new Event("change"));
+    viewFilterButton.focus();
+  });
+});
 
 // The conversation-count row. In the Recycle Bin it also shows the current
 // selection count (e.g. "327 conversations · 12 selected"), extending the one
@@ -1683,7 +1746,10 @@ async function loadUiPreferences() {
   const data = await apiPreferences();
   const p = data.preferences || {};
   state.preferences.sidebarCollapsed = Boolean(p.sidebarCollapsed);
-  state.preferences.sidebarWidth = Number(p.sidebarWidth || 300);
+  state.preferences.sidebarWidth = Math.max(
+    220,
+    Math.min(520, Number(p.sidebarWidth || 300)),
+  );
   const savedView = String(p.conversationView || "recent");
   state.preferences.conversationView = [
     "recent",
@@ -1738,10 +1804,7 @@ async function loadUiPreferences() {
   if (viewFilterEl) viewFilterEl.value = state.view;
   syncRecycleControls();
   updateListSectionTitle();
-  document.documentElement.style.setProperty(
-    "--sidebar-w",
-    `${Math.max(220, Math.min(520, state.preferences.sidebarWidth))}px`,
-  );
+  applySidebarWidth(state.preferences.sidebarWidth);
   document.body.classList.toggle(
     "sidebar-collapsed",
     state.preferences.sidebarCollapsed,
@@ -1951,6 +2014,7 @@ async function loadTabs() {
 }
 
 async function ensureSpecialTab(tabType, title) {
+  clearSimpleSearchForSection();
   state.activeSpecialView = tabType;
   renderTabs();
 }
@@ -2266,6 +2330,11 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   if (typeof beginNotesConversationVisit === "function") {
     const beganVisit = await beginNotesConversationVisit(id);
     if (!beganVisit) return;
+  }
+  // Choosing a conversation returns to the normal reading layout. Advanced
+  // Search keeps its draft and last results in memory for this browser session.
+  if (window.advancedSearchController?.isOpen()) {
+    window.advancedSearchController.close();
   }
   state.activeSpecialView = null;
   // Update sidebar selection (main list and folder tree)
@@ -2597,7 +2666,81 @@ async function openConversation(id, clickedEl, targetSeq = null) {
 // ── Search (debounced) ────────────────────────────────────────────────────────
 
 let debounce;
+function syncSearchClearButton() {
+  if (searchClearBtn) searchClearBtn.hidden = !searchEl.value;
+}
+
+function setSimpleSearchOpen(open, { focus = false } = {}) {
+  if (!simpleSearchPanel || !simpleSearchToggle) return;
+  simpleSearchPanel.hidden = !open;
+  simpleSearchToggle.setAttribute("aria-expanded", String(open));
+  if (open && focus) {
+    requestAnimationFrame(() => {
+      searchEl.focus();
+      searchEl.select();
+    });
+  }
+}
+
+function openSimpleSearch() {
+  if (document.body.classList.contains("sidebar-collapsed")) {
+    document.body.classList.remove("sidebar-collapsed");
+    state.preferences.sidebarCollapsed = false;
+    saveUiPreferences({ sidebarCollapsed: false });
+  }
+  // Only one search at a time: opening Advanced Search closes this one, so
+  // opening this one closes Advanced Search.
+  if (window.advancedSearchController?.isOpen()) {
+    window.advancedSearchController.close();
+  }
+  setSimpleSearchOpen(true, { focus: true });
+}
+
+function closeSimpleSearch() {
+  setSimpleSearchOpen(false);
+  searchEl.blur();
+}
+
+function clearSimpleSearch({ reload = true } = {}) {
+  clearTimeout(debounce);
+  searchEl.value = "";
+  state.q = "";
+  syncSearchClearButton();
+  clearSearchNav();
+  syncPinnedSectionVisibility();
+  updateListSectionTitle();
+  if (reload) loadConversations(false);
+}
+
+function clearSimpleSearchForSection() {
+  const hadQuery = Boolean(state.q || searchEl.value);
+  closeSimpleSearch();
+  clearSimpleSearch({ reload: hadQuery });
+}
+
+simpleSearchToggle?.addEventListener("click", () => {
+  if (
+    simpleSearchPanel.hidden ||
+    document.body.classList.contains("sidebar-collapsed")
+  ) {
+    openSimpleSearch();
+  }
+  else closeSimpleSearch();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || simpleSearchPanel?.hidden) return;
+  e.preventDefault();
+  closeSimpleSearch();
+});
+
+searchClearBtn?.addEventListener("click", () => {
+  clearSimpleSearch();
+  searchEl.focus();
+});
+
 searchEl.addEventListener("input", () => {
+  syncSearchClearButton();
   clearTimeout(debounce);
   debounce = setTimeout(() => {
     // Searching leaves the temporary bulk Preview behind.
@@ -2617,12 +2760,8 @@ searchEl.addEventListener("input", () => {
 
 searchEl.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
-    searchEl.value = "";
-    state.q = "";
-    clearSearchNav();
-    updateListSectionTitle();
-    loadConversations(false);
-    searchEl.blur();
+    e.preventDefault();
+    closeSimpleSearch();
   }
   if (e.key === "ArrowDown") {
     e.preventDefault();
@@ -2700,8 +2839,39 @@ pinnedRefreshBtn?.addEventListener("click", () => refreshPinnedList());
 
 sidebarToggleBtn?.addEventListener("click", async () => {
   const next = !document.body.classList.contains("sidebar-collapsed");
+  if (next) closeSimpleSearch();
   document.body.classList.toggle("sidebar-collapsed", next);
   await saveUiPreferences({ sidebarCollapsed: next });
+});
+
+function applySidebarWidth(value) {
+  const next = Math.max(220, Math.min(520, Math.round(Number(value) || 300)));
+  state.preferences.sidebarWidth = next;
+  document.documentElement.style.setProperty("--sidebar-w", `${next}px`);
+  const range = $("setting-sidebar-width");
+  const number = $("setting-sidebar-width-number");
+  if (range) range.value = String(next);
+  if (number && document.activeElement !== number) number.value = String(next);
+  return next;
+}
+
+const sidebarWidthRange = $("setting-sidebar-width");
+const sidebarWidthNumber = $("setting-sidebar-width-number");
+
+sidebarWidthRange?.addEventListener("input", () => {
+  applySidebarWidth(sidebarWidthRange.value);
+});
+sidebarWidthRange?.addEventListener("change", () => {
+  saveUiPreferences({ sidebarWidth: state.preferences.sidebarWidth });
+});
+sidebarWidthNumber?.addEventListener("input", () => {
+  const value = Number(sidebarWidthNumber.value);
+  if (value >= 220 && value <= 520) applySidebarWidth(value);
+});
+sidebarWidthNumber?.addEventListener("change", () => {
+  const next = applySidebarWidth(sidebarWidthNumber.value);
+  sidebarWidthNumber.value = String(next);
+  saveUiPreferences({ sidebarWidth: next });
 });
 
 if (sidebarResizeHandle) {
@@ -2715,9 +2885,9 @@ if (sidebarResizeHandle) {
   document.addEventListener("mousemove", (e) => {
     if (!dragging || document.body.classList.contains("sidebar-collapsed"))
       return;
-    const next = Math.max(220, Math.min(520, e.clientX));
-    document.documentElement.style.setProperty("--sidebar-w", `${next}px`);
-    state.preferences.sidebarWidth = next;
+    const sidebarLeft = $("sidebar").getBoundingClientRect().left;
+    const next = Math.max(220, Math.min(520, e.clientX - sidebarLeft));
+    applySidebarWidth(next);
   });
   document.addEventListener("mouseup", async () => {
     if (!dragging) return;
@@ -2758,8 +2928,7 @@ document.addEventListener("keydown", (e) => {
 
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
     e.preventDefault();
-    searchEl.focus();
-    searchEl.select();
+    openSimpleSearch();
     return;
   }
 
@@ -2775,8 +2944,7 @@ document.addEventListener("keydown", (e) => {
 
   if (e.key === "/") {
     e.preventDefault();
-    searchEl.focus();
-    searchEl.select();
+    openSimpleSearch();
     return;
   }
 
@@ -4030,6 +4198,7 @@ async function openSettings() {
   if (chatSnippetToggle) {
     chatSnippetToggle.checked = state.preferences.showChatSnippet;
   }
+  applySidebarWidth(state.preferences.sidebarWidth);
 }
 
 // ── About screen ─────────────────────────────────────────────────────────────
@@ -4213,7 +4382,7 @@ function labelChipEl(convId, label, allLabels) {
   if (label) {
     btn.style.background = _validHexColor(label.color) ? label.color : "#888888";
     const nm = String(label.name || "").trim();
-    btn.title = nm || "Unnamed label";
+    if (nm) btn.title = nm;
     btn.setAttribute(
       "aria-label",
       `Label: ${nm || "unnamed"}. Activate to change. Right-click for the full list.`,
@@ -4419,14 +4588,13 @@ async function refreshActiveHeaderLabel() {
 // ── Direct label selection (⋮ menus + right-click popover) ────────────────────
 
 // Build the right-click list: Blank (clears every label) plus one toggle per
-// configured label, ticked when the conversation carries it. A conversation can
-// carry several, so these toggle rather than replace. Every option shows its
+// configured label. A conversation can carry several, so these toggle rather
+// than replace. Every option shows its
 // colour AND its name whatever the display mode is set to — this list is how
 // you pick, so it always spells the labels out. The square you right-clicked is
 // left out: it is already the active one.
 // itemClass matches the menu's own button class so styling stays consistent.
 function appendSetLabelToMenu(menu, convId, currentLabels, itemClass, onSelect, activeId) {
-  const held = new Set((currentLabels || []).map((l) => l.id));
   const cap = document.createElement("div");
   cap.className = "menu-section-caption";
   cap.textContent = "Set labels";
@@ -4441,21 +4609,16 @@ function appendSetLabelToMenu(menu, convId, currentLabels, itemClass, onSelect, 
     b.className = `${itemClass} set-label-item`;
     b.setAttribute("role", "menuitem");
 
-    const dot = document.createElement("span");
-    dot.className = "menu-label-dot" + (opt.id ? "" : " menu-label-dot-blank");
-    if (opt.id) dot.style.background = _validHexColor(opt.color) ? opt.color : "#888888";
-
-    const name = document.createElement("span");
-    name.className = "sidebar-menu-item-label";
-    name.textContent = opt.id ? labelPickName(opt) : "Blank";
-
-    b.append(dot, name);
-    const ticked = opt.id ? held.has(opt.id) : held.size === 0;
-    if (ticked) {
-      const check = document.createElement("span");
-      check.className = "menu-check";
-      check.textContent = "✓";
-      b.appendChild(check);
+    if (opt.id) {
+      b.appendChild(labelPickSwatch(opt));
+      b.setAttribute("aria-label", labelAccessibleName(opt));
+    } else {
+      const dot = document.createElement("span");
+      dot.className = "menu-label-dot menu-label-dot-blank";
+      const name = document.createElement("span");
+      name.className = "sidebar-menu-item-label";
+      name.textContent = "Blank";
+      b.append(dot, name);
     }
     b.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -4465,6 +4628,119 @@ function appendSetLabelToMenu(menu, convId, currentLabels, itemClass, onSelect, 
     });
     menu.appendChild(b);
   }
+}
+
+// Put a fixed-position menu just below its anchor, or above it when there is
+// no room below, keeping it inside the window.
+function placeMenuNear(menu, anchorEl) {
+  const r = anchorEl.getBoundingClientRect();
+  const mw = menu.offsetWidth;
+  let left = r.left;
+  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+  if (left < 8) left = 8;
+  let top = r.bottom + 4;
+  if (top + menu.offsetHeight > window.innerHeight - 8) {
+    top = r.top - menu.offsetHeight - 4;
+  }
+  menu.style.left = `${left}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+}
+
+// ── Label pick lists ──────────────────────────────────────────────────────────
+// A label in a pick list: a named label is its colour square and name; an
+// unnamed one is a wider bar of its colour, which identifies it on its own.
+function labelPickSwatch(label) {
+  const frag = document.createDocumentFragment();
+  const name = String(label?.name || "").trim();
+  const mark = document.createElement("span");
+  mark.className = name ? "menu-label-dot" : "menu-label-bar";
+  mark.style.background = _validHexColor(label?.color) ? label.color : "#888888";
+  frag.appendChild(mark);
+  if (name) {
+    const text = document.createElement("span");
+    text.className = "sidebar-menu-item-label";
+    text.textContent = name;
+    frag.appendChild(text);
+  }
+  return frag;
+}
+
+// Screen readers can't see the colour, so they get a spoken name instead.
+function labelAccessibleName(label) {
+  return String(label?.name || "").trim() || "Unnamed label";
+}
+
+// A dropdown list of choices that can show label colours. Browser <select>
+// menus show only text, and macOS and phones ignore option colours, so label
+// choices use this instead. Each item is { value, label } (a label object) or
+// { value, text }. onPick(value) runs when one is chosen; onClose runs when the
+// list closes without a choice.
+let _labelMenu = null;
+function closeLabelMenu(picked = false) {
+  if (!_labelMenu) return;
+  const { menu, onClose, outside, keys, scroll } = _labelMenu;
+  _labelMenu = null;
+  menu.remove();
+  document.removeEventListener("mousedown", outside, true);
+  window.removeEventListener("keydown", keys, true);
+  window.removeEventListener("scroll", scroll, true);
+  if (!picked && onClose) onClose();
+}
+function openLabelMenu(anchorEl, items, onPick, { onClose } = {}) {
+  closeLabelMenu();
+  const menu = document.createElement("div");
+  menu.className = "sidebar-menu label-choice-menu";
+  menu.setAttribute("role", "menu");
+  for (const item of items) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "sidebar-menu-item set-label-item";
+    b.setAttribute("role", "menuitem");
+    if (item.label) {
+      b.appendChild(labelPickSwatch(item.label));
+      b.setAttribute("aria-label", labelAccessibleName(item.label));
+    } else {
+      const text = document.createElement("span");
+      text.className = "sidebar-menu-item-label";
+      text.textContent = item.text;
+      b.appendChild(text);
+    }
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeLabelMenu(true);
+      onPick(item.value);
+    });
+    menu.appendChild(b);
+  }
+  document.body.appendChild(menu);
+  placeMenuNear(menu, anchorEl);
+  const outside = (e) => {
+    if (!menu.contains(e.target) && !anchorEl.contains(e.target)) closeLabelMenu();
+  };
+  // Window capture runs before any page-level Escape handling, so Escape
+  // closes only this list.
+  const keys = (e) => {
+    const buttons = [...menu.querySelectorAll("button")];
+    const at = buttons.indexOf(document.activeElement);
+    if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      closeLabelMenu();
+      anchorEl.focus?.();
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      buttons[(at + step + buttons.length) % buttons.length]?.focus();
+    }
+  };
+  const scroll = (e) => {
+    if (!menu.contains(e.target)) closeLabelMenu();
+  };
+  _labelMenu = { menu, onClose, outside, keys, scroll };
+  document.addEventListener("mousedown", outside, true);
+  window.addEventListener("keydown", keys, true);
+  window.addEventListener("scroll", scroll, true);
+  menu.querySelector("button")?.focus();
 }
 
 let _setLabelPopover = null;
@@ -4500,17 +4776,7 @@ function openSetLabelPopover(convId, currentLabels, anchorEl, activeId) {
   );
   document.body.appendChild(menu);
   _setLabelPopover = menu;
-  const r = anchorEl.getBoundingClientRect();
-  const mw = menu.offsetWidth;
-  let left = r.left;
-  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
-  if (left < 8) left = 8;
-  let top = r.bottom + 4;
-  if (top + menu.offsetHeight > window.innerHeight - 8) {
-    top = r.top - menu.offsetHeight - 4;
-  }
-  menu.style.left = `${left}px`;
-  menu.style.top = `${top}px`;
+  placeMenuNear(menu, anchorEl);
   document.addEventListener("mousedown", _onSetLabelOutside, true);
   window.addEventListener("scroll", closeSetLabelPopover, true);
 }
