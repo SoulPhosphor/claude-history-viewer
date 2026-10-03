@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Claude History</title>
+    <!-- All app theme values live in theme.css; component rules load after it. -->
+    <link rel="stylesheet" href="/static/theme.css" />
     <link rel="stylesheet" href="/static/style.css" />
     <link rel="stylesheet" href="/static/settings.css" />
     <link rel="stylesheet" href="/static/advanced_search.css" />
@@ -29,7 +31,7 @@
             </div>
           </div>
           <div class="advanced-query-pill">
-            <input id="advanced-query" type="search" placeholder="Search conversations…" autocomplete="off" spellcheck="false" />
+            <input id="advanced-query" aria-label="Search conversations" type="search" placeholder="Search conversations…" autocomplete="off" spellcheck="false" />
             <button type="button" id="advanced-query-clear" class="advanced-query-clear" title="Clear search text" aria-label="Clear search text" hidden>
               <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z" /></svg>
             </button>
@@ -56,7 +58,7 @@
           </section>
         </div>
       </aside>
-      <aside id="sidebar">
+      <aside id="sidebar" aria-label="Conversations">
         <!-- Temporary bookmark panel (shown for 5+ bookmarks). While open it
              covers the normal sidebar; closing it reveals the sidebar again.
              Not remembered across sessions. -->
@@ -161,7 +163,7 @@
           <!-- Recycle Bin action control: chooses what Go does to the checked
                (or all) conversations. Shown only in the Recycle Bin view. -->
           <div id="recycle-controls" hidden>
-            <select id="recycle-action" title="Recycle Bin action">
+            <select id="recycle-action" aria-label="Recycle Bin action" title="Recycle Bin action">
               <option value="delete-all">Delete All</option>
               <option value="delete-selected">Delete Selected</option>
               <option value="restore-all">Restore All</option>
@@ -313,6 +315,7 @@
         </div>
       </aside>
 
+      <nav id="workspace-controls" class="workspace-controls" aria-label="Workspace controls">
       <!-- Popup menu anchored to the sidebar "More" button.
            Add future items as more .sidebar-menu-item buttons with a data-action. -->
       <div id="sidebar-menu" class="sidebar-menu" role="menu" hidden>
@@ -423,6 +426,7 @@
         </button>
       </div>
       <div id="sidebar-resize" aria-hidden="true"></div>
+      </nav>
 
       <main id="main">
         <div id="tabs-wrap" hidden>
@@ -468,7 +472,7 @@
                 stroke-linecap="round"
               />
             </svg>
-            <p>Select a conversation to read it</p>
+            <p role="heading" aria-level="1">Select a conversation to read it</p>
             <p class="empty-hint">
               Press <kbd>/</kbd> to search · <kbd>↑</kbd><kbd>↓</kbd> to
               navigate
@@ -481,7 +485,7 @@
                header below it; collapsed, the bar carries the chat's name so
                the top of the pane is one slim line. -->
           <div class="thread-titlebar">
-            <span id="thread-titlebar-label"></span>
+            <span id="thread-titlebar-label" role="heading" aria-level="1"></span>
             <button
               id="notes-side-toggle-btn"
               type="button"
@@ -564,7 +568,7 @@
           <div class="thread-header" id="thread-header">
             <div class="thread-header-main">
               <div class="thread-title-row">
-                <h2 id="thread-title"></h2>
+                <h1 id="thread-title"></h1>
               </div>
               <!-- Label squares for the open conversation. With the "Show Labels
                    in Chat Header" setting on they render on their own line
@@ -661,7 +665,7 @@
                 </div>
               </div>
               <textarea
-                id="condensed-summary-input"
+                id="condensed-summary-input" aria-label="Condensed summary"
                 class="summary-textarea summary-textarea-condensed"
                 rows="5"
                 placeholder=""
@@ -699,7 +703,7 @@
                     <button type="button" class="summary-tool-btn" id="summary-highlight-button" title="Highlight" aria-label="Highlight">▰</button>
                     <div class="summary-highlight-menu" id="summary-highlight-menu" hidden>
                       <div class="summary-palette" aria-label="Highlight palette"></div>
-                      <label class="summary-palette-custom">Custom <input type="color" class="summary-palette-picker" value="#fff3a3" aria-label="Choose custom highlight color"></label>
+                      <label class="summary-palette-custom">Custom <input type="color" class="summary-palette-picker" aria-label="Choose custom highlight color"></label>
                       <button type="button" class="summary-palette-remove">Remove highlight</button>
                     </div>
                   </div>
@@ -707,7 +711,7 @@
                   <button type="button" class="summary-tool-btn" data-format="numbered" title="Numbered list" aria-label="Numbered list">1≡</button>
                 </div>
                 <div id="summary-visual" class="summary-visual" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Visual Summary"></div>
-                <textarea id="summary-input" class="summary-textarea summary-textarea-main" placeholder="" hidden></textarea>
+                <textarea id="summary-input" aria-label="Summary Markdown" class="summary-textarea summary-textarea-main" placeholder="" hidden></textarea>
               </div>
               <div class="summary-author-row" id="summary-author-row" hidden>
                 <span class="summary-author-label" id="summary-author-label"></span>
@@ -724,7 +728,7 @@
                   <button type="button" class="summary-btn summary-btn-primary notes-full-save" data-note-field="user_notes" disabled>Save</button>
                 </div>
               </div>
-              <textarea id="notes-full-user-notes" class="summary-textarea notes-full-textarea" data-note-field="user_notes"></textarea>
+              <textarea id="notes-full-user-notes" aria-label="User Notes" class="summary-textarea notes-full-textarea" data-note-field="user_notes"></textarea>
             </section>
             <section class="summary-section notes-full-section" data-note-section="notes_to_ai">
               <div class="summary-section-header">
@@ -734,7 +738,7 @@
                   <button type="button" class="summary-btn summary-btn-primary notes-full-save" data-note-field="notes_to_ai" disabled>Save</button>
                 </div>
               </div>
-              <textarea id="notes-full-to-ai" class="summary-textarea notes-full-textarea" data-note-field="notes_to_ai"></textarea>
+              <textarea id="notes-full-to-ai" aria-label="Notes to the AI" class="summary-textarea notes-full-textarea" data-note-field="notes_to_ai"></textarea>
             </section>
             <section class="summary-section notes-full-section" data-note-section="notes_from_ai">
               <div class="summary-section-header">
@@ -744,7 +748,7 @@
                   <button type="button" class="summary-btn summary-btn-primary notes-full-save" data-note-field="notes_from_ai" disabled>Save</button>
                 </div>
               </div>
-              <textarea id="notes-full-from-ai" class="summary-textarea notes-full-textarea" data-note-field="notes_from_ai"></textarea>
+              <textarea id="notes-full-from-ai" aria-label="Notes from the AI" class="summary-textarea notes-full-textarea" data-note-field="notes_from_ai"></textarea>
             </section>
           </div>
           <!-- Artifact side panel (absolute, inside #thread) -->
@@ -760,7 +764,7 @@
 
         <div id="gallery" hidden>
           <div class="thread-header">
-            <h2>Media Hub</h2>
+            <h1>Media Hub</h1>
             <div id="gallery-meta">
               Images, attachments, and artifacts grouped by conversation
             </div>
@@ -770,7 +774,7 @@
 
         <div id="memories-panel" hidden>
           <div class="thread-header">
-            <h2>Memories</h2>
+            <h1>Memories</h1>
             <div id="memories-meta">Claude's memory about you</div>
           </div>
           <div id="memories-content"></div>
@@ -778,7 +782,7 @@
 
         <div id="projects-panel" hidden>
           <div class="thread-header">
-            <h2>Projects</h2>
+            <h1>Projects</h1>
             <div id="projects-meta"></div>
           </div>
           <div id="projects-content"></div>
@@ -786,7 +790,7 @@
 
         <div id="global-bookmarks-panel" hidden>
           <div class="thread-header">
-            <h2>Global Bookmarks</h2>
+            <h1>Global Bookmarks</h1>
             <div id="global-bookmarks-meta"></div>
           </div>
           <div id="global-bookmarks-toolbar">
@@ -846,7 +850,7 @@
 
         <div id="import-new-panel" hidden>
           <div class="thread-header">
-            <h2>Import New Chats</h2>
+            <h1>Import New Chats</h1>
             <div id="import-new-meta">
               Bring newly-exported Claude and ChatGPT backups into your history.
             </div>
@@ -880,7 +884,7 @@
                 <button id="import-new-btn" type="button">
                   Import Conversations
                 </button>
-                <div id="import-new-status" class="import-new-status"></div>
+                <div id="import-new-status" role="status" class="import-new-status"></div>
               </div>
               <p class="import-new-hint">
                 Please ensure your new backup files are located in the source
@@ -982,7 +986,7 @@
 
         <div id="settings-panel" hidden>
           <div class="thread-header">
-            <h2>Settings</h2>
+            <h1>Settings</h1>
             <div id="settings-meta">
               Preferences for how this app looks and behaves.
             </div>
@@ -1110,7 +1114,7 @@
 
         <div id="about-panel" hidden>
           <div class="thread-header">
-            <h2>About</h2>
+            <h1>About</h1>
           </div>
           <div id="about-content">
             <div class="about-update-row">
@@ -1122,7 +1126,7 @@
 
         <div id="import-audit-panel" hidden>
           <div class="thread-header">
-            <h2>Import Audit</h2>
+            <h1>Import Audit</h1>
             <div id="import-audit-meta">
               How every conversation in conversations.json was imported
             </div>
@@ -1132,7 +1136,7 @@
 
         <div id="claude-models-panel" hidden>
           <div class="thread-header">
-            <h2>Add Claude Models</h2>
+            <h1>Add Claude Models</h1>
             <div id="claude-models-meta">
               Which models claude.ai offered, and when. These dates decide which
               models a conversation can be tagged with.
@@ -1155,7 +1159,7 @@
               <button type="submit" id="model-add-btn">Add</button>
               <button type="button" id="model-reload-btn">Reload Model Data</button>
             </form>
-            <div id="model-add-error" class="model-form-error" hidden></div>
+            <div id="model-add-error" role="alert" class="model-form-error" hidden></div>
             <table id="model-table">
               <thead>
                 <tr>
@@ -1172,7 +1176,7 @@
 
         <div id="att-report-panel" hidden>
           <div class="thread-header">
-            <h2>Attachment Report</h2>
+            <h1>Attachment Report</h1>
             <button id="att-report-refresh-btn" title="Rescan">
               🔄 Refresh
             </button>
@@ -1186,7 +1190,7 @@
 
         <div id="gizmos-panel" hidden>
           <div class="thread-header">
-            <h2>Custom GPTs</h2>
+            <h1>Custom GPTs</h1>
             <div class="panel-meta">
               Name ChatGPT Custom GPTs, find every conversation that shares an
               imported GPT ID, or move all of one GPT's chats into a folder.
@@ -1198,7 +1202,7 @@
 
         <div id="labels-panel" hidden>
           <div class="thread-header">
-            <h2>Labels</h2>
+            <h1>Labels</h1>
             <div id="labels-meta">
               Configurable labels for staging groups of conversations. A
               conversation can carry several. Names carry no built-in meaning —
@@ -1252,11 +1256,10 @@
                 <input
                   type="color"
                   id="label-add-color"
-                  value="#4169e1"
                   aria-label="New label colour"
                 />
                 <input
-                  id="label-add-name"
+                  id="label-add-name" aria-label="New label name"
                   type="text"
                   placeholder="New label name (optional)"
                   spellcheck="false"
@@ -1264,7 +1267,7 @@
                 />
                 <button type="submit" id="label-add-btn">Add Label</button>
               </form>
-              <div id="label-add-error" class="labels-form-error" hidden></div>
+              <div id="label-add-error" role="alert" class="labels-form-error" hidden></div>
               <p class="labels-section-hint">
                 Drag a row by the grip on its right edge to reorder — or click
                 the grip to pick the row up, then click where it should go. With
@@ -1402,7 +1405,7 @@
                     <input type="radio" name="bulk-limit" value="first" />
                     First
                   </label>
-                  <input type="number" id="bulk-limit-n" min="1" value="50" disabled />
+                  <input type="number" id="bulk-limit-n" aria-label="Number of conversations to process" min="1" value="50" disabled />
                 </div>
                 <div class="bulk-row">
                   <label for="bulk-order">Order</label>
@@ -1421,7 +1424,7 @@
                   <button type="button" id="bulk-apply-btn">Apply</button>
                 </div>
                 <div id="bulk-result" class="bulk-result" hidden></div>
-                <div id="bulk-error" class="labels-form-error" hidden></div>
+                <div id="bulk-error" role="alert" class="labels-form-error" hidden></div>
               </div>
             </section>
 
@@ -1451,7 +1454,7 @@
                   <tbody id="bulk-runs-table-body"></tbody>
                 </table>
               </div>
-              <div id="bulk-runs-error" class="labels-form-error" hidden></div>
+              <div id="bulk-runs-error" role="alert" class="labels-form-error" hidden></div>
             </section>
 
             <!-- D. Safety Snapshots / Recent Bulk Changes ─────────────── -->
@@ -1473,7 +1476,7 @@
                 />
                 <button type="button" id="snapshot-create-btn">Create Snapshot</button>
               </div>
-              <div id="snapshot-error" class="labels-form-error" hidden></div>
+              <div id="snapshot-error" role="alert" class="labels-form-error" hidden></div>
               <div id="snapshot-table-wrap">
                 <table id="snapshot-table">
                   <thead>
@@ -1533,10 +1536,10 @@
 
     <!-- Unsaved summary changes dialog -->
     <div id="summary-unsaved-modal" class="modal-overlay" hidden>
-      <div class="modal" role="dialog" aria-modal="true">
-        <div class="modal-title">You have unsaved changes. Save before leaving?</div>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="summary-unsaved-title">
+        <div class="modal-title" id="summary-unsaved-title">You have unsaved changes. Save before leaving?</div>
         <div class="modal-buttons">
-          <button id="summary-unsaved-cancel" class="modal-btn">Cancel</button>
+          <button id="summary-unsaved-cancel" data-dialog-cancel class="modal-btn">Cancel</button>
           <button id="summary-unsaved-save" class="modal-btn modal-btn-primary">Save</button>
         </div>
       </div>
@@ -1546,7 +1549,7 @@
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="notes-unsaved-title">
         <h2 id="notes-unsaved-title">Save changes to Notes?</h2>
         <div class="modal-actions">
-          <button id="notes-unsaved-cancel" class="modal-btn">Cancel</button>
+          <button id="notes-unsaved-cancel" data-dialog-cancel class="modal-btn">Cancel</button>
           <button id="notes-unsaved-save" class="modal-btn modal-btn-primary">Save</button>
         </div>
       </div>
@@ -1554,16 +1557,16 @@
 
     <!-- Reusable naming dialog: create folder, rename chat, rename folder -->
     <div id="name-modal" class="modal-overlay" hidden>
-      <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="name-modal-title">
         <div class="modal-title" id="name-modal-title">Rename</div>
         <input
-          id="name-modal-input"
+          id="name-modal-input" aria-labelledby="name-modal-title"
           type="text"
           autocomplete="off"
           spellcheck="false"
         />
         <div class="modal-buttons">
-          <button id="name-modal-cancel" class="modal-btn">Cancel</button>
+          <button id="name-modal-cancel" data-dialog-cancel class="modal-btn">Cancel</button>
           <button id="name-modal-ok" class="modal-btn modal-btn-primary">
             Okay
           </button>
@@ -1572,11 +1575,11 @@
     </div>
     <!-- Generic confirmation dialog (used for permanent deletion). -->
     <div id="confirm-modal" class="modal-overlay" hidden>
-      <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title" aria-describedby="confirm-modal-text">
         <div class="modal-title" id="confirm-modal-title">Are you sure?</div>
         <div class="modal-text" id="confirm-modal-text"></div>
         <div class="modal-buttons">
-          <button id="confirm-modal-cancel" class="modal-btn">Cancel</button>
+          <button id="confirm-modal-cancel" data-dialog-cancel data-dialog-initial-focus class="modal-btn">Cancel</button>
           <button id="confirm-modal-ok" class="modal-btn modal-btn-danger">
             Delete
           </button>
@@ -1585,16 +1588,16 @@
     </div>
     <!-- Snapshot restore: choose which metadata categories to restore. -->
     <div id="snapshot-restore-modal" class="modal-overlay" hidden>
-      <div class="modal" role="dialog" aria-modal="true">
-        <div class="modal-title">Restore snapshot</div>
-        <div class="modal-text">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="snapshot-restore-title" aria-describedby="snapshot-restore-text">
+        <div class="modal-title" id="snapshot-restore-title">Restore snapshot</div>
+        <div class="modal-text" id="snapshot-restore-text">
           Choose which metadata categories to restore. Only the selected
           categories are returned to their recorded state — this can reverse
           changes made since the snapshot. Conversation content is never touched.
         </div>
         <div id="snapshot-restore-cats" class="snapshot-cats"></div>
         <div class="modal-buttons">
-          <button id="snapshot-restore-cancel" class="modal-btn">Cancel</button>
+          <button id="snapshot-restore-cancel" data-dialog-cancel class="modal-btn">Cancel</button>
           <button id="snapshot-restore-ok" class="modal-btn modal-btn-primary">
             Restore
           </button>
@@ -1603,14 +1606,14 @@
     </div>
     <!-- Caution sign: the selected model is outside its reported availability -->
     <div id="verify-model-modal" class="modal-overlay" hidden>
-      <div class="modal" role="dialog" aria-modal="true">
-        <div class="modal-text">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Model availability warning" aria-describedby="verify-model-text">
+        <div class="modal-text" id="verify-model-text">
           The selected model is currently outside of the reported model
           availability time frame. Remove warning for possible wrong model
           permanently?
         </div>
         <div class="modal-buttons">
-          <button id="verify-model-no" class="modal-btn">No</button>
+          <button id="verify-model-no" data-dialog-cancel class="modal-btn">No</button>
           <button id="verify-model-yes" class="modal-btn modal-btn-primary">
             Yes
           </button>
@@ -1620,19 +1623,20 @@
 
     <!-- Report icon: the selected models do not cover the whole conversation -->
     <div id="coverage-modal" class="modal-overlay" hidden>
-      <div class="modal" role="dialog" aria-modal="true">
-        <div class="modal-text">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Conversation model coverage" aria-describedby="coverage-text">
+        <div class="modal-text" id="coverage-text">
           Model unavailable during entire conversation dates.
         </div>
         <div class="modal-buttons">
           <button id="coverage-dismiss" class="modal-btn">Dismiss</button>
-          <button id="coverage-okay" class="modal-btn modal-btn-primary">
+          <button id="coverage-okay" data-dialog-cancel data-dialog-initial-focus class="modal-btn modal-btn-primary">
             Okay
           </button>
         </div>
       </div>
     </div>
 
+    <script src="/static/accessibility.js"></script>
     <script src="/static/gizmos.js"></script>
     <script src="/static/app.js"></script>
     <!-- Labeling feature modules: loaded after app.js, whose shared state and

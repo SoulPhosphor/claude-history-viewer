@@ -389,21 +389,24 @@ const bookmarksHubBtn = $("bookmarks-hub-btn");
 const bookmarksHubMenu = $("bookmarks-hub-menu");
 
 function positionBookmarksHubMenu() {
+  const inset = themePixels("--popover-safe-inset");
+  const gap = themePixels("--popover-menu-gap");
   const r = bookmarksHubBtn.getBoundingClientRect();
   bookmarksHubMenu.hidden = false;
   const mw = bookmarksHubMenu.offsetWidth;
   const mh = bookmarksHubMenu.offsetHeight;
   let left = r.left;
-  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
-  if (left < 8) left = 8;
-  let top = r.top - mh - 6;
-  if (top < 8) top = r.bottom + 6;
+  if (left + mw > window.innerWidth - inset) left = window.innerWidth - mw - inset;
+  if (left < inset) left = inset;
+  let top = r.top - mh - gap;
+  if (top < inset) top = r.bottom + gap;
   bookmarksHubMenu.style.left = `${left}px`;
   bookmarksHubMenu.style.top = `${top}px`;
 }
 
 function openBookmarksHubMenu() {
   positionBookmarksHubMenu();
+  prepareActionMenu(bookmarksHubMenu, bookmarksHubBtn, closeBookmarksHubMenu);
   bookmarksHubBtn.setAttribute("aria-expanded", "true");
   document.addEventListener("mousedown", onBookmarksHubOutside, true);
   document.addEventListener("keydown", onBookmarksHubKey, true);
@@ -411,6 +414,7 @@ function openBookmarksHubMenu() {
 
 function closeBookmarksHubMenu() {
   if (!bookmarksHubMenu) return;
+  restoreActionMenuFocus(bookmarksHubMenu);
   bookmarksHubMenu.hidden = true;
   bookmarksHubBtn?.setAttribute("aria-expanded", "false");
   document.removeEventListener("mousedown", onBookmarksHubOutside, true);
