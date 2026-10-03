@@ -54,10 +54,11 @@ def _static_signature() -> str:
     import hashlib
     static_dir = Path(__file__).resolve().parent / "static"
     h = hashlib.sha256()
-    for name in ("index.html", "app.js", "style.css", "settings.css",
+    for name in ("index.html", "app.js", "accessibility.js", "theme.css", "style.css", "settings.css",
                  "advanced_search.js", "advanced_search.css",
                  "labels_screen.js", "bulk_labels.js", "snapshots.js",
-                 "gizmos.js", "bookmarks.js", "bookmarks_hub.js", "notes.js"):
+                 "gizmos.js", "bookmarks.js", "bookmarks_hub.js", "notes.js",
+                 "summary.js", "summary_editor_core.js"):
         try:
             h.update((static_dir / name).read_bytes())
         except OSError:
@@ -1593,7 +1594,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/static/") and path.endswith((".js", ".css")):
             # Feature modules split out of app.js (labels_screen.js,
             # bulk_labels.js, snapshots.js, and any future ones) plus split
-            # stylesheets (settings.css) live in the static dir. Restrict to a
+            # stylesheets (theme.css, settings.css) live in the static dir. Restrict to a
             # flat filename so this can never traverse outside it.
             name = urllib.parse.unquote(path[len("/static/"):])
             if re.fullmatch(r"[\w.-]+\.(?:js|css)", name):

@@ -1,0 +1,689 @@
+/* Theme values: the single source of truth for the live app's appearance.
+   Loaded before component CSS. Defaults preserve the existing appearance.
+   See STYLE_GUIDE.md for roles, component choices, dynamic exceptions, and QA.
+   A future theme overrides these variables; it does not replace page rules. */
+:root {
+  /* Shared scale and roles. Typography is rem-based (16px browser default).
+     Font sizes with em/rem suffixes are relative document/section sizes.
+     Space, size, radius, stroke, opacity, and duration suffixes record legacy
+     values so this refactor does not silently normalize different components. */
+  /* Colour roles and shadows. */
+  --attachment-resolved-bg: #f0fdf4;
+  --attachment-unavailable-color: #d97706;
+  --compare-chatgpt-default: #4169e1;
+  --compare-claude-default: #2e7d32;
+  --error-text: #b3261e;
+  --import-provider-chatgpt: #10a37f;
+  --import-provider-claude: #b8622f;
+  --label-fallback-color: #888888;
+  --label-new-color: #4169e1;
+  --lightbox-backdrop: rgba(0, 0, 0, 0.75);
+  --lightbox-caption-color: rgba(255, 255, 255, 0.8);
+  --lightbox-close-bg: rgba(255, 255, 255, 0.15);
+  --media-surface-sheen: rgba(255, 255, 255, 0.01);
+  --modal-backdrop: rgba(0, 0, 0, 0.35);
+  --model-warning-icon: #000;
+  --on-accent: #fff;
+  --search-current-bg: color-mix(in srgb, var(--accent) 6%, transparent);
+  --search-flash-mid-bg: color-mix(in srgb, var(--accent) 12%, transparent);
+  --search-flash-start-bg: color-mix(in srgb, var(--accent) 25%, transparent);
+  --search-match-border: color-mix(in srgb, var(--accent) 35%, transparent);
+  --search-term-bg: #ffe066;
+  --search-user-hit-bg: rgba(0, 0, 0, 0.015);
+  --settings-color-label-min-width: 90px;
+  --shadow-hairline: 0 1px 0 rgba(0, 0, 0, 0.03);
+  --shadow-menu: 0 8px 28px rgba(0, 0, 0, 0.16);
+  --shadow-modal: 0 16px 48px rgba(0, 0, 0, 0.25);
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.15);
+  --summary-palette-blue: #c9e7ff;
+  --summary-palette-default: #fff3a3;
+  --summary-palette-green: #c9f7c5;
+  --summary-palette-purple: #f5c9ff;
+  --tabs-bg: #f6f3ee;
+
+  /* Font families and type scale. */
+  --font-file-code: "SF Mono", ui-monospace, Consolas, monospace;
+  --font-identifier: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-message-code: "SF Mono", ui-monospace, "Cascadia Code", Consolas, monospace;
+  --font-size-0-68rem: 0.68rem;
+  --font-size-0-72rem: 0.72rem;
+  --font-size-0-75rem: 0.75rem;
+  --font-size-0-78rem: 0.78rem;
+  --font-size-0-7em: 0.7em;
+  --font-size-0-82em: 0.82em;
+  --font-size-0-82rem: 0.82rem;
+  --font-size-0-85em: 0.85em;
+  --font-size-0-85rem: 0.85rem;
+  --font-size-0-87em: 0.87em;
+  --font-size-0-88rem: 0.88rem;
+  --font-size-0-8rem: 0.8rem;
+  --font-size-0-92em: 0.92em;
+  --font-size-0-95rem: 0.95rem;
+  --font-size-0-9rem: 0.9rem;
+  --font-size-1-08em: 1.08em;
+  --font-size-1-2em: 1.2em;
+  --font-size-1-35em: 1.35em;
+  --font-size-1-3rem: 1.3rem;
+  --font-size-10-5px: 0.65625rem;
+  --font-size-10px: 0.625rem;
+  --font-size-11-5px: 0.71875rem;
+  --font-size-11px: 0.6875rem;
+  --font-size-12-5px: 0.78125rem;
+  --font-size-12px: 0.75rem;
+  --font-size-13-5px: 0.84375rem;
+  --font-size-13px: 0.8125rem;
+  --font-size-14px: 0.875rem;
+  --font-size-15px: 0.9375rem;
+  --font-size-16px: 1rem;
+  --font-size-17px: 1.0625rem;
+  --font-size-18px: 1.125rem;
+  --font-size-1rem: 1rem;
+  --font-size-9px: 0.5625rem;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --line-height-1-2: 1.2;
+  --line-height-1-3: 1.3;
+  --line-height-1-35: 1.35;
+  --line-height-1-4: 1.4;
+  --line-height-1-45: 1.45;
+  --line-height-1-5: 1.5;
+  --line-height-1-6: 1.6;
+  --line-height-1-65: 1.65;
+  --line-height-1-7: 1.7;
+  --line-height-1-8: 1.8;
+  --weight-bold: 700;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+
+  /* Spacing scale. */
+  --space--1px: -1px;
+  --space--6px: -6px;
+  --space-0-1em: 0.1em;
+  --space-0-2em: 0.2em;
+  --space-0-35em: 0.35em;
+  --space-0-3em: 0.3em;
+  --space-0-4em: 0.4em;
+  --space-0-6em: 0.6em;
+  --space-0-75em: 0.75em;
+  --space-0-8em: 0.8em;
+  --space-1-1em: 1.1em;
+  --space-1-2em: 1.2em;
+  --space-1-4em: 1.4em;
+  --space-1-5em: 1.5em;
+  --space-10px: 10px;
+  --space-11px: 11px;
+  --space-12px: 12px;
+  --space-13px: 13px;
+  --space-14px: 14px;
+  --space-15px: 15px;
+  --space-16px: 16px;
+  --space-18px: 18px;
+  --space-1em: 1em;
+  --space-1px: 1px;
+  --space-20px: 20px;
+  --space-22px: 22px;
+  --space-24px: 24px;
+  --space-26px: 26px;
+  --space-28px: 28px;
+  --space-2px: 2px;
+  --space-32px: 32px;
+  --space-34px: 34px;
+  --space-38px: 38px;
+  --space-3px: 3px;
+  --space-40px: 40px;
+  --space-48px: 48px;
+  --space-4px: 4px;
+  --space-5px: 5px;
+  --space-60px: 60px;
+  --space-6px: 6px;
+  --space-7px: 7px;
+  --space-8px: 8px;
+  --space-9px: 9px;
+
+  /* Control and icon size scale. */
+  --size-10px: 10px;
+  --size-12px: 12px;
+  --size-15px: 15px;
+  --size-16px: 16px;
+  --size-17px: 17px;
+  --size-18px: 18px;
+  --size-1px: 1px;
+  --size-20px: 20px;
+  --size-22px: 22px;
+  --size-24px: 24px;
+  --size-26px: 26px;
+  --size-28px: 28px;
+  --size-30px: 30px;
+  --size-32px: 32px;
+  --size-38px: 38px;
+  --size-40px: 40px;
+  --size-44px: 44px;
+  --size-48px: 48px;
+  --size-4px: 4px;
+  --size-64px: 64px;
+  --size-6px: 6px;
+  --size-7px: 7px;
+  --size-8px: 8px;
+
+  /* Corners and borders. */
+  --outline-inset: -2px;
+  --radius-10px: 10px;
+  --radius-12px: 12px;
+  --radius-14px: 14px;
+  --radius-18px: 18px;
+  --radius-2px: 2px;
+  --radius-3px: 3px;
+  --radius-4px: 4px;
+  --radius-5px: 5px;
+  --radius-6px: 6px;
+  --radius-7px: 7px;
+  --radius-8px: 8px;
+  --radius-pill: 999px;
+  --stroke-1px: 1px;
+  --stroke-2px: 2px;
+  --stroke-3px: 3px;
+
+  /* Motion and opacity. */
+  --duration-0-12s: 0.12s;
+  --duration-0-14s: 0.14s;
+  --duration-0-15s: 0.15s;
+  --duration-0-1s: 0.1s;
+  --duration-0-2s: 0.2s;
+  --duration-0-8s: 0.8s;
+  --duration-2-5s: 2.5s;
+  --opacity-0-3: 0.3;
+  --opacity-0-35: 0.35;
+  --opacity-0-4: 0.4;
+  --opacity-0-45: 0.45;
+  --opacity-0-5: 0.5;
+  --opacity-0-55: 0.55;
+  --opacity-0-6: 0.6;
+  --opacity-0-65: 0.65;
+  --opacity-0-7: 0.7;
+
+  /* Component dimensions and placement. */
+  --advanced-recent-list-max-height: 78px;
+  --advanced-saved-list-max-height: 130px;
+  --advanced-segmented-width: 240px;
+  --advanced-toolbar-chip-max-width: 160px;
+  --artifact-chip-max-width: 260px;
+  --artifact-panel-min-width: 280px;
+  --artifact-panel-width: 420px;
+  --attachment-context-max-width: 320px;
+  --bulk-chip-row-label-min-width: 110px;
+  --bulk-row-input-type-number-width: 84px;
+  --bulk-row-input-type-text-min-width: 180px;
+  --bulk-row-label-first-child-min-width: 110px;
+  --bulk-run-batch-input-width: 84px;
+  --content-detail-max-width: 560px;
+  --content-max-width: 760px;
+  --conv-item-menu-min-width: 150px;
+  --file-chip-max-width: 280px;
+  --file-panel-min-width: 240px;
+  --file-panel-width: 360px;
+  --gb-search-basis: 260px;
+  --gb-search-min-width: 220px;
+  --gizmo-name-input-min-width: 160px;
+  --img-lightbox-content-img-max-height: 82vh;
+  --img-lightbox-content-img-max-width: 88vw;
+  --img-lightbox-content-max-height: 90vh;
+  --img-lightbox-content-max-width: 90vw;
+  --img-lightbox-name-max-width: 80vw;
+  --import-deleted-setting-select-max-width: 460px;
+  --import-stat-min-width: 84px;
+  --inline-image-max-height: 480px;
+  --label-add-name-min-width: 160px;
+  --labels-section-max-width: 620px;
+  --labels-setting-label-min-width: 110px;
+  --length--0-15em: -0.15em;
+  --length--2px: -2px;
+  --length--3px: -3px;
+  --length-0-01em: 0.01em;
+  --length-0-02em: 0.02em;
+  --length-0-03em: 0.03em;
+  --length-0-04em: 0.04em;
+  --length-2px: 2px;
+  --length-4px: 4px;
+  --length-8px: 8px;
+  --lightbox-close-offset: -36px;
+  --media-grid-min-column: 180px;
+  --menu-min-width: 200px;
+  --modal-width: 340px;
+  --model-select-add-width: 2.9em;
+  --model-select-max-width: 240px;
+  --model-table-date-column-width: 170px;
+  --offset-negative: -1px;
+  --offset-negative: -4px;
+  --popover-safe-inset: 8px;
+  --popover-gap: 4px;
+  --popover-menu-gap: 6px;
+  --search-nav-term-max-width: 240px;
+  --setting-sidebar-width-min-width: 120px;
+  --setting-sidebar-width-number-width: 72px;
+  --side-panel-gap: 20px;
+  --side-panel-max-width: 700px;
+  --sidebar-width-default: 300px;
+  --sidebar-width-max: 520px;
+  --sidebar-width-min: 220px;
+  --snapshot-name-min-width: 180px;
+  --summary-highlight-menu-min-width: 220px;
+  --summary-textarea-condensed-max-height: 40vh;
+  --summary-textarea-condensed-min-height: 1.5em;
+  --summary-textarea-main-min-height: 200px;
+  --table-text-cell-min-width: 80px;
+  --tag-add-input-width: 110px;
+  --tag-chip-name-max-width: 160px;
+  --thread-dropdown-max-height: 340px;
+  --thread-dropdown-min-width: 190px;
+  --viewport-width: 100vw;
+  --model-warning-icon-height: 1em;
+  --model-warning-icon-width: 1em;
+  /* Responsive limits: layout adapts to the available panel width, not only
+     the viewport. Narrow screens keep the existing multi-pane workflow with
+     horizontal workspace scrolling when all open panes cannot fit. */
+  --workspace-min-width: 240px;
+  --focus-width: 2px;
+  --focus-offset: 2px;
+  /* Focus appears only during keyboard use. Reuse the readable foreground
+     instead of the legacy accent, which is below 3:1 on light surfaces. */
+  --focus-color: var(--text);
+  --reduced-motion-duration: 0.01ms;
+  --form-input-min-width: 160px;
+  --content-padding-compact: 12px;
+  --modal-viewport-gap: 40px;
+  --side-panel-compact-width: 100%;
+
+  /* Existing component APIs, kept stable for feature code and preferences. */
+  --sidebar-w: var(--sidebar-width-default);
+    --sidebar-collapsed-w: 56px;
+    --bg: #faf9f6;
+    --sidebar-bg: #f0ede8;
+    --hover: #e8e3db;
+    --active-bg: #e0d9cf;
+    --active-line: var(--accent);
+    --border: #e0d8cf;
+    --text: #1a1817;
+    --muted: #7c6f67;
+    --accent: #d97757;
+    /* Simple search panel and its footer controls. */
+    --simple-search-panel-bg: var(--sidebar-bg);
+    --simple-search-panel-border: var(--border);
+    --simple-search-panel-padding: 10px 12px;
+    --simple-search-panel-gap: 7px;
+    --simple-search-input-bg: var(--bg);
+    --simple-search-input-border: var(--border);
+    --simple-search-input-focus-border: var(--accent);
+    --simple-search-input-color: var(--text);
+    --simple-search-placeholder-color: var(--muted);
+    --simple-search-icon-color: var(--muted);
+    --simple-search-icon-size: 18px;
+    --simple-search-clear-size: 16px;
+    --simple-search-clear-hit-size: 26px;
+    --simple-search-manage-size: 21px;
+    --simple-search-control-size: 34px;
+    --simple-search-radius: 6px;
+    --simple-search-font-size: var(--font-size-13px);
+    --simple-search-input-padding: 7px 34px 7px 32px;
+    --simple-search-leading-icon-inset: 9px;
+    --simple-search-clear-inset: 5px;
+    --simple-search-button-hover-bg: var(--hover);
+    --simple-search-button-active-color: var(--text);
+    /* Compare-tab provider colours; overridden at runtime from Settings. */
+    --compare-chatgpt: var(--compare-chatgpt-default);
+    --compare-claude: var(--compare-claude-default);
+    --user-label: #b55a2e;
+    --code-bg: #eeeae3;
+    --user-bubble: #ede9e1;
+    --message-time-size: var(--font-size-11px);
+    --message-time-color: var(--muted);
+    --tag-row-font-size: var(--font-size-11-5px);
+    --tag-row-gap: 6px;
+    --mark-bg: color-mix(in srgb, var(--accent) 18%, transparent);
+    /* Warning copy (e.g. "enter labels or none will be applied"). Themable. */
+    --warning-text: #c0392b;
+    --warning-weight: 700;
+    /* Label squares. One set of variables drives every square, wherever it is
+       drawn — beside a title, under the date/messages line, or in the thread
+       header — so retheming or resizing happens in one place. */
+    --label-square-size: 14px;
+    --label-square-size-header: 16px;
+    --label-square-radius: 3px;
+    /* Space between a label's colour square and its name in pick lists. */
+    --label-pick-gap: 0.4em;
+    /* Unnamed labels show a colour bar; in a list it runs to the end of the
+       longest name, and is never narrower than this. */
+    --label-pick-bar-w: 4ch;
+    --label-pick-bar-h: 12px;
+    --label-choice-menu-max-h: 320px;
+    --label-square-blank-border: var(--muted);
+    /* Gap between a square and its own name. */
+    --label-chip-gap: 5px;
+    /* Gap between neighbouring squares — wide enough that one is hard to
+       mis-click for the next. */
+    --label-group-gap: 10px;
+    --label-text-size: var(--font-size-11px);
+    --label-text-color: var(--muted);
+    --label-text-max: 110px;
+    /* Summary panel */
+    --summary-body-padding: 24px 40px;
+    --summary-editor-gap: 8px;
+    --summary-toolbar-gap: 6px;
+    --summary-tool-hit-size: 30px;
+    --summary-editor-min-height: 240px;
+    --summary-swatch-size: 26px;
+    --summary-section-gap: 28px;
+    --summary-section-title-size: var(--font-size-13px);
+    --summary-section-title-weight: 600;
+    --summary-section-title-color: var(--text);
+    --summary-textarea-bg: var(--sidebar-bg);
+    --summary-textarea-border: var(--border);
+    --summary-textarea-focus-border: var(--accent);
+    --summary-textarea-color: var(--text);
+    --summary-textarea-font-size: var(--font-size-14px);
+    --summary-textarea-radius: 8px;
+    --summary-textarea-padding: 10px 12px;
+    --summary-btn-font-size: var(--font-size-12px);
+    --summary-btn-padding: 5px 14px;
+    --summary-btn-radius: 6px;
+    --summary-btn-bg: var(--bg);
+    --summary-btn-border: var(--border);
+    --summary-btn-color: var(--text);
+    --summary-btn-hover-bg: var(--hover);
+    --summary-btn-primary-bg: var(--accent);
+    --summary-btn-primary-border: var(--accent);
+    --summary-btn-primary-color: var(--on-accent);
+    --summary-btn-primary-hover-bg: var(--user-label);
+    --summary-btn-disabled-opacity: 0.4;
+    --summary-hint-font-size: var(--font-size-10px);
+    --summary-hint-color: var(--muted);
+    --summary-hint-hover-color: var(--accent);
+    --summary-popup-bg: var(--bg);
+    --summary-popup-border: var(--border);
+    --summary-popup-shadow: var(--shadow-popover);
+    --summary-popup-radius: 8px;
+    --summary-popup-max-w: 320px;
+    --summary-popup-max-h: 200px;
+    --summary-popup-padding: 10px 12px;
+    --summary-popup-font-size: var(--font-size-13px);
+    --summary-popup-color: var(--text);
+    --summary-toggle-icon-size: 22px;
+    /* Titlebar Book (summary) button + collapse chevron sizing. Icon size is the
+       visible glyph; hit size is the clickable target around it. */
+    --summary-toggle-hit-size: 32px;
+    /* Notes screen/navigation and temporary sidebar editor. */
+    --notes-toggle-icon-size: var(--summary-toggle-icon-size);
+    --notes-toggle-hit-size: var(--summary-toggle-hit-size);
+    --notes-panel-bg: var(--sidebar-bg);
+    --notes-panel-padding: 12px;
+    --notes-panel-gap: 18px;
+    --notes-panel-title-size: var(--font-size-16px);
+    --notes-panel-title-weight: 600;
+    --notes-panel-heading-size: var(--font-size-12px);
+    --notes-panel-heading-weight: 600;
+    --notes-panel-revert-size: var(--font-size-10px);
+    --notes-panel-revert-color: var(--accent);
+    --notes-panel-textarea-bg: var(--bg);
+    --notes-panel-textarea-border: var(--border);
+    --notes-panel-textarea-focus-border: var(--accent);
+    --notes-panel-textarea-radius: 7px;
+    --notes-panel-textarea-padding: 8px 10px;
+    --notes-panel-textarea-min-height: 128px;
+    --notes-panel-textarea-size: var(--font-size-13px);
+    --notes-panel-close-color: var(--muted);
+    --notes-panel-close-size: 16px;
+    --notes-panel-control-radius: 4px;
+    --notes-panel-field-gap: 6px;
+    --notes-panel-heading-gap: 8px;
+    --notes-panel-line-height: 1.5;
+    --notes-panel-disabled-opacity: 0.55;
+    --notes-panel-status-bg: var(--bg);
+    --notes-panel-status-border: var(--accent);
+    --notes-panel-status-radius: 6px;
+    --notes-panel-status-padding: 8px;
+    --notes-panel-status-size: var(--font-size-11px);
+    --notes-panel-status-gap: 8px;
+    --notes-full-min-height: 150px;
+    --thread-chevron-size: 20px;
+    --thread-chevron-hit-size: 32px;
+    --thread-chevron-stroke: 2;
+    /* Summary author labels */
+    --summary-author-font-size: var(--font-size-11px);
+    --summary-author-color: var(--muted);
+    --summary-author-personal-color: var(--accent);
+    --summary-author-ai-color: #8b5cf6;
+    --summary-author-collaborative-color: #f59e0b;
+    /* ── Bookmarks ────────────────────────────────────────────────────────────
+       One set of variables drives every bookmark surface: the per-message icon,
+       the title beside the date/time, the header control, the compact bar and
+       the sidebar panel. Retheme or resize any of it from here. */
+    --bookmark-icon-size: 16px;
+    --bookmark-icon-hit-size: 26px;
+    --bookmark-nav-icon-size: 20px;
+    --bookmark-nav-hit-size: 32px;
+    /* Idle icon colour, and the colour once a message is bookmarked (the star). */
+    --bookmark-icon-color: var(--muted);
+    --bookmark-icon-hover-color: var(--accent);
+    --bookmark-active-color: var(--accent);
+    --bookmark-title-size: var(--message-time-size);
+    --bookmark-title-color: var(--accent);
+    --bookmark-title-empty-color: var(--muted);
+    --bookmark-title-gap: 8px;
+    --bookmark-title-max: 240px;
+    --bookmark-input-bg: var(--bg);
+    --bookmark-input-border: var(--border);
+    --bookmark-input-focus-border: var(--accent);
+    --bookmark-input-color: var(--text);
+    /* Little "name this bookmark" dialog popover. */
+    --bookmark-dialog-bg: var(--bg);
+    --bookmark-dialog-border: var(--border);
+    --bookmark-dialog-shadow: var(--shadow-popover);
+    --bookmark-dialog-radius: 8px;
+    --bookmark-dialog-padding: 8px;
+    --bookmark-dialog-width: 220px;
+    --bookmark-dialog-fallback-height: 44px;
+    /* Compact bar (2–4 bookmarks) beneath the chat header. */
+    --bookmark-bar-bg: var(--sidebar-bg);
+    --bookmark-bar-border: var(--border);
+    --bookmark-bar-padding: 6px 10px;
+    --bookmark-bar-gap: 14px;
+    --bookmark-bar-link-size: var(--font-size-12-5px);
+    --bookmark-bar-link-color: var(--accent);
+    --bookmark-bar-link-max: 180px;
+    --bookmark-bar-close-color: var(--muted);
+    /* Sidebar panel (5+ bookmarks). */
+    --bookmark-panel-bg: var(--sidebar-bg);
+    --bookmark-panel-padding: 12px;
+    --bookmark-panel-title-size: var(--font-size-14px);
+    --bookmark-panel-title-weight: 600;
+    --bookmark-panel-title-color: var(--text);
+    --bookmark-panel-item-size: var(--font-size-13px);
+    --bookmark-panel-item-color: var(--accent);
+    --bookmark-panel-item-gap: 1.4em;
+    --bookmark-panel-close-color: var(--muted);
+    /* Chat-header label placement. With "Show Labels in Chat Header" on, the
+       header squares render as their own line under the title; these variables
+       keep that row lined up with the title and the date/messages line below. */
+    --header-label-row-gap: 4px;
+    --thread-title-square-margin: 2px;
+    /* Settings page switches. One set of variables drives every switch so they
+       all look and move alike and the whole look rethemes in one place. */
+    --switch-width: 44px;
+    --switch-height: 24px;
+    --switch-padding: 2px;
+    --switch-radius: 999px;
+    --switch-border-width: 1px;
+    --switch-off-bg: #cfc8be;
+    --switch-off-border: var(--border);
+    --switch-on-bg: var(--accent);
+    --switch-on-border: var(--accent);
+    --switch-thumb-size: 18px;
+    --switch-thumb-color: var(--on-accent);
+    --switch-thumb-off-color: var(--on-accent);
+    --switch-thumb-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.25),
+      inset 0 -1px 1px rgba(0, 0, 0, 0.12),
+      inset 0 1px 1px rgba(255, 255, 255, 0.4);
+    --switch-track-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.18);
+    --switch-focus-ring: var(--focus-color);
+    --switch-focus-width: 2px;
+    --switch-focus-offset: 2px;
+    --switch-transition: 0.18s ease;
+    /* Settings page layout: the text column has a preferred width so every
+       switch on the page starts at the same distance from the left edge no
+       matter how long its label is. */
+    --settings-text-min-width: 300px;
+    --settings-setting-gap: 18px;
+    --settings-setting-gap-y: 14px;
+    --settings-setting-title-weight: 600;
+    --settings-setting-subtext-color: var(--muted);
+    --settings-setting-subtext-size: var(--font-size-0-85rem);
+    --settings-setting-subtext-gap: 2px;
+    --settings-section-gap: 18px;
+    --settings-section-title-gap: 12px;
+    /* Settings content + category box chrome, so the whole page rethemes and
+       resizes from here. */
+    --settings-content-padding: 20px 28px 40px;
+    --settings-section-max-width: 520px;
+    --settings-section-border-width: 1px;
+    --settings-section-border-color: var(--border);
+    --settings-section-radius: 8px;
+    --settings-section-padding: 16px 18px;
+    --settings-section-title-size: var(--font-size-1rem);
+    --settings-section-hint-gap: 14px;
+    --settings-section-hint-size: var(--font-size-0-85rem);
+    /* About page and update control. */
+    --about-content-padding: 20px 28px 40px;
+    --about-update-gap: 12px;
+    --about-button-border: var(--accent);
+    --about-button-bg: var(--accent);
+    --about-button-color: var(--on-accent);
+    --about-button-radius: 6px;
+    --about-button-padding: 8px 18px;
+    --about-button-disabled-opacity: 0.6;
+    --update-status-gap: 8px;
+    --update-status-size: var(--font-size-0-9rem);
+    --update-status-color: var(--muted);
+    --update-error-color: var(--error-text);
+    --update-spinner-size: 16px;
+    --update-spinner-width: 2px;
+    --update-spinner-track: var(--border);
+    --update-spinner-accent: var(--accent);
+    --update-spinner-speed: 0.8s;
+  
+  --gb-toolbar-padding: 14px 40px;
+    --gb-toolbar-gap: 14px;
+    --gb-toolbar-border: var(--border);
+    --gb-control-font-size: var(--font-size-12-5px);
+    --gb-control-label-color: var(--muted);
+    --gb-field-bg: var(--bg);
+    --gb-field-border: var(--border);
+    --gb-field-focus-border: var(--accent);
+    --gb-field-radius: 8px;
+    --gb-field-height: 34px;
+    --gb-field-color: var(--text);
+    --gb-list-padding: 10px 40px 64px;
+    /* Paragraph space between one conversation group and the next. Kept well
+       larger than --gb-inner-gap below so a group reads as one block while
+       neighbouring conversations stay clearly apart. */
+    --gb-conv-gap: 22px;
+    /* Titles sit a step above the base 15px text so they lead each group. */
+    --gb-title-size: var(--font-size-17px);
+    --gb-title-weight: 600;
+    --gb-title-color: var(--text);
+    --gb-title-hover-color: var(--accent);
+    --gb-head-gap: 2px;
+    --gb-chevron-size: 15px;
+    --gb-chevron-color: var(--muted);
+    --gb-chevron-hover-color: var(--text);
+    /* Indent of the bookmark list under its title, and the gentle gap that
+       separates the bookmarks from their title and from each other — just enough
+       to breathe for readability, never a full line break, so the title and its
+       bookmarks still read as one group. Nudge this to taste. */
+    --gb-bookmarks-indent: 24px;
+    --gb-inner-gap: 8px;
+    /* Distance from a title down to its first bookmark. Kept smaller than the
+       between-bookmark gap so the first bookmark hugs its title and the group
+       reads as one. */
+    --gb-title-gap: 3px;
+    /* Bookmarks never drop below the base 15px body text, and stay smaller than
+       the title above. */
+    --gb-bookmark-size: var(--font-size-15px);
+    --gb-bookmark-color: var(--muted);
+    --gb-bookmark-hover-color: var(--accent);
+    --gb-bookmark-radius: 5px;
+    --gb-empty-color: var(--muted);
+    --gb-error-color: var(--error-text);
+    --gb-error-gap: 10px;
+    --gb-retry-bg: var(--bg);
+    --gb-retry-border: var(--border);
+    --gb-retry-color: var(--text);
+    --gb-retry-radius: 6px;
+    --gb-retry-padding: 5px 10px;
+  
+  --advanced-panel-w: clamp(332px, 27vw, 390px);
+    --advanced-bg: var(--sidebar-bg);
+    --advanced-surface: var(--bg);
+    --advanced-surface-raised: var(--hover);
+    --advanced-border: var(--border);
+    --advanced-text: var(--text);
+    --advanced-muted: var(--muted);
+    --advanced-accent: var(--accent);
+    --advanced-exclude: var(--warning-text);
+    /* Option chips sit inside a bordered box, as in the concept design. */
+    --advanced-chip-box-bg: var(--advanced-bg);
+    --advanced-chip-box-border: var(--advanced-border);
+    --advanced-chip-box-radius: 6px;
+    --advanced-chip-box-padding: 6px 8px;
+    --advanced-chip-box-min-h: 32px;
+    /* Line under each heading inside a section, as in the concept design. */
+    --advanced-group-title-rule: var(--advanced-border);
+    --advanced-group-title-rule-gap: 4px;
+    /* Thin line between chip groups, as in the concept design. */
+    --advanced-chip-divider-color: var(--advanced-border);
+    --advanced-chip-divider-h: 16px;
+    /* Date choices from the concept design. */
+    --advanced-date-gap: 8px;
+    --advanced-date-sep-color: var(--advanced-muted);
+    --advanced-date-note-style: italic;
+    /* Section icons from the concept design. */
+    --advanced-section-icon-size: 14px;
+    --advanced-section-icon-color: var(--advanced-muted);
+    --advanced-section-icon-gap: 8px;
+    /* Active-filter count beside a section title, as in the concept design. */
+    --advanced-badge-bg: var(--advanced-accent);
+    --advanced-badge-text: var(--advanced-accent-text);
+    --advanced-badge-font: var(--font-size-10px);
+    --advanced-badge-weight: 600;
+    --advanced-badge-padding: 1px 6px;
+    --advanced-badge-radius: 10px;
+    --advanced-badge-min-w: 18px;
+    --advanced-badge-gap: 8px;
+    --advanced-accent-text: var(--on-accent);
+    --advanced-radius: 9px;
+    --advanced-pill-radius: 999px;
+    --advanced-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+    --advanced-panel-padding: 14px;
+    --advanced-section-gap: 12px;
+    --advanced-control-h: 34px;
+    --advanced-icon-size: 19px;
+    --advanced-font-small: var(--font-size-11px);
+    --advanced-font-control: var(--font-size-12px);
+    --advanced-filter-header-h: 38px;
+    --advanced-results-default-h: 40%;
+    --advanced-results-min-h: 49px;
+    --advanced-results-top-clearance: 48px;
+    --advanced-results-max-h: calc(100% - 1px);
+    --advanced-result-padding: 12px 14px;
+    --advanced-transition: 140ms ease;
+    --advanced-provider-chatgpt: var(--compare-chatgpt);
+    --advanced-provider-claude: var(--compare-claude);
+  
+  
+  /* Narrow desktop layout retains the previous search-panel width. */
+  --advanced-panel-w-compact: 326px;
+}
+
+/* Breakpoint literals stay in media queries: CSS variables cannot be used in
+   media conditions. Keep this breakpoint aligned with advanced_search.css. */
+@media (max-width: 980px) {
+  :root { --advanced-panel-w: var(--advanced-panel-w-compact); }
+}

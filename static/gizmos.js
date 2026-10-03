@@ -51,14 +51,19 @@ function _gizmoConfirmRename(name, count) {
     modal.setAttribute("aria-modal", "true");
     const title = document.createElement("div");
     title.className = "modal-title";
+    title.id = "gizmo-rename-title";
     title.textContent = "Rename Custom GPT?";
+    modal.setAttribute("aria-labelledby", title.id);
     const text = document.createElement("div");
     text.className = "modal-text";
+    text.id = "gizmo-rename-description";
+    modal.setAttribute("aria-describedby", text.id);
     text.textContent = `This name will apply to all ${count} conversation${count === 1 ? "" : "s"} that have this Custom GPT ID.`;
     const buttons = document.createElement("div");
     buttons.className = "modal-buttons";
     const cancel = document.createElement("button");
     cancel.className = "modal-btn";
+    cancel.dataset.dialogCancel = "";
     cancel.textContent = "Cancel";
     const ok = document.createElement("button");
     ok.className = "modal-btn modal-btn-primary";
@@ -72,7 +77,7 @@ function _gizmoConfirmRename(name, count) {
     ok.addEventListener("click", () => finish(true));
     overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) finish(false); });
     overlay.addEventListener("keydown", (e) => { if (e.key === "Escape") finish(false); });
-    setTimeout(() => ok.focus(), 0);
+    setTimeout(() => cancel.focus(), 0);
   });
 }
 
@@ -81,6 +86,12 @@ function _gizmoNameEl(g, onSaved) {
   el.className = "gizmo-name";
   el.textContent = g.display_name || g.gizmo_id;
   el.title = g.display_name ? "Double-click to rename this Custom GPT" : "Double-click to name this Custom GPT";
+  makeKeyboardAction(el, `Rename Custom GPT ${g.display_name || g.gizmo_id}`);
+  // Keep the existing double-click mouse action; Enter/Space also starts
+  // editing without making a single mouse click change the existing behaviour.
+  el.addEventListener("keydown", (event) => {
+    if (event.target === el && ["Enter", " "].includes(event.key)) _beginGizmoRename(el, g, onSaved);
+  });
   el.addEventListener("dblclick", () => _beginGizmoRename(el, g, onSaved));
   return el;
 }
@@ -90,6 +101,7 @@ function _beginGizmoRename(el, g, onSaved) {
   const input = document.createElement("input");
   input.className = "gizmo-name-input";
   input.type = "text";
+  input.setAttribute("aria-label", "Custom GPT name");
   input.maxLength = 120;
   input.value = g.display_name || "";
   const parent = el.parentNode;
@@ -98,10 +110,17 @@ function _beginGizmoRename(el, g, onSaved) {
   input.select();
   let settled = false;
   let pending = false;
+  const replaceEditor = () => {
+    if (!input.parentNode) return;
+    const retainFocus = document.activeElement === input;
+    const replacement = _gizmoNameEl(g, onSaved);
+    input.parentNode.replaceChild(replacement, input);
+    if (retainFocus) replacement.focus();
+  };
   const restore = () => {
     if (settled) return;
     settled = true;
-    if (input.parentNode) input.parentNode.replaceChild(_gizmoNameEl(g, onSaved), input);
+    replaceEditor();
   };
   const save = async () => {
     if (settled || pending) return;
@@ -115,7 +134,7 @@ function _beginGizmoRename(el, g, onSaved) {
     settled = true;
     const result = await apiRenameGizmo(g.gizmo_id, next);
     if (result.error) {
-      if (input.parentNode) input.parentNode.replaceChild(_gizmoNameEl(g, onSaved), input);
+      replaceEditor();
       return;
     }
     g.display_name = result.display_name || "";
