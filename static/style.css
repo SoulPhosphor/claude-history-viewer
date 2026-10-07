@@ -5516,15 +5516,6 @@ body.resizing-rows { cursor: row-resize; user-select: none; }
   #file-panel { width: min(var(--file-panel-width), 100vw); min-width: 0; }
 }
 
-/* A single keyboard-focus treatment makes controls with local outline resets
-   visible. !important is intentional: accessibility must survive those resets.
-   Settings switches draw the same treatment on their visible track instead. */
-:where(button, a, input, select, textarea, [tabindex], [contenteditable]):focus-visible {
-  outline: var(--focus-width) solid var(--focus-color) !important;
-  outline-offset: var(--focus-offset) !important;
-}
-.settings-switch input:focus-visible { outline: none !important; }
-
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: var(--reduced-motion-duration) !important;

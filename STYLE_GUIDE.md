@@ -7,7 +7,7 @@ This guide describes the **current live app**. The default colours and desktop a
 | File | Responsibility |
 | --- | --- |
 | `static/theme.css` | **Single source of appearance values.** Colours, typography, spacing, dimensions, borders, shadows, motion, and existing component variables. |
-| `static/style.css` | Shared reset, app layout, conversation rendering, feature screens, shared controls, runtime state classes, responsive content, keyboard focus, reduced motion. |
+| `static/style.css` | Shared reset, app layout, conversation rendering, feature screens, shared controls, runtime state classes, responsive content, reduced motion. |
 | `static/settings.css` | Settings rows, switches, About/update controls, and existing header/folder refinements. Uses `theme.css` values. |
 | `static/advanced_search.css` | Advanced filters, search history, results, and result sizing states. Uses `theme.css` values. |
 | `static/index.html` | Semantic markup and stylesheet links, in the order above. **No embedded `<style>` blocks or decorative `style` attributes.** |
@@ -67,7 +67,6 @@ Use a role, not a literal colour. Matching current colours do not imply matching
 | `--duration-*`, `--opacity-*` | Existing motion durations and opacity levels. |
 | `--content-max-width`, `--content-detail-max-width` | Reading widths for messages/cards and narrower detail content. |
 | Component dimension variables | Feature-specific widths, minimum heights, truncation limits, and form/table column dimensions. Use the component's semantic token when the dimension has a specific purpose. |
-| `--focus-*` | Global visible keyboard focus. Settings switches put focus on their visible track. |
 
 The scales preserve fractional sizes, different radii, spacing, and minimum heights. **Do not round values or make unlike components identical during a maintenance change.** If a new element needs independent adjustment, add a meaningful component variable that aliases the closest existing shared scale. Do not copy a raw value into a component rule or invent a theme-specific selector.
 
@@ -138,7 +137,7 @@ Content panels query their **available width**, so the layout responds when side
 
 Below a 760px viewport, the workspace can scroll horizontally to reach open panes. This preserves the existing multi-pane navigation; it is not a new mobile navigation design. Normal reading within a pane, forms, and controls should wrap; tables, code, and diagrams can scroll horizontally when preserving their structure matters.
 
-New controls need a semantic button/input and accessible name, keyboard access, visible focus, and a disabled/error state when applicable. New resizers need a keyboard alternative. Colours must retain readable contrast and must not be the only indicator of an error or selection. Honour reduced motion; use the shared focus/reduced-motion values. See `STYLE_REVIEW.md` for outstanding findings and retained differences.
+New controls need a semantic button/input and accessible name, keyboard access, and a disabled/error state when applicable. Do not add focus outlines or focus rings: the app has no global focus outline and no switch focus ring. New resizers need a keyboard alternative. Colours must retain readable contrast and must not be the only indicator of an error or selection. Honour reduced motion; use the shared reduced-motion values. See `STYLE_REVIEW.md` for outstanding findings and retained differences.
 
 Follow these existing accessibility patterns without adding decorative inline styles:
 
@@ -157,6 +156,6 @@ The preserved default palette has known contrast failures, recorded in `STYLE_RE
 
 1. Run `python -m unittest discover -s tests -q` and `node --check` on changed JS files.
 2. Run `python scripts/check_styles.py` to check centralization and variable references.
-3. Inspect representative pages and interaction states at ordinary desktop size and narrow content widths. Include expanded/collapsed sidebars, advanced results, Summary/Notes, label pickers, bookmarks, code/tables, previews, dialogs, and keyboard focus.
+3. Inspect representative pages and interaction states at ordinary desktop size and narrow content widths. Include expanded/collapsed sidebars, advanced results, Summary/Notes, label pickers, bookmarks, code/tables, previews, and dialogs.
 4. For a maintenance-only refactor, compare current defaults against the previous version. Preserve inconsistent legacy styling unless the user requested a visual change.
 5. For a future theme, override the roles/component variables centrally, check translucent/search/provider/overlay states as well as normal screens, and verify that saved content colours remain unchanged.

@@ -140,11 +140,6 @@
   );
   background: var(--switch-thumb-color);
 }
-/* Keyboard focus ring drawn on the track, keeping the real input hidden. */
-.settings-switch input:focus-visible + .settings-switch-track {
-  outline: var(--switch-focus-width) solid var(--switch-focus-ring);
-  outline-offset: var(--switch-focus-offset);
-}
 
 /* ── Chat-header label placement ─────────────────────────────────────────── */
 /* "Show Labels in Chat Header" on: the header squares sit on their own line

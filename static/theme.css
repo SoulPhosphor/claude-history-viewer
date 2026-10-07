@@ -289,11 +289,6 @@
      the viewport. Narrow screens keep the existing multi-pane workflow with
      horizontal workspace scrolling when all open panes cannot fit. */
   --workspace-min-width: 240px;
-  --focus-width: 2px;
-  --focus-offset: 2px;
-  /* Focus appears only during keyboard use. Reuse the readable foreground
-     instead of the legacy accent, which is below 3:1 on light surfaces. */
-  --focus-color: var(--text);
   --reduced-motion-duration: 0.01ms;
   --form-input-min-width: 160px;
   --content-padding-compact: 12px;
@@ -531,9 +526,6 @@
       inset 0 -1px 1px rgba(0, 0, 0, 0.12),
       inset 0 1px 1px rgba(255, 255, 255, 0.4);
     --switch-track-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.18);
-    --switch-focus-ring: var(--focus-color);
-    --switch-focus-width: 2px;
-    --switch-focus-offset: 2px;
     --switch-transition: 0.18s ease;
     /* Settings page layout: the text column has a preferred width so every
        switch on the page starts at the same distance from the left edge no
