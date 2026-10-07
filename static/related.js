@@ -146,7 +146,7 @@ async function relatedAdd(otherId) {
   if (!subject || !otherId || subject === otherId) return false;
   if (!(await apiLinkConversations(subject, otherId))) return false;
   _related.ids.add(otherId);
-  await reloadRelated();
+  await reloadRelated({ afterChange: true });
   return true;
 }
 
@@ -156,7 +156,7 @@ async function relatedRemove(otherId, subject = _related.convId) {
   if (!(await confirmUnlink())) return false;
   if (!(await apiUnlinkConversations(subject, otherId))) return false;
   _related.ids.delete(otherId);
-  await reloadRelated();
+  await reloadRelated({ afterChange: true });
   return true;
 }
 
@@ -175,7 +175,9 @@ async function loadRelatedFor(convId, title) {
   await reloadRelated();
 }
 
-async function reloadRelated() {
+// afterChange: the list is known to have changed (a link added or removed, a
+// row renamed or moved), so the rows on screen are stale if this fails.
+async function reloadRelated({ afterChange = false } = {}) {
   const convId = _related.convId;
   if (!convId) return;
   const token = ++_related.loadToken;
@@ -183,9 +185,11 @@ async function reloadRelated() {
   try {
     rows = await apiRelatedList(convId);
   } catch (_) {
-    // A new chat's list that fails to load says so instead of staying blank.
-    // A failed refresh of the same chat keeps the rows it already shows.
-    if (token === _related.loadToken && convId === _related.convId && _related.loading) {
+    // A new chat's list, or a list just changed, that fails to load says so
+    // instead of staying blank or stale. A plain refresh of the same chat
+    // keeps the rows it already shows.
+    const stale = _related.loading || afterChange;
+    if (token === _related.loadToken && convId === _related.convId && stale) {
       _related.loading = false;
       _related.loadFailed = true;
       renderRelatedPanel();
@@ -238,7 +242,7 @@ function renderRelatedPanel() {
     relatedForBtn.title = `Back to ${title}`;
   }
   relatedFindWrap.hidden = searching;
-  relatedSortRow.hidden = _related.rows.length < RELATED_SORT_MIN;
+  relatedSortRow.hidden = _related.loadFailed || _related.rows.length < RELATED_SORT_MIN;
   relatedSortEl.value = _related.sort;
 
   relatedListEl.innerHTML = "";
@@ -356,7 +360,7 @@ function onRelatedMenuOutside(e) {
 
 // After a row action: refresh this list and the sidebar lists it can touch.
 async function afterRelatedRowChange() {
-  await reloadRelated();
+  await reloadRelated({ afterChange: true });
   loadConversations(false);
   refreshPinnedList();
   loadFolders();
@@ -381,7 +385,7 @@ function openRelatedRowMenu(c, anchorBtn) {
       label: "Rename",
       fn: async () => {
         await renameConversation(c);
-        await reloadRelated();
+        await reloadRelated({ afterChange: true });
       },
     },
     {
