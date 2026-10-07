@@ -66,6 +66,8 @@ const _related = {
   searching: null,
   sort: "newest",
   loadToken: 0,
+  // True while a different chat's list is loading (rows are cleared).
+  loading: false,
 };
 let _relatedMenuEl = null;
 let _relatedSidebarWasCollapsed = null;
@@ -148,8 +150,7 @@ async function relatedAdd(otherId) {
 }
 
 // Remove a link after the warning (unless skipped for this session).
-async function relatedRemove(otherId) {
-  const subject = _related.convId;
+async function relatedRemove(otherId, subject = _related.convId) {
   if (!subject || !otherId) return false;
   if (!(await confirmUnlink())) return false;
   if (!(await apiUnlinkConversations(subject, otherId))) return false;
@@ -164,6 +165,11 @@ async function loadRelatedFor(convId, title) {
   _related.title = title || "";
   _related.rows = [];
   _related.ids = new Set();
+  // Clear the old chat's rows at once, so none of their menus act on the new
+  // chat while its list loads.
+  _related.loading = true;
+  closeRelatedRowMenu();
+  renderRelatedPanel();
   await reloadRelated();
 }
 
@@ -180,6 +186,7 @@ async function reloadRelated() {
   if (token !== _related.loadToken || convId !== _related.convId) return;
   _related.rows = rows;
   _related.ids = new Set(rows.map((r) => r.id));
+  _related.loading = false;
   renderRelatedPanel();
   window.advancedSearchController?.refreshRelated?.();
 }
@@ -225,6 +232,7 @@ function renderRelatedPanel() {
   relatedSortEl.value = _related.sort;
 
   relatedListEl.innerHTML = "";
+  if (_related.loading) return;
   if (!_related.rows.length) {
     const empty = document.createElement("div");
     empty.className = "related-empty";
@@ -347,8 +355,10 @@ function openRelatedRowMenu(c, anchorBtn) {
   menu.setAttribute("role", "menu");
 
   const restoreMode = c.archived || c.deleted;
+  // The chat this row is linked to, fixed when the menu opens.
+  const subject = _related.convId;
   const items = [
-    { label: "Remove Link", fn: () => relatedRemove(c.id) },
+    { label: "Remove Link", fn: () => relatedRemove(c.id, subject) },
     {
       label: "Rename",
       fn: async () => {

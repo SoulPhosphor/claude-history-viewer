@@ -1122,6 +1122,20 @@
     await afterFolderChange();
   }
 
+  // Restore from Archived or the Recycle Bin, as the sidebar's Restore does.
+  async function restoreResult(result) {
+    if (result.deleted) {
+      await apiUpdateConversationMeta(result.id, { deleted: false });
+      result.deleted = false;
+    } else {
+      await apiUpdateConversationMeta(result.id, { archived: false });
+      result.archived = false;
+    }
+    syncActiveConversation(result);
+    refreshResults();
+    await afterFolderChange();
+  }
+
   async function deleteResult(result) {
     const ok = await openConfirm({
       title: "Delete conversation?",
@@ -1184,9 +1198,12 @@
     items.push(
       ["Add to Folder", () => addResultToFolder(result)],
       [result.pinned ? "Unpin" : "Pin", () => togglePinResult(result)],
-      ["Archive", () => archiveResult(result)],
-      ["Delete", () => deleteResult(result)],
     );
+    // As in the sidebar: archived and deleted chats get Restore, and a chat
+    // already in the Recycle Bin gets no Delete.
+    if (result.archived || result.deleted) items.push(["Restore", () => restoreResult(result)]);
+    else items.push(["Archive", () => archiveResult(result)]);
+    if (!result.deleted) items.push(["Delete", () => deleteResult(result)]);
     for (const [label, fn] of items) {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -1269,7 +1286,6 @@
       if (ui.related && result.id === ui.related.id) continue;
       const card = document.createElement("article");
       card.className = "advanced-result-card";
-      makeKeyboardAction(card, `Open ${result.title || "Untitled"}`);
       const titleRow = document.createElement("div");
       titleRow.className = "advanced-result-title-row";
       const title = document.createElement("span");
@@ -1291,7 +1307,13 @@
         sep.textContent = "\\";
         title.append(locationBtn, sep);
       }
-      title.append(result.title || "Untitled");
+      // The chat name is the keyboard action, not the card: the card holds
+      // other buttons (location, Related link, ⋮), which a button role hides.
+      const name = document.createElement("span");
+      name.className = "advanced-result-name";
+      name.textContent = result.title || "Untitled";
+      makeKeyboardAction(name, `Open ${result.title || "Untitled"}`);
+      title.append(name);
       const matches = document.createElement("span");
       matches.className = "advanced-result-matches";
       matches.textContent = `${Number(result.match_count || 0).toLocaleString()} match${Number(result.match_count || 0) === 1 ? "" : "es"}`;
