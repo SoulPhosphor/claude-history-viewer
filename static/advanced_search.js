@@ -529,7 +529,7 @@
     chip.className = "label-chip";
     const square = document.createElement("span");
     square.className = "label-square";
-    square.style.background = _validHexColor(label.color) ? label.color : "#888888";
+    setLabelColor(square, label.color);
     chip.appendChild(square);
     const name = String(label.name || "").trim();
     if (showName && name) {
@@ -772,20 +772,13 @@
     for (const row of rows) {
       const item = document.createElement("div");
       item.className = "advanced-history-row";
-      item.tabIndex = 0;
-      item.setAttribute("role", "button");
       const text = document.createElement("span");
       text.className = "advanced-history-label";
       text.textContent = saved ? row.name : historyLabel(row.criteria);
+      makeKeyboardAction(text, `Use search: ${text.textContent}`);
       item.title = text.textContent;
       item.appendChild(text);
       item.addEventListener("click", () => applyStoredCriteria(row.criteria));
-      item.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          applyStoredCriteria(row.criteria);
-        }
-      });
       if (saved) {
         const remove = document.createElement("button");
         remove.type = "button";
@@ -1019,6 +1012,7 @@
 
   function closeResultMenu() {
     if (!resultMenu) return;
+    restoreActionMenuFocus(resultMenu);
     resultMenu.remove();
     resultMenu = null;
     document.removeEventListener("mousedown", onResultMenuOutside, true);
@@ -1140,18 +1134,20 @@
       });
       menu.appendChild(btn);
     }
-    document.body.appendChild(menu);
+    $("workspace-controls").appendChild(menu);
     resultMenu = menu;
     // Under the button, right-aligned, kept on screen.
+    const inset = themePixels("--popover-safe-inset");
+    const gap = themePixels("--popover-gap");
     const rect = anchor.getBoundingClientRect();
-    const left = Math.max(8, rect.right - menu.offsetWidth);
-    let top = rect.bottom + 4;
-    if (top + menu.offsetHeight > window.innerHeight - 8) {
-      top = rect.top - menu.offsetHeight - 4;
+    const left = Math.max(inset, rect.right - menu.offsetWidth);
+    let top = rect.bottom + gap;
+    if (top + menu.offsetHeight > window.innerHeight - inset) {
+      top = rect.top - menu.offsetHeight - gap;
     }
     menu.style.left = `${left}px`;
     menu.style.top = `${top}px`;
-    menu.querySelector("button")?.focus();
+    prepareActionMenu(menu, anchor, closeResultMenu);
     document.addEventListener("mousedown", onResultMenuOutside, true);
     window.addEventListener("scroll", closeResultMenu, true);
   }
@@ -1203,7 +1199,7 @@
     for (const result of ui.results) {
       const card = document.createElement("article");
       card.className = "advanced-result-card";
-      card.tabIndex = 0;
+      makeKeyboardAction(card, `Open ${result.title || "Untitled"}`);
       const titleRow = document.createElement("div");
       titleRow.className = "advanced-result-title-row";
       const title = document.createElement("span");
@@ -1305,14 +1301,6 @@
       }
       const open = () => openConversation(result.id, null, result.target_seq);
       card.addEventListener("click", open);
-      card.addEventListener("keydown", (event) => {
-        // Keys on the location or ⋮ buttons belong to those buttons.
-        if (event.target !== card) return;
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          open();
-        }
-      });
       resultsList.appendChild(card);
     }
     if (ui.results.length < ui.total) {
@@ -1332,7 +1320,7 @@
   function setResultSize(size) {
     ui.resultSize = size;
     resultsPanel.dataset.size = size;
-    resultsPanel.style.removeProperty("flex-basis");
+    resultsPanel.style.removeProperty("--advanced-results-height");
     syncResultSizeButtons();
   }
 
@@ -1346,7 +1334,7 @@
   }
 
   function topModalIsOpen() {
-    return [...document.querySelectorAll(".modal-overlay")].some((item) => !item.hidden);
+    return [...document.querySelectorAll('[role="dialog"]')].some((item) => !item.closest("[hidden]") && item.getClientRects().length);
   }
 
   function sidebarOverlayIsOpen() {
@@ -1428,28 +1416,42 @@
   });
 
   if (resizeHandle) {
+    const heightBounds = () => {
+      const min = themePixels("--advanced-results-min-h");
+      return [min, Math.max(min, $("main").clientHeight - themePixels("--advanced-results-top-clearance"))];
+    };
+    setupResizeHandle(resizeHandle, {
+      label: "Search results height", orientation: "horizontal", controls: "advanced-results-panel", reverse: true,
+      getValue: () => resultsPanel.offsetHeight,
+      getBounds: heightBounds,
+      setValue: (height) => {
+        ui.resultSize = "default";
+        resultsPanel.dataset.size = "default";
+        resultsPanel.style.setProperty("--advanced-results-height", `${height}px`);
+        syncResultSizeButtons();
+      },
+    });
     let dragging = false;
     resizeHandle.addEventListener("mousedown", (event) => {
       if (ui.resultSize === "max") setResultSize("default");
       dragging = true;
-      document.body.style.cursor = "row-resize";
-      document.body.style.userSelect = "none";
+      document.body.classList.add("resizing-rows");
       event.preventDefault();
     });
     document.addEventListener("mousemove", (event) => {
       if (!dragging) return;
       const mainRect = $("main").getBoundingClientRect();
-      const height = Math.max(49, Math.min(mainRect.height - 48, mainRect.bottom - event.clientY));
+      const [min, max] = heightBounds();
+      const height = Math.max(min, Math.min(max, mainRect.bottom - event.clientY));
       ui.resultSize = "default";
       resultsPanel.dataset.size = "default";
-      resultsPanel.style.flexBasis = `${height}px`;
+      resultsPanel.style.setProperty("--advanced-results-height", `${height}px`);
       syncResultSizeButtons();
     });
     document.addEventListener("mouseup", () => {
       if (!dragging) return;
       dragging = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
+      document.body.classList.remove("resizing-rows");
     });
   }
 
@@ -1458,6 +1460,8 @@
   // first Escape; the next one reaches this mode.
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || !ui.open) return;
+    // Inline naming/tag editors get their own first Escape to cancel edits.
+    if (isTextEntryTarget(event.target) && event.target !== queryEl) return;
     if (topModalIsOpen() || sidebarOverlayIsOpen()) return;
     if (resultMenu) {
       event.preventDefault();

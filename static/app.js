@@ -1,5 +1,18 @@
 "use strict";
 
+// Read visual defaults from the shared theme; JS supplies only user choices and
+// measured geometry. Keep these helpers before initial state construction.
+function themeValue(name, element = document.documentElement) {
+  return getComputedStyle(element).getPropertyValue(name).trim();
+}
+function themePixels(name, element = document.documentElement) {
+  return Number.parseFloat(themeValue(name, element));
+}
+function setLabelColor(element, color) {
+  // Label colours are saved user data, not part of the UI theme palette.
+  element.style.setProperty("--label-color", _validHexColor(color) ? color : themeValue("--label-fallback-color"));
+}
+
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
   q: "",
@@ -26,7 +39,7 @@ const state = {
   activeFolderPinned: false,
   preferences: {
     sidebarCollapsed: false,
-    sidebarWidth: 300,
+    sidebarWidth: themePixels("--sidebar-width-default"),
     conversationView: "recent",
     searchHistory: [],
     // Conversation labels feature. Off by default; when off no label control
@@ -68,7 +81,7 @@ const state = {
   moodTags: [], // mood tags on the open conversation (independent of tags)
   allMoodTagsCache: null, // every mood tag in use, for mood-tag autocomplete
   // Compare-tab outline colours, per provider. CSS-driven, editable in Settings.
-  compareColors: { chatgpt: "#4169E1", claude: "#2E7D32" },
+  compareColors: { chatgpt: themeValue("--compare-chatgpt-default"), claude: themeValue("--compare-claude-default") },
   importNew: {
     backups: [], // rows for the import-history table
     provider: "all", // filter radio
@@ -161,7 +174,7 @@ let _sidebarOverlayLayer = 6;
 function raiseSidebarOverlay(element) {
   if (!element) return;
   _sidebarOverlayLayer += 1;
-  element.style.zIndex = String(_sidebarOverlayLayer);
+  element.style.setProperty("--sidebar-overlay-layer", String(_sidebarOverlayLayer));
 }
 
 // ── Available local files (source/files/) ────────────────────────────────────
@@ -273,7 +286,7 @@ const md = (() => {
       const tm = content.match(/^\[([ xX])\] (.*)/);
       if (tm) {
         const checked = tm[1].toLowerCase() === "x";
-        prefix = `<input type="checkbox" disabled${checked ? " checked" : ""}> `;
+        prefix = `<input type="checkbox" aria-label="${escHtml(tm[2])}" disabled${checked ? " checked" : ""}> `;
         content = tm[2];
       }
 
@@ -392,13 +405,13 @@ const md = (() => {
         const thCells = headers
           .map(
             (h, j) =>
-              `<th style="text-align:${aligns[j] || "left"}">${inline(h)}</th>`,
+              `<th class="md-align-${aligns[j] || "left"}">${inline(h)}</th>`,
           )
           .join("");
         const bodyRows = rows
           .map(
             (r) =>
-              `<tr>${r.map((c, j) => `<td style="text-align:${aligns[j] || "left"}">${inline(c)}</td>`).join("")}</tr>`,
+              `<tr>${r.map((c, j) => `<td class="md-align-${aligns[j] || "left"}">${inline(c)}</td>`).join("")}</tr>`,
           )
           .join("");
         html.push(
@@ -732,7 +745,7 @@ function scrollToSearchMatch(idx) {
   const eRect = el.getBoundingClientRect();
   const absTop = eRect.top - cRect.top + messagesEl.scrollTop;
   const target = absTop - (messagesEl.clientHeight - el.offsetHeight) / 2;
-  messagesEl.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  messagesEl.scrollTo({ top: Math.max(0, target), behavior: preferredScrollBehavior() });
 }
 
 function _ensureFilePanel() {
@@ -754,6 +767,12 @@ function _ensureFilePanel() {
 
   // ── Drag-to-resize ────────────────────────────────────────────────────────
   const handle = panel.querySelector("#file-panel-resize");
+  setupResizeHandle(handle, {
+    label: "File preview width", orientation: "vertical", controls: "file-panel", reverse: true,
+    getValue: () => panel.offsetWidth,
+    getBounds: () => [themePixels("--file-panel-min-width"), themePixels("--side-panel-max-width")],
+    setValue: (width) => $("main").style.setProperty("--file-panel-width", `${width}px`),
+  });
   let dragging = false,
     startX = 0,
     startW = 0;
@@ -761,25 +780,20 @@ function _ensureFilePanel() {
     dragging = true;
     startX = e.clientX;
     startW = panel.offsetWidth;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
+    document.body.classList.add("resizing-columns");
     e.preventDefault();
   });
   document.addEventListener("mousemove", (e) => {
     if (!dragging) return;
     const delta = startX - e.clientX; // moving left → wider
-    const w = Math.max(240, Math.min(700, startW + delta));
-    panel.style.width = w + "px";
-    const thread = document.getElementById("thread");
-    if (thread.classList.contains("with-file-panel")) {
-      thread.querySelector("#messages").style.paddingRight = w + 20 + "px";
-    }
+    const w = Math.max(themePixels("--file-panel-min-width"), Math.min(themePixels("--side-panel-max-width"), startW + delta));
+    // One width drives the preview and CSS message clearance together.
+    $("main").style.setProperty("--file-panel-width", `${w}px`);
   });
   document.addEventListener("mouseup", () => {
     if (!dragging) return;
     dragging = false;
-    document.body.style.cursor = "";
-    document.body.style.userSelect = "";
+    document.body.classList.remove("resizing-columns");
   });
 
   _filePanelEl = panel;
@@ -794,14 +808,12 @@ function openFilePanel(att) {
   body.innerHTML = md(att.content);
   panel.hidden = false;
   document.getElementById("thread").classList.add("with-file-panel");
-  // Sync padding-right to actual panel width (may have been custom-resized)
-  messagesEl.style.paddingRight = panel.offsetWidth + 20 + "px";
+  // Shared width variables keep the panel and message clearance in sync.
 }
 
 function closeFilePanel() {
   if (_filePanelEl) _filePanelEl.hidden = true;
   document.getElementById("thread").classList.remove("with-file-panel");
-  messagesEl.style.paddingRight = ""; // clear any inline override from drag
 }
 
 // ── Month grouping tracking ───────────────────────────────────────────────────
@@ -860,6 +872,7 @@ function tryInlineImage(att) {
   img.alt = att.name;
   img.className = "inline-image";
   img.loading = "lazy";
+  makeKeyboardAction(img, `Open image ${att.name}`);
   // Open lightbox on click
   img.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -873,9 +886,10 @@ function openImageLightbox(url, name) {
   if (!lb) {
     lb = document.createElement("div");
     lb.id = "img-lightbox";
+    lb.hidden = true;
     lb.innerHTML = `<div id="img-lightbox-bg"></div>
-      <div id="img-lightbox-content">
-        <button id="img-lightbox-close">✕</button>
+      <div id="img-lightbox-content" role="dialog" aria-modal="true" aria-labelledby="img-lightbox-name">
+        <button id="img-lightbox-close" aria-label="Close image" data-dialog-cancel>✕</button>
         <img id="img-lightbox-img" src="" alt="">
         <div id="img-lightbox-name"></div>
       </div>`;
@@ -1220,6 +1234,7 @@ function renderSearchResults(results, q) {
         "search-hit" + (hit.role === "user" ? " search-hit-user" : "");
       const roleLabel = hit.role === "user" ? "You" : "Claude";
       hitEl.innerHTML = `<span class="search-hit-role">${roleLabel}</span><span class="search-hit-snippet">${highlightSnippet(hit.snippet, q)}</span>`;
+      makeKeyboardAction(hitEl, `${title}: ${roleLabel}, ${hit.snippet}`);
       hitEl.addEventListener("click", () =>
         openConversation(convId, resolveConversationSidebarEl(convId), hit.seq),
       );
@@ -1257,6 +1272,7 @@ let _convMenuEl = null;
 
 function closeConvItemMenu() {
   if (_convMenuEl) {
+    restoreActionMenuFocus(_convMenuEl);
     _convMenuEl.remove();
     _convMenuEl = null;
     document.removeEventListener("mousedown", onConvMenuOutside, true);
@@ -1389,19 +1405,22 @@ function openConvItemMenu(c, anchorBtn) {
     menu.appendChild(b);
   }
 
-  document.body.appendChild(menu);
+  $("workspace-controls").appendChild(menu);
   _convMenuEl = menu;
   // Position under the button, right-aligned, kept on screen.
+  const inset = themePixels("--popover-safe-inset");
+  const gap = themePixels("--popover-gap");
   const r = anchorBtn.getBoundingClientRect();
   const mw = menu.offsetWidth;
   let left = r.right - mw;
-  if (left < 8) left = 8;
-  let top = r.bottom + 4;
-  if (top + menu.offsetHeight > window.innerHeight - 8) {
-    top = r.top - menu.offsetHeight - 4;
+  if (left < inset) left = inset;
+  let top = r.bottom + gap;
+  if (top + menu.offsetHeight > window.innerHeight - inset) {
+    top = r.top - menu.offsetHeight - gap;
   }
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
+  prepareActionMenu(menu, anchorBtn, closeConvItemMenu);
   document.addEventListener("mousedown", onConvMenuOutside, true);
   document.addEventListener("keydown", onConvMenuKey, true);
   window.addEventListener("scroll", closeConvItemMenu, true);
@@ -1416,10 +1435,13 @@ function appendListItems(convs, targetEl = convList) {
       const headerEl = document.createElement("div");
       headerEl.className = "month-header";
       headerEl.innerHTML = `<span class="month-label">${escHtml(month)}</span><span class="month-chevron">▾</span>`;
+      makeKeyboardAction(headerEl, month);
+      headerEl.setAttribute("aria-expanded", "true");
       headerEl.addEventListener("click", () => {
         const section = headerEl.nextElementSibling;
         if (!section?.classList.contains("month-section")) return;
         const collapsed = section.classList.toggle("month-collapsed");
+        headerEl.setAttribute("aria-expanded", String(!collapsed));
         headerEl.querySelector(".month-chevron").textContent = collapsed
           ? "▸"
           : "▾";
@@ -1445,6 +1467,7 @@ function appendListItems(convs, targetEl = convList) {
     const top = document.createElement("div");
     top.className = "conv-top-row";
     top.innerHTML = `<div class="conv-title">${warningIconsHtml(c)}${escHtml(c.title)}</div>`;
+    makeKeyboardAction(top.querySelector(".conv-title"), `Open ${c.title || "Untitled"}`);
     // Recycle Bin rows carry an always-visible checkbox beside the title. Its
     // presence depends only on the view, never on which action is selected.
     if (state.view === "deleted") {
@@ -1488,6 +1511,7 @@ function appendListItems(convs, targetEl = convList) {
       hintEl.className = "conv-summary-hint";
       hintEl.textContent = "Summary";
       hintEl.dataset.convId = c.id;
+      prepareSummaryHint(hintEl);
       top.after(hintEl);
     }
 
@@ -1567,6 +1591,7 @@ async function refreshPinnedList() {
     const top = document.createElement("div");
     top.className = "conv-top-row";
     top.innerHTML = `<div class="conv-title">${escHtml(p.title)}</div>`;
+    makeKeyboardAction(top.querySelector(".conv-title"), `Open ${p.title || "Untitled"}`);
     top.appendChild(buildConvActions(c));
     el.appendChild(top);
     if (snippet && state.preferences.showChatSnippet) {
@@ -1585,6 +1610,7 @@ async function refreshPinnedList() {
       hintEl.className = "conv-summary-hint";
       hintEl.textContent = "Summary";
       hintEl.dataset.convId = p.conversation_id;
+      prepareSummaryHint(hintEl);
       top.after(hintEl);
     }
 
@@ -1747,8 +1773,8 @@ async function loadUiPreferences() {
   const p = data.preferences || {};
   state.preferences.sidebarCollapsed = Boolean(p.sidebarCollapsed);
   state.preferences.sidebarWidth = Math.max(
-    220,
-    Math.min(520, Number(p.sidebarWidth || 300)),
+    themePixels("--sidebar-width-min"),
+    Math.min(themePixels("--sidebar-width-max"), Number(p.sidebarWidth || themePixels("--sidebar-width-default"))),
   );
   const savedView = String(p.conversationView || "recent");
   state.preferences.conversationView = [
@@ -1988,9 +2014,9 @@ function renderTabs() {
     if (t.provider === "chatgpt" || t.provider === "claude") {
       tab.classList.add(`provider-${t.provider}`);
     }
-    tab.setAttribute("role", "button");
-    tab.setAttribute("tabindex", "0");
     tab.innerHTML = `<span class="tab-label">${escHtml(t.title || "Untitled")}</span><button type="button" class="tab-close" title="Remove from Compare">×</button>`;
+    // The open action and Remove button are separate keyboard targets.
+    makeKeyboardAction(tab.querySelector(".tab-label"), `Open ${t.title || "Untitled"} from Compare`);
     tab.querySelector(".tab-close").addEventListener("click", async (e) => {
       e.stopPropagation();
       await removeFromCompare(t.id);
@@ -1998,11 +2024,6 @@ function renderTabs() {
     tab.addEventListener("click", () =>
       openConversation(t.conversation_id, findConvItemEl(t.conversation_id)),
     );
-    tab.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter" && e.key !== " ") return;
-      e.preventDefault();
-      openConversation(t.conversation_id, findConvItemEl(t.conversation_id));
-    });
     tabsList.appendChild(tab);
   }
 }
@@ -2193,7 +2214,6 @@ function hideAllPanels() {
 function closeArtifactPanel() {
   artifactPanel.hidden = true;
   thread.classList.remove("with-artifact");
-  messagesEl.style.paddingRight = "";
 }
 
 async function openArtifactPanel(artifactId, title) {
@@ -2246,6 +2266,12 @@ $("artifact-panel-close").addEventListener("click", closeArtifactPanel);
 {
   const panel = artifactPanel;
   const handle = $("artifact-panel-resize");
+  setupResizeHandle(handle, {
+    label: "Artifact preview width", orientation: "vertical", controls: "artifact-panel", reverse: true,
+    getValue: () => panel.offsetWidth,
+    getBounds: () => [themePixels("--artifact-panel-min-width"), themePixels("--side-panel-max-width")],
+    setValue: (width) => $("main").style.setProperty("--artifact-panel-width", `${width}px`),
+  });
   let dragging = false,
     startX = 0,
     startW = 0;
@@ -2253,24 +2279,19 @@ $("artifact-panel-close").addEventListener("click", closeArtifactPanel);
     dragging = true;
     startX = e.clientX;
     startW = panel.offsetWidth;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
+    document.body.classList.add("resizing-columns");
     e.preventDefault();
   });
   document.addEventListener("mousemove", (e) => {
     if (!dragging) return;
     const delta = startX - e.clientX; // drag left → wider
-    const w = Math.max(280, Math.min(700, startW + delta));
-    panel.style.width = w + "px";
-    if (thread.classList.contains("with-artifact")) {
-      messagesEl.style.paddingRight = w + 20 + "px";
-    }
+    const w = Math.max(themePixels("--artifact-panel-min-width"), Math.min(themePixels("--side-panel-max-width"), startW + delta));
+    $("main").style.setProperty("--artifact-panel-width", `${w}px`);
   });
   document.addEventListener("mouseup", () => {
     if (!dragging) return;
     dragging = false;
-    document.body.style.cursor = "";
-    document.body.style.userSelect = "";
+    document.body.classList.remove("resizing-columns");
   });
 }
 
@@ -2615,7 +2636,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
       if (!downstream.length) continue;
       d._toggleDownstream = (show) => {
         downstream.forEach((el) => {
-          el.style.display = show ? "" : "none";
+          el.classList.toggle("branch-hidden", !show);
         });
       };
     }
@@ -2630,7 +2651,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
       const absTop = eRect.top - cRect.top + messagesEl.scrollTop;
       const target =
         absTop - (messagesEl.clientHeight - targetEl.offsetHeight) / 2;
-      messagesEl.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+      messagesEl.scrollTo({ top: Math.max(0, target), behavior: preferredScrollBehavior() });
       targetEl.classList.add("search-highlight");
       setTimeout(() => targetEl.classList.remove("search-highlight"), 2500);
     }
@@ -2845,7 +2866,7 @@ sidebarToggleBtn?.addEventListener("click", async () => {
 });
 
 function applySidebarWidth(value) {
-  const next = Math.max(220, Math.min(520, Math.round(Number(value) || 300)));
+  const next = Math.max(themePixels("--sidebar-width-min"), Math.min(themePixels("--sidebar-width-max"), Math.round(Number(value) || themePixels("--sidebar-width-default"))));
   state.preferences.sidebarWidth = next;
   document.documentElement.style.setProperty("--sidebar-w", `${next}px`);
   const range = $("setting-sidebar-width");
@@ -2857,6 +2878,11 @@ function applySidebarWidth(value) {
 
 const sidebarWidthRange = $("setting-sidebar-width");
 const sidebarWidthNumber = $("setting-sidebar-width-number");
+for (const input of [sidebarWidthRange, sidebarWidthNumber]) {
+  if (!input) continue;
+  input.min = themeValue("--sidebar-width-min").replace("px", "");
+  input.max = themeValue("--sidebar-width-max").replace("px", "");
+}
 
 sidebarWidthRange?.addEventListener("input", () => {
   applySidebarWidth(sidebarWidthRange.value);
@@ -2866,7 +2892,7 @@ sidebarWidthRange?.addEventListener("change", () => {
 });
 sidebarWidthNumber?.addEventListener("input", () => {
   const value = Number(sidebarWidthNumber.value);
-  if (value >= 220 && value <= 520) applySidebarWidth(value);
+  if (value >= themePixels("--sidebar-width-min") && value <= themePixels("--sidebar-width-max")) applySidebarWidth(value);
 });
 sidebarWidthNumber?.addEventListener("change", () => {
   const next = applySidebarWidth(sidebarWidthNumber.value);
@@ -2875,25 +2901,31 @@ sidebarWidthNumber?.addEventListener("change", () => {
 });
 
 if (sidebarResizeHandle) {
+  setupResizeHandle(sidebarResizeHandle, {
+    label: "Conversation sidebar width", orientation: "vertical", controls: "sidebar",
+    getValue: () => state.preferences.sidebarWidth,
+    getBounds: () => [themePixels("--sidebar-width-min"), themePixels("--sidebar-width-max")],
+    setValue: (width) => {
+      const next = applySidebarWidth(width);
+      saveUiPreferences({ sidebarWidth: next });
+    },
+  });
   let dragging = false;
   sidebarResizeHandle.addEventListener("mousedown", (e) => {
     dragging = true;
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
+    document.body.classList.add("resizing-columns");
     e.preventDefault();
   });
   document.addEventListener("mousemove", (e) => {
     if (!dragging || document.body.classList.contains("sidebar-collapsed"))
       return;
     const sidebarLeft = $("sidebar").getBoundingClientRect().left;
-    const next = Math.max(220, Math.min(520, e.clientX - sidebarLeft));
-    applySidebarWidth(next);
+    applySidebarWidth(e.clientX - sidebarLeft);
   });
   document.addEventListener("mouseup", async () => {
     if (!dragging) return;
     dragging = false;
-    document.body.style.cursor = "";
-    document.body.style.userSelect = "";
+    document.body.classList.remove("resizing-columns");
     await saveUiPreferences({ sidebarWidth: state.preferences.sidebarWidth });
   });
 }
@@ -2918,7 +2950,8 @@ function isTextEntryTarget(el) {
 
 document.addEventListener("keydown", (e) => {
   // Don't intercept while the user is typing into any field
-  if (isTextEntryTarget(e.target)) return;
+  if (e.defaultPrevented || isTextEntryTarget(e.target) ||
+      e.target.closest('button, a, [role="button"], [role="separator"], [role="dialog"]')) return;
 
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "b") {
     e.preventDefault();
@@ -3340,6 +3373,7 @@ async function openAttReport(forceRefresh, fromButton = false) {
         ${it.context ? `<span class="att-report-ctx">${escHtml(it.context)}…</span>` : ""}
         <button class="att-upload-btn" title="Upload this file to source/files/">📎 Upload</button>`;
 
+      makeKeyboardAction(row.querySelector(".att-report-name"), `Open attachment ${it.file_name} in ${title}`);
       row.querySelector(".att-report-name").addEventListener("click", () => {
         openConversation(convId, resolveConversationSidebarEl(convId), it.seq);
       });
@@ -3685,6 +3719,7 @@ function renderProviderToggle() {
         "active",
         btn.dataset.provider === state.providerSide,
       );
+      btn.setAttribute("aria-pressed", String(btn.dataset.provider === state.providerSide));
     });
 }
 
@@ -3797,6 +3832,7 @@ function renderModelStrip() {
     const picked = data.selected.length > 0;
     sel.className = picked ? "model-select model-select-add" : "model-select";
     sel.title = picked ? "Add another model" : "Select the model used";
+    sel.setAttribute("aria-label", sel.title);
     const placeholder = document.createElement("option");
     placeholder.value = "";
     placeholder.textContent = picked ? "+" : "Select Model";
@@ -4145,15 +4181,25 @@ document.addEventListener("keydown", (e) => {
 
 // ── Settings screen ──────────────────────────────────────────────────────────
 
-const DEFAULT_COMPARE_COLORS = { chatgpt: "#4169E1", claude: "#2E7D32" };
+const DEFAULT_COMPARE_COLORS = {
+  chatgpt: themeValue("--compare-chatgpt-default"),
+  claude: themeValue("--compare-claude-default"),
+};
 
 // Push the current compare colours into CSS custom properties. All compare-tab
 // colouring is driven by these two variables, so future settings can extend the
 // same pattern.
 function applyCompareColors() {
   const root = document.documentElement.style;
-  root.setProperty("--compare-chatgpt", state.compareColors.chatgpt);
-  root.setProperty("--compare-claude", state.compareColors.claude);
+  for (const provider of ["chatgpt", "claude"]) {
+    const name = `--compare-${provider}`;
+    // Defaults stay CSS-driven; an explicit preference overrides the theme.
+    if (state.compareColors[provider].toLowerCase() === themeValue(`${name}-default`).toLowerCase()) {
+      root.removeProperty(name);
+    } else {
+      root.setProperty(name, state.compareColors[provider]);
+    }
+  }
 }
 
 function _validHexColor(v) {
@@ -4380,7 +4426,7 @@ function labelChipEl(convId, label, allLabels) {
   btn.type = "button";
   btn.className = "label-square" + (label ? "" : " label-square-blank");
   if (label) {
-    btn.style.background = _validHexColor(label.color) ? label.color : "#888888";
+    setLabelColor(btn, label.color);
     const nm = String(label.name || "").trim();
     if (nm) btn.title = nm;
     btn.setAttribute(
@@ -4633,17 +4679,19 @@ function appendSetLabelToMenu(menu, convId, currentLabels, itemClass, onSelect, 
 // Put a fixed-position menu just below its anchor, or above it when there is
 // no room below, keeping it inside the window.
 function placeMenuNear(menu, anchorEl) {
+  const inset = themePixels("--popover-safe-inset");
+  const gap = themePixels("--popover-gap");
   const r = anchorEl.getBoundingClientRect();
   const mw = menu.offsetWidth;
   let left = r.left;
-  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
-  if (left < 8) left = 8;
-  let top = r.bottom + 4;
-  if (top + menu.offsetHeight > window.innerHeight - 8) {
-    top = r.top - menu.offsetHeight - 4;
+  if (left + mw > window.innerWidth - inset) left = window.innerWidth - mw - inset;
+  if (left < inset) left = inset;
+  let top = r.bottom + gap;
+  if (top + menu.offsetHeight > window.innerHeight - inset) {
+    top = r.top - menu.offsetHeight - gap;
   }
   menu.style.left = `${left}px`;
-  menu.style.top = `${Math.max(8, top)}px`;
+  menu.style.top = `${Math.max(inset, top)}px`;
 }
 
 // ── Label pick lists ──────────────────────────────────────────────────────────
@@ -4654,7 +4702,7 @@ function labelPickSwatch(label) {
   const name = String(label?.name || "").trim();
   const mark = document.createElement("span");
   mark.className = name ? "menu-label-dot" : "menu-label-bar";
-  mark.style.background = _validHexColor(label?.color) ? label.color : "#888888";
+  setLabelColor(mark, label?.color);
   frag.appendChild(mark);
   if (name) {
     const text = document.createElement("span");
@@ -4680,6 +4728,7 @@ function closeLabelMenu(picked = false) {
   if (!_labelMenu) return;
   const { menu, onClose, outside, keys, scroll } = _labelMenu;
   _labelMenu = null;
+  restoreActionMenuFocus(menu);
   menu.remove();
   document.removeEventListener("mousedown", outside, true);
   window.removeEventListener("keydown", keys, true);
@@ -4712,7 +4761,7 @@ function openLabelMenu(anchorEl, items, onPick, { onClose } = {}) {
     });
     menu.appendChild(b);
   }
-  document.body.appendChild(menu);
+  $("workspace-controls").appendChild(menu);
   placeMenuNear(menu, anchorEl);
   const outside = (e) => {
     if (!menu.contains(e.target) && !anchorEl.contains(e.target)) closeLabelMenu();
@@ -4729,6 +4778,7 @@ function openLabelMenu(anchorEl, items, onPick, { onClose } = {}) {
       anchorEl.focus?.();
     } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
+      e.stopImmediatePropagation();
       const step = e.key === "ArrowDown" ? 1 : -1;
       buttons[(at + step + buttons.length) % buttons.length]?.focus();
     }
@@ -4737,6 +4787,7 @@ function openLabelMenu(anchorEl, items, onPick, { onClose } = {}) {
     if (!menu.contains(e.target)) closeLabelMenu();
   };
   _labelMenu = { menu, onClose, outside, keys, scroll };
+  prepareActionMenu(menu, anchorEl, closeLabelMenu);
   document.addEventListener("mousedown", outside, true);
   window.addEventListener("keydown", keys, true);
   window.addEventListener("scroll", scroll, true);
@@ -4746,6 +4797,7 @@ function openLabelMenu(anchorEl, items, onPick, { onClose } = {}) {
 let _setLabelPopover = null;
 function closeSetLabelPopover() {
   if (_setLabelPopover) {
+    restoreActionMenuFocus(_setLabelPopover);
     _setLabelPopover.remove();
     _setLabelPopover = null;
     document.removeEventListener("mousedown", _onSetLabelOutside, true);
@@ -4774,9 +4826,10 @@ function openSetLabelPopover(convId, currentLabels, anchorEl, activeId) {
     () => closeSetLabelPopover(),
     activeId,
   );
-  document.body.appendChild(menu);
+  $("workspace-controls").appendChild(menu);
   _setLabelPopover = menu;
   placeMenuNear(menu, anchorEl);
+  prepareActionMenu(menu, anchorEl, closeSetLabelPopover);
   document.addEventListener("mousedown", _onSetLabelOutside, true);
   window.addEventListener("scroll", closeSetLabelPopover, true);
 }
@@ -5312,6 +5365,8 @@ function modelCell(row, field, type, value) {
   input.type = type;
   input.value = value;
   input.className = "model-cell-input";
+  const fieldName = { name: "Model name", start_date: "Available from", end_date: "Available until" }[field] || field;
+  input.setAttribute("aria-label", `${fieldName}: ${row.name || "Unnamed model"}, ${row.start_date || "no start date"}`);
   if (type === "text") input.spellcheck = false;
   const commit = () => {
     const next = input.value.trim();
@@ -5469,6 +5524,8 @@ const sidebarMenuBtn = $("sidebar-menu-btn");
 const sidebarMenu = $("sidebar-menu");
 
 function positionSidebarMenu() {
+  const inset = themePixels("--popover-safe-inset");
+  const gap = themePixels("--popover-menu-gap");
   const r = sidebarMenuBtn.getBoundingClientRect();
   // Show the menu first so its size can be measured, then place it above the
   // button, right-aligned to it (the button sits at the bottom of the sidebar).
@@ -5476,21 +5533,23 @@ function positionSidebarMenu() {
   const mw = sidebarMenu.offsetWidth;
   const mh = sidebarMenu.offsetHeight;
   let left = r.right - mw;
-  if (left < 8) left = 8;
-  let top = r.top - mh - 6;
-  if (top < 8) top = r.bottom + 6; // fall back to below if no room above
+  if (left < inset) left = inset;
+  let top = r.top - mh - gap;
+  if (top < inset) top = r.bottom + gap; // fall back to below if no room above
   sidebarMenu.style.left = `${left}px`;
   sidebarMenu.style.top = `${top}px`;
 }
 
 function openSidebarMenu() {
   positionSidebarMenu();
+  prepareActionMenu(sidebarMenu, sidebarMenuBtn, closeSidebarMenu);
   sidebarMenuBtn.setAttribute("aria-expanded", "true");
   document.addEventListener("mousedown", onSidebarMenuOutside, true);
   document.addEventListener("keydown", onSidebarMenuKey, true);
 }
 
 function closeSidebarMenu() {
+  restoreActionMenuFocus(sidebarMenu);
   sidebarMenu.hidden = true;
   sidebarMenuBtn.setAttribute("aria-expanded", "false");
   document.removeEventListener("mousedown", onSidebarMenuOutside, true);
@@ -5637,14 +5696,14 @@ async function openProjects(fromButton = false) {
     // Load this project's docs immediately
     const docsEl = card.querySelector(".project-docs");
     docsEl.innerHTML =
-      '<div class="loading" style="padding:12px 0">Loading docs…</div>';
+      '<div class="loading project-docs-loading">Loading docs…</div>';
     fetch(`/api/project/${encodeURIComponent(proj.id)}`)
       .then((r) => r.json())
       .then((d) => {
         docsEl.innerHTML = "";
         if (!d.docs?.length) {
           docsEl.innerHTML =
-            '<div class="no-results" style="padding:8px 0">No documents.</div>';
+            '<div class="no-results project-docs-empty">No documents.</div>';
           return;
         }
         for (const doc of d.docs) {
@@ -5751,10 +5810,7 @@ folderPickModal?.addEventListener("mousedown", (e) => {
   if (e.target === folderPickModal) closeFolderPicker(null);
 });
 folderPickModal?.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    e.preventDefault();
-    closeFolderPicker(null);
-  } else if (e.key === "Enter" && e.target === folderPickSelect) {
+  if (e.key === "Enter" && e.target === folderPickSelect) {
     e.preventDefault();
     closeFolderPicker(folderPickSelect.value || null);
   }
@@ -5777,7 +5833,7 @@ function openConfirm({
   confirmModalText.textContent = text;
   confirmModalOk.textContent = okLabel;
   confirmModal.hidden = false;
-  setTimeout(() => confirmModalOk.focus(), 0);
+  setTimeout(() => confirmModalCancel.focus(), 0);
   return new Promise((resolve) => {
     _confirmResolve = resolve;
   });
@@ -5936,13 +5992,18 @@ function renderFolders() {
       `<span class="folder-name">${escHtml(f.name)}</span>` +
       `<span class="folder-count">${(f.conversations || []).length}</span>` +
       `<button class="folder-rename-btn" title="Rename folder">✎</button>`;
+    const folderAction = row.querySelector(".folder-name");
+    makeKeyboardAction(folderAction, f.name);
+    folderAction.setAttribute("aria-expanded", String(expanded));
 
     row.addEventListener("click", (e) => {
       if (e.target.closest(".folder-rename-btn")) return;
+      const retainFocus = row.contains(document.activeElement);
       if (_expandedFolders.has(f.id)) _expandedFolders.delete(f.id);
       else _expandedFolders.add(f.id);
       _lsSet("expandedFolders", JSON.stringify([..._expandedFolders]));
       renderFolders();
+      if (retainFocus) foldersTree.querySelector(`[data-folder-id="${CSS.escape(f.id)}"] .folder-name`)?.focus();
     });
     row
       .querySelector(".folder-rename-btn")
@@ -6008,11 +6069,13 @@ function renderFolders() {
           hintEl.className = "conv-summary-hint";
           hintEl.textContent = "Summary";
           hintEl.dataset.convId = c.id;
+          prepareSummaryHint(hintEl);
           const titleSpan = item.querySelector(".folder-conv-title");
           if (titleSpan) titleSpan.after(hintEl);
           else item.appendChild(hintEl);
         }
         item.addEventListener("click", () => openConversation(c.id, item));
+        makeKeyboardAction(item.querySelector(".folder-conv-title"), `Open ${c.title || "Untitled"}`);
         item.addEventListener("dragstart", (e) => {
           e.dataTransfer.effectAllowed = "move";
           e.dataTransfer.setData("text/plain", c.id);
@@ -6074,12 +6137,13 @@ foldersSection?.addEventListener("contextmenu", (e) => {
   foldersCtxMenu.hidden = false;
   // Clamp to the viewport so a click near the sidebar's edge doesn't hang
   // the menu off-screen.
+  const inset = themePixels("--popover-safe-inset");
   const mw = foldersCtxMenu.offsetWidth;
   const mh = foldersCtxMenu.offsetHeight;
-  const left = Math.min(e.clientX, window.innerWidth - mw - 8);
-  const top = Math.min(e.clientY, window.innerHeight - mh - 8);
-  foldersCtxMenu.style.left = `${Math.max(8, left)}px`;
-  foldersCtxMenu.style.top = `${Math.max(8, top)}px`;
+  const left = Math.min(e.clientX, window.innerWidth - mw - inset);
+  const top = Math.min(e.clientY, window.innerHeight - mh - inset);
+  foldersCtxMenu.style.left = `${Math.max(inset, left)}px`;
+  foldersCtxMenu.style.top = `${Math.max(inset, top)}px`;
   document.addEventListener("mousedown", onFoldersCtxMenuOutside, true);
   document.addEventListener("keydown", onFoldersCtxMenuKey, true);
 });
@@ -6124,6 +6188,8 @@ let _moveMenuSeq = 0;
 
 function closeThreadMenus() {
   _moveMenuSeq++;
+  restoreActionMenuFocus(moveToMenu);
+  restoreActionMenuFocus(threadMoreMenu);
   if (moveToMenu) moveToMenu.hidden = true;
   if (threadMoreMenu) threadMoreMenu.hidden = true;
   document.removeEventListener("mousedown", onThreadMenuOutside, true);
@@ -6238,6 +6304,7 @@ moveToBtn?.addEventListener("click", (e) => {
     // otherwise the menu's folder handlers would act on a stale conversation.
     if (seq !== _moveMenuSeq || state.activeId !== openForId) return;
     moveToMenu.hidden = false;
+    prepareActionMenu(moveToMenu, moveToBtn, closeThreadMenus);
     document.addEventListener("mousedown", onThreadMenuOutside, true);
   });
 });
@@ -6274,6 +6341,7 @@ threadMoreBtn?.addEventListener("click", (e) => {
     .querySelectorAll(".label-menu-injected")
     .forEach((n) => n.remove());
   threadMoreMenu.hidden = false;
+  prepareActionMenu(threadMoreMenu, threadMoreBtn, closeThreadMenus);
   document.addEventListener("mousedown", onThreadMenuOutside, true);
 });
 

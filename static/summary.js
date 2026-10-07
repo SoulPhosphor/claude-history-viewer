@@ -12,7 +12,10 @@ let _summaryMode = "visual";
 let _visualUndo = [];
 let _visualRedo = [];
 let _savedVisualSelection = null;
-let _summaryPalette = ["#fff3a3", "#c9f7c5", "#c9e7ff", "#f5c9ff"];
+// Starting swatches are centralized; edited swatches are saved author data.
+let _summaryPalette = ["default", "green", "blue", "purple"].map(
+  (name) => themeValue(`--summary-palette-${name}`),
+);
 
 function clearVisualHistory() {
   _visualUndo = [];
@@ -169,7 +172,7 @@ function applyHighlight(color) {
   const source = summaryMarkdown();
   const token = summaryCore.inlineTokenForRange(source, range.start, range.end);
   if (token && token.kind !== "highlight") return;
-  const next = summaryCore.replaceHighlightRange(source, range.start, range.end, color.toLowerCase() === "#fff3a3" ? "" : color.toLowerCase());
+  const next = summaryCore.replaceHighlightRange(source, range.start, range.end, color.toLowerCase() === "#fff3a3" /* persisted shorthand sentinel */ ? "" : color.toLowerCase());
   commitVisualSource(next, range.start);
   if (summaryHighlightMenu) summaryHighlightMenu.hidden = true;
 }
@@ -253,6 +256,7 @@ function refreshSummaryHintForConv(convId) {
         hintEl.className = "conv-summary-hint";
         hintEl.textContent = "Summary";
         hintEl.dataset.convId = convId;
+        prepareSummaryHint(hintEl);
         const anchor = row.querySelector(".conv-top-row") || row.querySelector(".folder-conv-title");
         if (anchor) anchor.after(hintEl); else row.appendChild(hintEl);
       }
@@ -647,6 +651,8 @@ summaryToolbar?.querySelector("select[data-format]")?.addEventListener("change",
   e.target.value = "normal";
 });
 
+const summaryCustomPicker = summaryHighlightMenu?.querySelector(".summary-palette-picker");
+if (summaryCustomPicker) summaryCustomPicker.value = themeValue("--summary-palette-default");
 summaryHighlightMenu?.querySelector(".summary-palette-picker")?.addEventListener("input", (e) => updatePaletteFromPicker(e.target));
 summaryHighlightMenu?.querySelector(".summary-palette-remove")?.addEventListener("click", removeHighlight);
 $("summary-highlight-button")?.addEventListener("click", (e) => {
@@ -673,9 +679,12 @@ $("summary-toggle-btn")?.addEventListener("click", async () => {
 let _hintPopup = null;
 let _hintHideTimer = null;
 let _hintLoadAbort = null;
+let _hintAnchor = null;
 function createSummaryPopup() {
   const popup = document.createElement("div");
   popup.className = "summary-hint-popup";
+  popup.id = "summary-hint-popup";
+  popup.setAttribute("role", "tooltip");
   popup.hidden = true;
   document.body.appendChild(popup);
   popup.addEventListener("mouseenter", () => clearTimeout(_hintHideTimer));
@@ -685,32 +694,56 @@ function createSummaryPopup() {
 function showSummaryPopup(anchorEl, text) {
   if (!_hintPopup) _hintPopup = createSummaryPopup();
   _hintPopup.textContent = text;
+  if (_hintAnchor !== anchorEl) _hintAnchor?.removeAttribute("aria-describedby");
+  _hintAnchor = anchorEl;
+  anchorEl.setAttribute("aria-describedby", _hintPopup.id);
   _hintPopup.hidden = false;
   clearTimeout(_hintHideTimer);
+  const inset = themePixels("--popover-safe-inset");
+  const gap = themePixels("--popover-gap");
   const r = anchorEl.getBoundingClientRect();
   const pw = _hintPopup.offsetWidth;
   const ph = _hintPopup.offsetHeight;
-  let left = Math.min(r.left, window.innerWidth - pw - 8);
-  let top = r.bottom + 4;
-  if (top + ph > window.innerHeight - 8) top = r.top - ph - 4;
-  _hintPopup.style.left = `${Math.max(8, left)}px`;
-  _hintPopup.style.top = `${Math.max(8, top)}px`;
+  let left = Math.min(r.left, window.innerWidth - pw - inset);
+  let top = r.bottom + gap;
+  if (top + ph > window.innerHeight - inset) top = r.top - ph - gap;
+  _hintPopup.style.left = `${Math.max(inset, left)}px`;
+  _hintPopup.style.top = `${Math.max(inset, top)}px`;
 }
 function hideSummaryPopup() {
   clearTimeout(_hintHideTimer);
-  _hintHideTimer = setTimeout(() => { if (_hintPopup) _hintPopup.hidden = true; if (_hintLoadAbort) { _hintLoadAbort.abort(); _hintLoadAbort = null; } }, 200);
+  _hintHideTimer = setTimeout(() => {
+    if (_hintPopup) _hintPopup.hidden = true;
+    _hintAnchor?.removeAttribute("aria-describedby");
+    _hintAnchor = null;
+    if (_hintLoadAbort) { _hintLoadAbort.abort(); _hintLoadAbort = null; }
+  }, 200);
 }
-document.addEventListener("mouseover", async (e) => {
+async function previewSummaryHint(e) {
   const hint = e.target.closest(".conv-summary-hint");
   if (!hint || !hint.dataset.convId) return;
   clearTimeout(_hintHideTimer);
   if (_hintLoadAbort) _hintLoadAbort.abort();
-  _hintLoadAbort = new AbortController();
+  const controller = new AbortController();
+  _hintLoadAbort = controller;
   try {
     const data = await apiGetSummary(hint.dataset.convId);
-    if (_hintLoadAbort?.signal.aborted) return;
+    if (_hintLoadAbort !== controller || controller.signal.aborted) return;
     const text = (data.condensed_summary || "").trim();
     if (text) showSummaryPopup(hint, text);
   } catch (_) {}
+}
+document.addEventListener("mouseover", previewSummaryHint);
+document.addEventListener("focusin", previewSummaryHint);
+document.addEventListener("focusout", (e) => { if (e.target.closest(".conv-summary-hint")) hideSummaryPopup(); });
+document.addEventListener("mouseout", (e) => {
+  const hint = e.target.closest(".conv-summary-hint");
+  if (hint && document.activeElement !== hint) hideSummaryPopup();
 });
-document.addEventListener("mouseout", (e) => { if (e.target.closest(".conv-summary-hint")) hideSummaryPopup(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && _hintPopup && !_hintPopup.hidden) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    hideSummaryPopup();
+  }
+}, true);

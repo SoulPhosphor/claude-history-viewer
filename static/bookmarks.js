@@ -118,6 +118,7 @@ function ensureBookmarkTitleEl(metaRow, seq) {
   if (titleEl) return titleEl;
   titleEl = document.createElement("span");
   titleEl.className = "bookmark-title";
+  makeKeyboardAction(titleEl, "Rename bookmark");
   titleEl.dataset.seq = seq;
   titleEl.addEventListener("click", (e) => {
     if (titleEl.querySelector("input")) return; // already editing
@@ -136,6 +137,9 @@ function renderBookmarkTitle(titleEl, bm) {
   if (!titleEl || !bm) return;
   const name = (bm.name || "").trim();
   titleEl.textContent = bookmarkLabel(bm);
+  titleEl.setAttribute("role", "button");
+  titleEl.tabIndex = 0;
+  titleEl.setAttribute("aria-label", `Rename bookmark ${bookmarkLabel(bm)}`);
   titleEl.classList.toggle("has-name", !!name);
   titleEl.title = name ? name : "Untitled bookmark — click to name";
 }
@@ -202,9 +206,12 @@ function openBookmarkNameDialog(bm, anchorEl, titleEl) {
   const dlg = document.createElement("div");
   dlg.className = "bookmark-name-dialog";
   dlg.id = "bookmark-name-dialog";
+  dlg.setAttribute("role", "dialog");
+  dlg.setAttribute("aria-label", "Name bookmark");
   const input = document.createElement("input");
   input.type = "text";
   input.className = "bookmark-name-input";
+  input.setAttribute("aria-label", "Bookmark name");
   input.placeholder = "Name this bookmark…";
   input.value = bm.name || "";
   dlg.appendChild(input);
@@ -217,7 +224,9 @@ function openBookmarkNameDialog(bm, anchorEl, titleEl) {
     if (done) return;
     done = true;
     const val = input.value.trim();
+    const retainFocus = document.activeElement === input;
     closeBookmarkNameDialog();
+    if (retainFocus && anchorEl?.isConnected) anchorEl.focus();
     if (save) {
       let nb = { ...bookmarkById(bm.id) || bm, name: val };
       try {
@@ -247,15 +256,15 @@ function openBookmarkNameDialog(bm, anchorEl, titleEl) {
 
 function positionBookmarkPopover(dlg, anchorEl) {
   const r = anchorEl.getBoundingClientRect();
-  const margin = 6;
-  const w = dlg.offsetWidth || 220;
+  const margin = themePixels("--popover-menu-gap");
+  const w = dlg.offsetWidth || themePixels("--bookmark-dialog-width");
   let left = r.left;
   if (left + w + margin > window.innerWidth) {
     left = window.innerWidth - w - margin;
   }
   left = Math.max(margin, left);
   let top = r.bottom + margin;
-  const h = dlg.offsetHeight || 44;
+  const h = dlg.offsetHeight || themePixels("--bookmark-dialog-fallback-height");
   if (top + h + margin > window.innerHeight) {
     top = Math.max(margin, r.top - h - margin);
   }
@@ -271,8 +280,11 @@ function beginInlineRename(titleEl, bm) {
   const input = document.createElement("input");
   input.type = "text";
   input.className = "bookmark-title-input";
+  input.setAttribute("aria-label", "Bookmark name");
   input.value = prev;
   titleEl.textContent = "";
+  titleEl.removeAttribute("role");
+  titleEl.removeAttribute("tabindex");
   titleEl.classList.add("editing");
   titleEl.appendChild(input);
   input.focus();
@@ -282,6 +294,7 @@ function beginInlineRename(titleEl, bm) {
   let done = false;
   const finish = async (save) => {
     if (done) return;
+    const retainFocus = document.activeElement === input;
     done = true;
     titleEl.classList.remove("editing");
     if (save) {
@@ -300,6 +313,7 @@ function beginInlineRename(titleEl, bm) {
       // Escape: leave the name exactly as it was.
       renderBookmarkTitle(titleEl, bookmarkForSeq(seq) || bm);
     }
+    if (retainFocus && (document.activeElement === input || document.activeElement === document.body)) titleEl.focus();
   };
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -331,7 +345,7 @@ async function scrollToBookmark(bm) {
   const eRect = targetEl.getBoundingClientRect();
   const absTop = eRect.top - cRect.top + messagesEl.scrollTop;
   const target = absTop - (messagesEl.clientHeight - targetEl.offsetHeight) / 2;
-  messagesEl.scrollTo({ top: Math.max(0, target), behavior: "smooth" });
+  messagesEl.scrollTo({ top: Math.max(0, target), behavior: preferredScrollBehavior() });
   targetEl.classList.add("search-highlight");
   setTimeout(() => targetEl.classList.remove("search-highlight"), 2500);
 }

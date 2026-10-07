@@ -1,6 +1,6 @@
 /* ── Settings page: setting rows + switches ────────────────────────────────
    Every visual value here comes from the CSS variables declared on :root in
-   style.css, so the whole look rethemes from one place. This file loads after
+   theme.css, so the whole look rethemes from one place. This file loads after
    style.css; a few #settings-content-scoped overrides replace rules that only
    applied to the old settings markup. */
 
@@ -14,7 +14,7 @@
 }
 
 /* One setting row: text on the left, switch pinned to the right edge of the
-   box. The text block keeps a fixed minimum width so every switch on the page
+   box. The text block keeps a preferred minimum width so every switch on the page
    starts at the same place regardless of its label's length. A title-only
    setting centers its switch on the title line; a title + subtext setting
    centers it across the whole text block. */
@@ -29,7 +29,7 @@
 }
 .settings-setting-text {
   flex: 0 1 auto;
-  min-width: var(--settings-text-min-width);
+  min-width: min(var(--settings-text-min-width), calc(100% - var(--switch-width) - var(--settings-setting-gap)));
 }
 .settings-setting-title {
   display: block;
@@ -47,7 +47,7 @@
   align-items: flex-start;
   flex-direction: column;
   padding-bottom: var(--settings-setting-gap-y);
-  border-bottom: 1px solid var(--border);
+  border-bottom: var(--stroke-1px) solid var(--border);
 }
 
 .settings-sidebar-width-control {
@@ -59,23 +59,23 @@
 
 #setting-sidebar-width {
   flex: 1;
-  min-width: 120px;
+  min-width: 0;
   accent-color: var(--accent);
 }
 
 .settings-pixel-input {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: var(--space-3px);
   color: var(--muted);
   font-size: var(--settings-setting-subtext-size);
 }
 
 #setting-sidebar-width-number {
-  width: 72px;
-  padding: 5px 7px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  width: var(--setting-sidebar-width-number-width);
+  padding: var(--space-5px) var(--space-7px);
+  border: var(--stroke-1px) solid var(--border);
+  border-radius: var(--radius-6px);
   background: var(--bg);
   color: var(--text);
   font: inherit;
@@ -95,8 +95,8 @@
 }
 .settings-switch input {
   position: absolute;
-  width: 1px;
-  height: 1px;
+  width: var(--size-1px);
+  height: var(--size-1px);
   margin: 0;
   opacity: 0;
   pointer-events: none;
@@ -186,7 +186,7 @@
 #check-update-btn {
   flex-shrink: 0;
   padding: var(--about-button-padding);
-  border: 1px solid var(--about-button-border);
+  border: var(--stroke-1px) solid var(--about-button-border);
   border-radius: var(--about-button-radius);
   background: var(--about-button-bg);
   color: var(--about-button-color);

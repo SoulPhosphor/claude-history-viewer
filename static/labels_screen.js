@@ -91,7 +91,7 @@ function renderLabelList() {
     const color = document.createElement("input");
     color.type = "color";
     color.className = "label-row-color";
-    color.value = _validHexColor(label.color) ? label.color : "#888888";
+    color.value = _validHexColor(label.color) ? label.color : themeValue("--label-fallback-color");
     color.title = "Change colour";
     color.setAttribute("aria-label", `Colour for ${labelDisplayName(label)}`);
     color.addEventListener("change", () =>
@@ -191,7 +191,7 @@ async function saveLabel(label, patch, inputEl) {
     // Put the rejected value back.
     if (inputEl && "name" in patch) inputEl.value = label.name || "";
     if (inputEl && "color" in patch)
-      inputEl.value = _validHexColor(label.color) ? label.color : "#888888";
+      inputEl.value = _validHexColor(label.color) ? label.color : themeValue("--label-fallback-color");
     showLabelError(e.message);
   }
 }
@@ -509,7 +509,7 @@ function pickDistinctLabelColor(usedHexes) {
       return { hex, nearest };
     })
     .sort((a, b) => b.nearest - a.nearest);
-  if (!scored.length) return "#4169e1";
+  if (!scored.length) return themeValue("--label-new-color");
   // Among the roughly-equally-distant best candidates, choose at random.
   const best = scored[0].nearest;
   const pool = used.length
