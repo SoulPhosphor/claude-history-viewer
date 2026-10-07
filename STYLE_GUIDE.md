@@ -113,12 +113,12 @@ Class names above are a lookup map, not interchangeable utilities: read the corr
 
 ## Features that share code (change together)
 
-**Related Conversations** (`related.js`, `related.py`) is built from existing pieces. When one of these changes, check the other place:
+**Related Conversations** (`related.js`, `related.py`) is built from existing pieces. Most are shared code, so one change reaches both; the table says which parts are still separate:
 
 | What | Shared with | Where |
 | --- | --- | --- |
-| Rows in the Related panel | Sidebar rows | `buildRelatedRow()` in `related.js` copies `appendListItems()` in `app.js` (same `.conv-item` classes, label squares, summary hint, ⋮ button). A new piece of information on sidebar rows needs adding to both. |
-| ⋮ menu on Related rows | Sidebar ⋮ menu | `openRelatedRowMenu()` in `related.js` mirrors `openConvItemMenu()` in `app.js`, with "Remove Link" on top. Archive/Restore/Delete follow where each chat lives instead of the sidebar view. |
+| Rows in the Related panel | Sidebar rows | One builder: `buildConvRow()` in `app.js` draws both. The sidebar (`appendListItems()`) adds drag-into-folder and the Recycle Bin checkbox; the panel passes Location\Title and its own click and ⋮ handlers. A change to sidebar rows reaches the panel automatically. |
+| ⋮ menu on Related rows | Sidebar ⋮ menu | One menu: `showConvItemMenu()` in `app.js` draws both, and both use `convRenameItem()`, `convCompareItem()` and `convSummaryItem()`. The panel's own items (`openRelatedRowMenu()` in `related.js`) are "Remove Link" and Pin/Archive/Restore/Delete chosen from where each chat lives, because one list mixes every location. |
 | Location\Title | Advanced Search results | Advanced Search: `resultLocation()` and `.advanced-result-location` (a button that lists the location). Related panel: `relatedLocationName()` and `.related-location` (plain text). `--related-location-*` aliases `--advanced-location-*`, so one change rethemes both. |
 | Find Related Conversations | Advanced Search itself | Not a copy: it is Advanced Search in Related mode (`ui.related` in `advanced_search.js`). Filters, history, result cards and the result ⋮ menu are the same code, so Advanced Search changes apply to both. Related mode only adds: `relatedLinkButton()` (Hub / Add Circle before the title), the top ⋮ item ("Add to Related Chats" / "Remove Link"), result clicks that preview without closing the search (the panel stays on the original chat until the Hub button is clicked on a previewed one), and `exclude_ids` so the chat never lists itself. |
 | "Permanently Remove this link?" | Dialog styles | `#unlink-modal` in `index.html`; standard `.modal` classes plus `.modal-check`. |

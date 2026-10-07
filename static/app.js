@@ -1267,12 +1267,14 @@ function renderSearchResults(results, q) {
 
 // Each chat row now carries a single right-aligned ⋮ button; its menu holds
 // Rename, Compare, Pin, Archive (in that order).
-function buildConvActions(c) {
+function buildConvActions(c, openMenu = openConvItemMenu) {
   const wrap = document.createElement("div");
   wrap.className = "conv-actions";
   const btn = document.createElement("button");
+  btn.type = "button";
   btn.className = "conv-menu-btn";
   btn.title = "More";
+  btn.setAttribute("aria-label", "More");
   btn.setAttribute("aria-haspopup", "true");
   btn.innerHTML =
     '<svg viewBox="0 0 4 16" width="4" height="16" aria-hidden="true">' +
@@ -1280,7 +1282,7 @@ function buildConvActions(c) {
     '<circle cx="2" cy="14" r="1.7"/></svg>';
   btn.addEventListener("click", (e) => {
     e.stopPropagation();
-    openConvItemMenu(c, btn);
+    openMenu(c, btn);
   });
   wrap.appendChild(btn);
   return wrap;
@@ -1375,32 +1377,40 @@ async function deleteConversation(c) {
   loadFolders();
 }
 
+// Menu items every chat-row ⋮ menu shares (sidebar and Related panel).
+function convRenameItem(c, after = null) {
+  return {
+    label: "Rename",
+    fn: async () => {
+      await renameConversation(c);
+      if (after) await after();
+    },
+  };
+}
+function convCompareItem(c, provider) {
+  return {
+    label: compareTabForConv(c.id) ? "Remove from Compare" : "Compare",
+    fn: () => {
+      const existing = compareTabForConv(c.id);
+      if (existing) removeFromCompare(existing.id);
+      else addToCompare(c.id, c.title, provider);
+    },
+  };
+}
+function convSummaryItem(c) {
+  return { label: "Summary", fn: () => openSummaryForConversation(c.id) };
+}
+
+// The sidebar's ⋮ menu. Archive/Restore/Delete follow the sidebar view.
 function openConvItemMenu(c, anchorBtn) {
-  const wasForThis =
-    _convMenuEl && _convMenuEl.dataset.convId === c.id;
-  closeConvItemMenu();
-  if (wasForThis) return; // clicking the same ⋮ again closes it
-
-  const menu = document.createElement("div");
-  menu.className = "sidebar-menu conv-item-menu";
-  menu.dataset.convId = c.id;
-  menu.setAttribute("role", "menu");
-
   const archivedView = state.view === "archived";
   const deletedView = state.view === "deleted";
   const pinned = state.pinnedIds.has(c.id);
   const items = [
-    { label: "Rename", fn: () => renameConversation(c) },
-    {
-      label: compareTabForConv(c.id) ? "Remove from Compare" : "Compare",
-      fn: () => {
-        const existing = compareTabForConv(c.id);
-        if (existing) removeFromCompare(existing.id);
-        else addToCompare(c.id, c.title, state.providerSide);
-      },
-    },
+    convRenameItem(c),
+    convCompareItem(c, state.providerSide),
     { label: pinned ? "Unpin" : "Pin", fn: () => togglePinConversation(c) },
-    { label: "Summary", fn: () => openSummaryForConversation(c.id) },
+    convSummaryItem(c),
     {
       label: archivedView || deletedView ? "Restore" : "Archive",
       fn: () => archiveOrRestoreConversation(c),
@@ -1411,8 +1421,29 @@ function openConvItemMenu(c, anchorBtn) {
   if (!deletedView) {
     items.push({ label: "Delete", fn: () => deleteConversation(c) });
   }
+  showConvItemMenu(c, anchorBtn, items);
+}
+
+function convItemMenuIsOpen() {
+  return !!_convMenuEl;
+}
+
+// Draws a chat-row ⋮ menu from {label, fn} items, under its button. Shared by
+// the sidebar and the Related Conversations panel (related.js).
+function showConvItemMenu(c, anchorBtn, items) {
+  const wasForThis =
+    _convMenuEl && _convMenuEl.dataset.convId === c.id;
+  closeConvItemMenu();
+  if (wasForThis) return; // clicking the same ⋮ again closes it
+
+  const menu = document.createElement("div");
+  menu.className = "sidebar-menu conv-item-menu";
+  menu.dataset.convId = c.id;
+  menu.setAttribute("role", "menu");
+
   for (const it of items) {
     const b = document.createElement("button");
+    b.type = "button";
     b.className = "sidebar-menu-item";
     b.setAttribute("role", "menuitem");
     b.innerHTML = `<span class="sidebar-menu-item-label">${escHtml(it.label)}</span>`;
@@ -1445,6 +1476,78 @@ function openConvItemMenu(c, anchorBtn) {
   window.addEventListener("scroll", closeConvItemMenu, true);
 }
 
+// ── Shared chat row ───────────────────────────────────────────────────────────
+// One builder draws a chat as a sidebar row wherever one appears: the sidebar
+// list (appendListItems) and the Related Conversations panel (related.js).
+// Callers pass only what differs:
+//   location    — "Archived", "Deleted" or a folder name, shown as Location\Title
+//   openMenu    — the ⋮ handler (default: the sidebar menu)
+//   onOpen      — what clicking the row does (default: open the chat)
+//   snippetHtml — the snippet holds search-highlight markup, not plain text
+// Sidebar-only extras (drag into a folder, the Recycle Bin checkbox) are added
+// by appendListItems after the row is built.
+function buildConvRow(c, { location = null, openMenu = openConvItemMenu, onOpen = null, snippetHtml = false } = {}) {
+  const el = document.createElement("div");
+  el.className = "conv-item" + (c.id === state.activeId ? " active" : "");
+  el.dataset.id = c.id;
+
+  const top = document.createElement("div");
+  top.className = "conv-top-row";
+  const titleEl = document.createElement("div");
+  titleEl.className = "conv-title";
+  titleEl.innerHTML = warningIconsHtml(c);
+  if (location !== null) {
+    const loc = document.createElement("span");
+    loc.className = "related-location";
+    loc.textContent = location;
+    const sep = document.createElement("span");
+    sep.className = "related-location-sep";
+    sep.textContent = "\\";
+    titleEl.append(loc, sep);
+  }
+  titleEl.append(c.title || "Untitled");
+  makeKeyboardAction(titleEl, `Open ${c.title || "Untitled"}`);
+  top.appendChild(titleEl);
+  top.appendChild(buildConvActions(c, openMenu));
+  el.appendChild(top);
+
+  const snippet = (c.preview || c.snippet || "").trim();
+  if (snippet && state.preferences.showChatSnippet) {
+    const sn = document.createElement("div");
+    sn.className = "conv-snippet";
+    if (snippetHtml) sn.innerHTML = snippet;
+    else sn.textContent = snippet;
+    el.appendChild(sn);
+  }
+  const footer = document.createElement("div");
+  footer.className = "conv-footer";
+  const date = document.createElement("span");
+  date.textContent = formatDate(c.update_time || c.create_time);
+  const count = document.createElement("span");
+  count.textContent = `${c.message_count} msg${c.message_count !== 1 ? "s" : ""}`;
+  footer.append(date, count);
+  el.appendChild(footer);
+  // Label squares: one bare square rides on the title's line; several
+  // squares, or any square showing a name, get their own row under the
+  // date/messages line. paintRowLabels decides and places them.
+  paintRowLabels(el, c.id, c.labels || [], ".conv-title", footer);
+
+  if (state.preferences.showSummaryHints && c.has_condensed_summary) {
+    const hintEl = document.createElement("span");
+    hintEl.className = "conv-summary-hint";
+    hintEl.textContent = "Summary";
+    hintEl.dataset.convId = c.id;
+    prepareSummaryHint(hintEl);
+    top.after(hintEl);
+  }
+
+  el.addEventListener("click", () => {
+    if (onOpen) onOpen(c, el);
+    else openConversation(c.id, el);
+  });
+  return el;
+}
+
 function appendListItems(convs, targetEl = convList) {
   for (const c of convs) {
     // ── Month section header ──────────────────────────────────────────────────
@@ -1471,9 +1574,8 @@ function appendListItems(convs, targetEl = convList) {
       targetEl.appendChild(sectionEl);
     }
 
-    const el = document.createElement("div");
-    el.className = "conv-item" + (c.id === state.activeId ? " active" : "");
-    el.dataset.id = c.id;
+    // Sidebar search snippets carry <mark> highlight markup from the server.
+    const el = buildConvRow(c, { snippetHtml: true });
     el.draggable = true; // drag into a folder
     el.addEventListener("dragstart", (e) => {
       e.dataTransfer.effectAllowed = "move";
@@ -1482,14 +1584,10 @@ function appendListItems(convs, targetEl = convList) {
     });
     el.addEventListener("dragend", () => el.classList.remove("dragging"));
 
-    const snippet = (c.preview || c.snippet || "").trim();
-    const top = document.createElement("div");
-    top.className = "conv-top-row";
-    top.innerHTML = `<div class="conv-title">${warningIconsHtml(c)}${escHtml(c.title)}</div>`;
-    makeKeyboardAction(top.querySelector(".conv-title"), `Open ${c.title || "Untitled"}`);
     // Recycle Bin rows carry an always-visible checkbox beside the title. Its
     // presence depends only on the view, never on which action is selected.
     if (state.view === "deleted") {
+      const top = el.querySelector(":scope > .conv-top-row");
       el.classList.add("conv-item-recycle");
       const cb = document.createElement("input");
       cb.type = "checkbox";
@@ -1504,37 +1602,6 @@ function appendListItems(convs, targetEl = convList) {
       });
       top.insertBefore(cb, top.firstChild);
     }
-    top.appendChild(buildConvActions(c));
-
-    const showSnippet = snippet && state.preferences.showChatSnippet;
-    el.innerHTML = `
-      ${showSnippet ? `<div class="conv-snippet">${snippet}</div>` : ""}
-      <div class="conv-footer">
-        <span>${formatDate(c.update_time || c.create_time)}</span>
-        <span>${c.message_count} msg${c.message_count !== 1 ? "s" : ""}</span>
-      </div>`;
-    el.insertBefore(top, el.firstChild);
-    // Label squares: one bare square rides on the title's line; several
-    // squares, or any square showing a name, get their own row under the
-    // date/messages line. paintRowLabels decides and places them.
-    paintRowLabels(
-      el,
-      c.id,
-      c.labels || [],
-      ".conv-title",
-      el.querySelector(":scope > .conv-footer"),
-    );
-
-    if (state.preferences.showSummaryHints && c.has_condensed_summary) {
-      const hintEl = document.createElement("span");
-      hintEl.className = "conv-summary-hint";
-      hintEl.textContent = "Summary";
-      hintEl.dataset.convId = c.id;
-      prepareSummaryHint(hintEl);
-      top.after(hintEl);
-    }
-
-    el.addEventListener("click", () => openConversation(c.id, el));
 
     // Append inside the current month section if one exists
     const lastChild = targetEl.lastElementChild;
