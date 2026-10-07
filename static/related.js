@@ -68,6 +68,8 @@ const _related = {
   loadToken: 0,
   // True while a different chat's list is loading (rows are cleared).
   loading: false,
+  // True when that load failed; the panel says so until a load succeeds.
+  loadFailed: false,
 };
 let _relatedMenuEl = null;
 let _relatedSidebarWasCollapsed = null;
@@ -168,6 +170,7 @@ async function loadRelatedFor(convId, title) {
   // Clear the old chat's rows at once, so none of their menus act on the new
   // chat while its list loads.
   _related.loading = true;
+  _related.loadFailed = false;
   closeRelatedRowMenu();
   renderRelatedPanel();
   await reloadRelated();
@@ -181,12 +184,20 @@ async function reloadRelated() {
   try {
     rows = await apiRelatedList(convId);
   } catch (_) {
+    // A new chat's list that fails to load says so instead of staying blank.
+    // A failed refresh of the same chat keeps the rows it already shows.
+    if (token === _related.loadToken && convId === _related.convId && _related.loading) {
+      _related.loading = false;
+      _related.loadFailed = true;
+      renderRelatedPanel();
+    }
     return;
   }
   if (token !== _related.loadToken || convId !== _related.convId) return;
   _related.rows = rows;
   _related.ids = new Set(rows.map((r) => r.id));
   _related.loading = false;
+  _related.loadFailed = false;
   renderRelatedPanel();
   window.advancedSearchController?.refreshRelated?.();
 }
@@ -233,6 +244,14 @@ function renderRelatedPanel() {
 
   relatedListEl.innerHTML = "";
   if (_related.loading) return;
+  if (_related.loadFailed) {
+    const failed = document.createElement("div");
+    failed.className = "related-empty";
+    failed.setAttribute("role", "alert");
+    failed.textContent = "Could not load related conversations.";
+    relatedListEl.appendChild(failed);
+    return;
+  }
   if (!_related.rows.length) {
     const empty = document.createElement("div");
     empty.className = "related-empty";
