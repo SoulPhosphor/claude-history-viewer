@@ -177,6 +177,25 @@ function raiseSidebarOverlay(element) {
   element.style.setProperty("--sidebar-overlay-layer", String(_sidebarOverlayLayer));
 }
 
+// Notes and Related Conversations open a collapsed sidebar while they cover
+// it. One snapshot of the collapse state is shared and kept until the last of
+// them closes, whatever order they open and close in.
+let _sidebarCollapsedBeforeOverlay = null;
+function expandSidebarForOverlay() {
+  if (_sidebarCollapsedBeforeOverlay === null) {
+    _sidebarCollapsedBeforeOverlay = document.body.classList.contains("sidebar-collapsed");
+  }
+  document.body.classList.remove("sidebar-collapsed");
+}
+function restoreSidebarAfterOverlay() {
+  if (_sidebarCollapsedBeforeOverlay === null) return;
+  const notesOpen = typeof notesSidePanelIsOpen === "function" && notesSidePanelIsOpen();
+  const relatedOpen = typeof relatedPanelIsOpen === "function" && relatedPanelIsOpen();
+  if (notesOpen || relatedOpen) return;
+  document.body.classList.toggle("sidebar-collapsed", _sidebarCollapsedBeforeOverlay);
+  _sidebarCollapsedBeforeOverlay = null;
+}
+
 // ── Available local files (source/files/) ────────────────────────────────────
 // Maps normalizedName → realFilename. Normalized = lowercase + spaces→underscores.
 const _normName = (s) => s.toLowerCase().replace(/\s+/g, "_");

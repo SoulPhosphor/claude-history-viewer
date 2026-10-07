@@ -23,7 +23,6 @@ let _notesPendingValues = new Map();
 let _notesOutstandingSaves = 0;
 let _notesWriteGeneration = 0;
 let _notesSaveFailed = false;
-let _sidebarWasCollapsed = null;
 let _sideWasOpenBeforeFullNotes = false;
 let _notesUnsavedResolve = null;
 
@@ -267,12 +266,9 @@ async function flushNotesSideAutosaves() {
   return saved;
 }
 
+// The collapse snapshot is shared with Related Conversations (app.js).
 function restoreSidebarCollapsedState() {
-  if (_sidebarWasCollapsed === null) return;
-  // Leave the sidebar open while Related Conversations still covers it.
-  const relatedOpen = typeof relatedPanelIsOpen === "function" && relatedPanelIsOpen();
-  if (!relatedOpen) document.body.classList.toggle("sidebar-collapsed", _sidebarWasCollapsed);
-  _sidebarWasCollapsed = null;
+  restoreSidebarAfterOverlay();
 }
 
 async function hideNotesSidePanel({ manual = false, restoreSidebar = true } = {}) {
@@ -294,10 +290,7 @@ async function openNotesSidePanel() {
     const beganVisit = await beginNotesConversationVisit(convId);
     if (!beganVisit) return;
   }
-  if (_sidebarWasCollapsed === null) {
-    _sidebarWasCollapsed = document.body.classList.contains("sidebar-collapsed");
-  }
-  document.body.classList.remove("sidebar-collapsed");
+  expandSidebarForOverlay();
   if (_notesVisit.baseline === null) {
     // Never expose inputs containing the previous conversation's values while
     // the new conversation is loading.

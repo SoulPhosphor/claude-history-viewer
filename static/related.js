@@ -72,7 +72,6 @@ const _related = {
   loadFailed: false,
 };
 let _relatedMenuEl = null;
-let _relatedSidebarWasCollapsed = null;
 let _unlinkResolve = null;
 let _unlinkSkipFallback = false;
 
@@ -475,11 +474,8 @@ function updateRelatedToggle(isOpen) {
 function openRelatedPanel() {
   const convId = state.activeId;
   if (!convId || !relatedPanel) return;
-  // Like Notes: a collapsed sidebar opens while the panel is up.
-  if (_relatedSidebarWasCollapsed === null) {
-    _relatedSidebarWasCollapsed = document.body.classList.contains("sidebar-collapsed");
-  }
-  document.body.classList.remove("sidebar-collapsed");
+  // Like Notes: a collapsed sidebar opens while the panel is up (app.js).
+  expandSidebarForOverlay();
   if (typeof raiseSidebarOverlay === "function") raiseSidebarOverlay(relatedPanel);
   relatedPanel.hidden = false;
   updateRelatedToggle(true);
@@ -496,14 +492,7 @@ function closeRelatedPanel() {
   closeRelatedRowMenu();
   relatedPanel.hidden = true;
   updateRelatedToggle(false);
-  if (_relatedSidebarWasCollapsed !== null) {
-    // Leave the sidebar open while Notes still covers it.
-    const notesOpen = typeof notesSidePanelIsOpen === "function" && notesSidePanelIsOpen();
-    if (!notesOpen) {
-      document.body.classList.toggle("sidebar-collapsed", _relatedSidebarWasCollapsed);
-    }
-    _relatedSidebarWasCollapsed = null;
-  }
+  restoreSidebarAfterOverlay();
 }
 
 // ── Find Related Conversations (Advanced Search, Related mode) ───────────────
