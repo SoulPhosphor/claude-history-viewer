@@ -155,10 +155,10 @@
 
   let sectionBadges = {};
 
-  // Values that narrow the results. "All" on its own narrows nothing.
+  // Values selected in a filter. "All" and "None" select no values, so
+  // neither adds to the count.
   function filterCount(filter) {
-    if (!filter) return 0;
-    if (filter.none) return 1;
+    if (!filter || filter.none) return 0;
     return filter.include.filter((value) => value !== ALL).length + filter.exclude.length;
   }
 
