@@ -993,6 +993,9 @@
     ui.busy = true;
     ui.hasRun = true;
     const scroll = resultsList.scrollTop;
+    // A location listing has no matches to count, so it sorts by date only:
+    // show the sort it actually uses.
+    if (sortEl.value === "matches") sortEl.value = "newest";
     resultsStatus.textContent = append ? "Loading more…" : "Loading…";
     try {
       const response = await fetch("/api/advanced-search/browse", {
@@ -1264,6 +1267,9 @@
   }
 
   function renderResults() {
+    // Most Matches only applies to a search, not a location listing.
+    const matchesOption = sortEl.querySelector('option[value="matches"]');
+    if (matchesOption) matchesOption.disabled = Boolean(ui.browse);
     resultsList.innerHTML = "";
     resultsList.dataset.view = ui.resultView;
     if (ui.browse) {
