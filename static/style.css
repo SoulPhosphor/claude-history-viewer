@@ -3378,6 +3378,43 @@ kbd {
   outline: none;
   border-color: var(--accent);
 }
+/* Add to Folder: "Folders" and its dropdown on one line. */
+:root {
+  --folder-pick-gap: 10px;
+  --folder-pick-label-size: 13px;
+  --folder-pick-label-weight: 600;
+  --folder-pick-select-padding: 7px 10px;
+  --folder-pick-select-radius: 7px;
+  --folder-pick-select-size: 13px;
+}
+.folder-pick-row {
+  display: flex;
+  align-items: center;
+  gap: var(--folder-pick-gap);
+}
+.folder-pick-row label {
+  color: var(--text);
+  font-size: var(--folder-pick-label-size);
+  font-weight: var(--folder-pick-label-weight);
+}
+#folder-pick-select {
+  flex: 1;
+  min-width: 0;
+  padding: var(--folder-pick-select-padding);
+  border: 1px solid var(--border);
+  border-radius: var(--folder-pick-select-radius);
+  background: var(--sidebar-bg);
+  color: var(--text);
+  font-size: var(--folder-pick-select-size);
+}
+#folder-pick-select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.modal-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .modal-buttons {
   display: flex;
   justify-content: flex-end;

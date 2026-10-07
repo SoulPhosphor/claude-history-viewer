@@ -57,6 +57,11 @@
   --advanced-transition: 140ms ease;
   --advanced-provider-chatgpt: var(--compare-chatgpt);
   --advanced-provider-claude: var(--compare-claude);
+  /* Location before a result's title (Archived, Deleted or a folder). */
+  --advanced-location-color: var(--advanced-accent);
+  --advanced-location-weight: inherit;
+  --advanced-location-sep-color: var(--advanced-muted);
+  --advanced-location-sep-gap: 2px;
 }
 
 #advanced-search-panel {
@@ -765,6 +770,30 @@ body.advanced-results-maximized #main > :not(#tabs-wrap):not(#advanced-results-p
 
 .advanced-result-date {
   margin-left: auto;
+}
+
+.advanced-result-location {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--advanced-location-color);
+  font: inherit;
+  font-weight: var(--advanced-location-weight);
+  cursor: pointer;
+}
+
+.advanced-result-location:hover,
+.advanced-result-location:focus-visible {
+  text-decoration: underline;
+}
+
+.advanced-result-location-sep {
+  margin: 0 var(--advanced-location-sep-gap);
+  color: var(--advanced-location-sep-color);
+}
+
+.advanced-result-menu-btn {
+  flex-shrink: 0;
 }
 
 .advanced-result-snippet {

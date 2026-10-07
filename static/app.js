@@ -5711,6 +5711,55 @@ nameModal?.addEventListener("mousedown", (e) => {
   if (e.target === nameModal) closeNameModal(null);
 });
 
+// ── Folder picker (Add to Folder) ───────────────────────────────────────────────
+const folderPickModal = $("folder-pick-modal");
+const folderPickSelect = $("folder-pick-select");
+const folderPickCancel = $("folder-pick-cancel");
+const folderPickOk = $("folder-pick-ok");
+let _folderPickResolve = null;
+
+// Resolves to the chosen folder id, or null on Cancel.
+function openFolderPicker(folders, selectedId = null) {
+  folderPickSelect.innerHTML = "";
+  for (const f of folders) {
+    const opt = document.createElement("option");
+    opt.value = f.id;
+    opt.textContent = f.name;
+    folderPickSelect.appendChild(opt);
+  }
+  if (selectedId && folders.some((f) => f.id === selectedId)) {
+    folderPickSelect.value = selectedId;
+  }
+  folderPickOk.disabled = !folders.length;
+  folderPickModal.hidden = false;
+  setTimeout(() => folderPickSelect.focus(), 0);
+  return new Promise((resolve) => {
+    _folderPickResolve = resolve;
+  });
+}
+function closeFolderPicker(result) {
+  folderPickModal.hidden = true;
+  const r = _folderPickResolve;
+  _folderPickResolve = null;
+  if (r) r(result);
+}
+folderPickCancel?.addEventListener("click", () => closeFolderPicker(null));
+folderPickOk?.addEventListener("click", () =>
+  closeFolderPicker(folderPickSelect.value || null),
+);
+folderPickModal?.addEventListener("mousedown", (e) => {
+  if (e.target === folderPickModal) closeFolderPicker(null);
+});
+folderPickModal?.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    closeFolderPicker(null);
+  } else if (e.key === "Enter" && e.target === folderPickSelect) {
+    e.preventDefault();
+    closeFolderPicker(folderPickSelect.value || null);
+  }
+});
+
 // ── Confirmation modal (permanent deletion) ─────────────────────────────────────
 const confirmModal = $("confirm-modal");
 const confirmModalTitle = $("confirm-modal-title");

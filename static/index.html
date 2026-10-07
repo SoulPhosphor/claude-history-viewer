@@ -1570,6 +1570,19 @@
         </div>
       </div>
     </div>
+    <!-- Add to Folder (Advanced Search result menu): pick a folder. -->
+    <div id="folder-pick-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="folder-pick-label">
+        <div class="folder-pick-row">
+          <label id="folder-pick-label" for="folder-pick-select">Folders</label>
+          <select id="folder-pick-select"></select>
+        </div>
+        <div class="modal-buttons">
+          <button id="folder-pick-cancel" class="modal-btn">Cancel</button>
+          <button id="folder-pick-ok" class="modal-btn modal-btn-primary">Okay</button>
+        </div>
+      </div>
+    </div>
     <!-- Generic confirmation dialog (used for permanent deletion). -->
     <div id="confirm-modal" class="modal-overlay" hidden>
       <div class="modal" role="dialog" aria-modal="true">

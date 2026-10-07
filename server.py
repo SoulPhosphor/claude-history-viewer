@@ -1401,6 +1401,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/advanced-search":
             payload = self._read_json_body()
             self._handle_db(lambda conn: advanced_search.search(conn, payload))
+        elif path == "/api/advanced-search/browse":
+            payload = self._read_json_body()
+            self._handle_db(lambda conn: advanced_search.browse(conn, payload))
         elif path == "/api/advanced-search/saved":
             payload = self._read_json_body()
             self._handle_db(lambda conn: advanced_search.save_search(conn, payload))

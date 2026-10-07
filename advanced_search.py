@@ -448,8 +448,34 @@ def _attach_metadata(conn, results: list[dict]) -> None:
         ids,
     ):
         models[row[0]].append(row[1])
+    # Where the conversation lives: the Recycle Bin, the archive, or a folder.
+    status = {}
+    for row in conn.execute(
+        f"SELECT conversation_id, archived, deleted FROM conversation_meta WHERE conversation_id IN ({marks})",
+        ids,
+    ):
+        status[row[0]] = (bool(row[1]), bool(row[2]))
+    folders = {}
+    for row in conn.execute(
+        "SELECT fi.conversation_id, f.id, f.name, fi.pinned FROM udb.folder_items fi "
+        f"JOIN udb.folders f ON f.id=fi.folder_id WHERE fi.conversation_id IN ({marks})",
+        ids,
+    ):
+        folders[row[0]] = {"id": row[1], "name": row[2], "pinned": bool(row[3])}
+    pinned = {row[0] for row in conn.execute(
+        f"SELECT conversation_id FROM pinned_conversations WHERE conversation_id IN ({marks})",
+        ids,
+    )}
     for result in results:
         cid = result["id"]
+        archived, deleted = status.get(cid, (False, False))
+        folder = folders.get(cid)
+        result["archived"] = archived
+        result["deleted"] = deleted
+        result["folder"] = {"id": folder["id"], "name": folder["name"]} if folder else None
+        # A foldered chat is pinned within its folder; any other chat uses the
+        # ordinary pin list.
+        result["pinned"] = folder["pinned"] if folder else cid in pinned
         result["tags"] = tags[cid]
         result["mood_tags"] = moods[cid]
         result["labels"] = label_map[cid]
@@ -488,7 +514,7 @@ def _remember_recent(conn, criteria: dict) -> None:
     conn.commit()
 
 
-def search(conn, payload: dict) -> dict:
+def search(conn, payload: dict, remember: bool = True) -> dict:
     _register_functions(conn)
     criteria = payload if isinstance(payload, dict) else {}
     query = str(criteria.get("query") or "").strip()
@@ -550,9 +576,41 @@ def search(conn, payload: dict) -> dict:
         offset, limit = 0, 50
     page = results[offset:offset + limit]
     _attach_metadata(conn, page)
-    if offset == 0:
+    if offset == 0 and remember:
         _remember_recent(conn, criteria)
     return {"results": page, "total": total, "offset": offset, "limit": limit}
+
+
+def browse(conn, payload: dict) -> dict:
+    """Every conversation in one location (a folder, Archived or Deleted),
+    as result cards. Browsing is not a search, so it is not added to Recent."""
+    payload = payload if isinstance(payload, dict) else {}
+    kind = str(payload.get("kind") or "")
+    provider = str(payload.get("provider") or "")
+    if kind == "folder":
+        row = conn.execute(
+            "SELECT provider FROM udb.folders WHERE id=?", (str(payload.get("id") or ""),)
+        ).fetchone()
+        if not row:
+            raise ApiError("Folder not found.", 404)
+        provider = row[0] or provider
+    elif kind not in ("archived", "deleted"):
+        raise ApiError("Unknown location.", 400)
+    if provider not in ("claude", "chatgpt"):
+        provider = "claude"
+    criteria = {
+        "providers": [provider],
+        "sort": payload.get("sort") if payload.get("sort") in ("newest", "oldest") else "newest",
+        "offset": payload.get("offset"),
+        "limit": payload.get("limit"),
+    }
+    if kind == "folder":
+        # A folder shows what the sidebar shows in it: everything but deleted chats.
+        criteria["statuses"] = ["active", "archived"]
+        criteria["filters"] = {f"{provider}_folders": {"include": [str(payload["id"])]}}
+    else:
+        criteria["statuses"] = [kind]
+    return search(conn, criteria, remember=False)
 
 
 def options(conn) -> dict:

@@ -87,6 +87,9 @@
     hasRun: false,
     lastSearchKey: null,
     pendingSearch: null,
+    // The location being listed (a folder, Archived or Deleted) when the
+    // results show a location instead of a search.
+    browse: null,
     resultView: "default",
     listModels: false,
     resultSize: "default",
@@ -848,6 +851,7 @@
     ui.total = 0;
     ui.hasRun = false;
     ui.lastSearchKey = null;
+    ui.browse = null;
     syncHeaderControls();
     renderFilters();
     renderResults();
@@ -879,6 +883,7 @@
 
   function closeAdvancedSearch() {
     if (!ui.open) return;
+    closeResultMenu();
     ui.open = false;
     panel.hidden = true;
     resultsPanel.hidden = true;
@@ -915,7 +920,7 @@
     if (ui.busy) {
       // Run it once the current search finishes, so the newest request
       // (a sort change, a second click) is never dropped.
-      ui.pendingSearch = options || {};
+      ui.pendingSearch = () => runSearch(options || {});
       return;
     }
     ui.criteria.query = queryEl.value.trim();
@@ -942,6 +947,7 @@
         : (data.results || []);
       ui.total = Number(data.total || 0);
       ui.lastSearchKey = key;
+      ui.browse = null;
       resultsStatus.textContent = "";
       renderResults();
       if (!append) await loadHistory();
@@ -951,8 +957,203 @@
       ui.busy = false;
       const next = ui.pendingSearch;
       ui.pendingSearch = null;
-      if (next) runSearch(next);
+      if (next) next();
     }
+  }
+
+  // List every conversation in one location (a folder, Archived or Deleted)
+  // in the results area, as the same result cards a search shows.
+  async function runBrowse(location, append = false) {
+    if (ui.busy) {
+      ui.pendingSearch = () => runBrowse(location, append);
+      return;
+    }
+    ui.busy = true;
+    ui.hasRun = true;
+    resultsStatus.textContent = append ? "Loading more…" : "Loading…";
+    try {
+      const response = await fetch("/api/advanced-search/browse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: location.kind,
+          id: location.id,
+          provider: location.provider,
+          sort: sortEl.value,
+          limit: 100,
+          offset: append ? ui.results.length : 0,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      ui.results = append ? ui.results.concat(data.results || []) : (data.results || []);
+      ui.total = Number(data.total || 0);
+      ui.lastSearchKey = null;
+      ui.browse = location;
+      resultsStatus.textContent = "";
+      renderResults();
+      if (!append) resultsList.scrollTop = 0;
+    } catch (error) {
+      resultsStatus.textContent = `Could not open ${location.name}: ${error.message}`;
+    } finally {
+      ui.busy = false;
+      const next = ui.pendingSearch;
+      ui.pendingSearch = null;
+      if (next) next();
+    }
+  }
+
+  // Where a result lives, shown before its title. Deleted wins over the
+  // rest, then Archived, then the folder; null when it is in none of them.
+  function resultLocation(result) {
+    if (result.deleted) return { kind: "deleted", name: "Deleted", provider: result.provider };
+    if (result.archived) return { kind: "archived", name: "Archived", provider: result.provider };
+    if (result.folder) {
+      return { kind: "folder", id: result.folder.id, name: result.folder.name, provider: result.provider };
+    }
+    return null;
+  }
+
+  // ── Result ⋮ menu ─────────────────────────────────────────────────────────
+  let resultMenu = null;
+
+  function closeResultMenu() {
+    if (!resultMenu) return;
+    resultMenu.remove();
+    resultMenu = null;
+    document.removeEventListener("mousedown", onResultMenuOutside, true);
+    window.removeEventListener("scroll", closeResultMenu, true);
+  }
+
+  function onResultMenuOutside(event) {
+    if (resultMenu && !resultMenu.contains(event.target)) closeResultMenu();
+  }
+
+  // Re-draw the cards after an action, keeping the list where it was.
+  function refreshResults() {
+    const scroll = resultsList.scrollTop;
+    renderResults();
+    resultsList.scrollTop = scroll;
+  }
+
+  // Keep the open conversation's own pin/folder state in step, so the
+  // conversation's ⋮ menu acts on what the result menu just changed.
+  function syncActiveConversation(result) {
+    if (state.activeId !== result.id) return;
+    state.activeFolderId = result.folder ? result.folder.id : null;
+    state.activeFolderPinned = Boolean(result.folder && result.pinned);
+    state.activePinned = Boolean(!result.folder && result.pinned);
+  }
+
+  async function addResultToFolder(result) {
+    let folders = [];
+    try {
+      const response = await fetch(`/api/folders?${new URLSearchParams({ provider: result.provider })}`);
+      folders = (await response.json()).folders || [];
+    } catch (_) {
+      resultsStatus.textContent = "Could not load the folders.";
+      return;
+    }
+    const folderId = await openFolderPicker(folders, result.folder?.id);
+    // The folder it is already in: nothing to move (moving would clear its
+    // pin within the folder).
+    if (!folderId || folderId === result.folder?.id) return;
+    const data = await apiMoveToFolder(folderId, result.id);
+    if (!data || data.error) {
+      resultsStatus.textContent = "Could not add the conversation to the folder.";
+      return;
+    }
+    const folder = folders.find((item) => item.id === folderId);
+    // Moving into a folder un-archives it and drops its pin.
+    result.folder = { id: folderId, name: folder ? folder.name : "" };
+    result.archived = false;
+    result.pinned = false;
+    syncActiveConversation(result);
+    refreshResults();
+    await afterFolderChange();
+  }
+
+  async function togglePinResult(result) {
+    const next = !result.pinned;
+    if (result.folder) await apiFolderPin(result.id, next);
+    else if (next) await apiPinConversation(result.id);
+    else await apiUnpinConversation(result.id);
+    result.pinned = next;
+    syncActiveConversation(result);
+    refreshResults();
+    await afterFolderChange();
+  }
+
+  async function archiveResult(result) {
+    await apiUpdateConversationMeta(result.id, { archived: true });
+    // Archiving takes a chat out of its folder, and its pin there with it.
+    if (result.folder) {
+      result.folder = null;
+      result.pinned = false;
+    }
+    result.archived = true;
+    syncActiveConversation(result);
+    refreshResults();
+    await afterFolderChange();
+  }
+
+  async function deleteResult(result) {
+    const ok = await openConfirm({
+      title: "Delete conversation?",
+      text: `"${result.title || "Untitled"}" will be moved to the Recycle Bin.`,
+      okLabel: "Delete",
+    });
+    if (!ok) return;
+    await apiUpdateConversationMeta(result.id, { deleted: true });
+    result.deleted = true;
+    refreshResults();
+    await afterFolderChange();
+  }
+
+  function openResultMenu(result, anchor) {
+    const wasForThis = resultMenu && resultMenu.dataset.convId === result.id;
+    closeResultMenu();
+    if (wasForThis) return; // clicking the same ⋮ again closes it
+    const menu = document.createElement("div");
+    menu.className = "sidebar-menu conv-item-menu";
+    menu.dataset.convId = result.id;
+    menu.setAttribute("role", "menu");
+    const items = [
+      ["Add to Folder", () => addResultToFolder(result)],
+      [result.pinned ? "Unpin" : "Pin", () => togglePinResult(result)],
+      ["Archive", () => archiveResult(result)],
+      ["Delete", () => deleteResult(result)],
+    ];
+    for (const [label, fn] of items) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "sidebar-menu-item";
+      btn.setAttribute("role", "menuitem");
+      const text = document.createElement("span");
+      text.className = "sidebar-menu-item-label";
+      text.textContent = label;
+      btn.appendChild(text);
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        closeResultMenu();
+        fn();
+      });
+      menu.appendChild(btn);
+    }
+    document.body.appendChild(menu);
+    resultMenu = menu;
+    // Under the button, right-aligned, kept on screen.
+    const rect = anchor.getBoundingClientRect();
+    const left = Math.max(8, rect.right - menu.offsetWidth);
+    let top = rect.bottom + 4;
+    if (top + menu.offsetHeight > window.innerHeight - 8) {
+      top = rect.top - menu.offsetHeight - 4;
+    }
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    menu.querySelector("button")?.focus();
+    document.addEventListener("mousedown", onResultMenuOutside, true);
+    window.addEventListener("scroll", closeResultMenu, true);
   }
 
   function formatStartDate(value) {
@@ -973,9 +1174,13 @@
   function renderResults() {
     resultsList.innerHTML = "";
     resultsList.dataset.view = ui.resultView;
-    resultsCount.textContent = ui.hasRun
-      ? `${ui.total.toLocaleString()} Search Result${ui.total === 1 ? "" : "s"}`
-      : "Search Results";
+    if (ui.browse) {
+      resultsCount.textContent = `${ui.browse.name}: ${ui.total.toLocaleString()} Conversation${ui.total === 1 ? "" : "s"}`;
+    } else {
+      resultsCount.textContent = ui.hasRun
+        ? `${ui.total.toLocaleString()} Search Result${ui.total === 1 ? "" : "s"}`
+        : "Search Results";
+    }
     if (!ui.hasRun) {
       const empty = document.createElement("div");
       empty.className = "advanced-empty-note";
@@ -987,7 +1192,9 @@
     if (!ui.results.length) {
       const empty = document.createElement("div");
       empty.className = "advanced-empty-note";
-      empty.textContent = "No conversations matched these filters.";
+      empty.textContent = ui.browse
+        ? `No conversations in ${ui.browse.name}.`
+        : "No conversations matched these filters.";
       resultsList.appendChild(empty);
       syncResultSizeButtons();
       return;
@@ -1001,14 +1208,45 @@
       titleRow.className = "advanced-result-title-row";
       const title = document.createElement("span");
       title.className = "advanced-result-title";
-      title.textContent = result.title || "Untitled";
+      // Location\chat name. Clicking the location lists everything in it.
+      const location = resultLocation(result);
+      if (location) {
+        const locationBtn = document.createElement("button");
+        locationBtn.type = "button";
+        locationBtn.className = "advanced-result-location";
+        locationBtn.textContent = location.name;
+        locationBtn.title = `Open ${location.name}`;
+        locationBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          runBrowse(location);
+        });
+        const sep = document.createElement("span");
+        sep.className = "advanced-result-location-sep";
+        sep.textContent = "\\";
+        title.append(locationBtn, sep);
+      }
+      title.append(result.title || "Untitled");
       const matches = document.createElement("span");
       matches.className = "advanced-result-matches";
       matches.textContent = `${Number(result.match_count || 0).toLocaleString()} match${Number(result.match_count || 0) === 1 ? "" : "es"}`;
       const date = document.createElement("span");
       date.className = "advanced-result-date";
       date.textContent = formatStartDate(result.create_time);
-      titleRow.append(title, matches, date);
+      const menuBtn = document.createElement("button");
+      menuBtn.type = "button";
+      menuBtn.className = "conv-menu-btn advanced-result-menu-btn";
+      menuBtn.title = "More";
+      menuBtn.setAttribute("aria-label", "More");
+      menuBtn.setAttribute("aria-haspopup", "menu");
+      menuBtn.innerHTML =
+        '<svg viewBox="0 0 4 16" width="4" height="16" aria-hidden="true">'
+        + '<circle cx="2" cy="2" r="1.7"/><circle cx="2" cy="8" r="1.7"/>'
+        + '<circle cx="2" cy="14" r="1.7"/></svg>';
+      menuBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openResultMenu(result, menuBtn);
+      });
+      titleRow.append(title, matches, date, menuBtn);
       if (ui.resultView === "compact" && multiProvider) {
         const provider = document.createElement("span");
         provider.className = "advanced-provider-chip";
@@ -1068,6 +1306,8 @@
       const open = () => openConversation(result.id, null, result.target_seq);
       card.addEventListener("click", open);
       card.addEventListener("keydown", (event) => {
+        // Keys on the location or ⋮ buttons belong to those buttons.
+        if (event.target !== card) return;
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           open();
@@ -1080,7 +1320,10 @@
       more.type = "button";
       more.className = "advanced-load-more";
       more.textContent = `Load More (${ui.results.length.toLocaleString()} of ${ui.total.toLocaleString()})`;
-      more.addEventListener("click", () => runSearch({ append: true }));
+      more.addEventListener("click", () => {
+        if (ui.browse) runBrowse(ui.browse, true);
+        else runSearch({ append: true });
+      });
       resultsList.appendChild(more);
     }
     syncResultSizeButtons();
@@ -1120,6 +1363,7 @@
     ui.total = 0;
     ui.hasRun = false;
     ui.lastSearchKey = null;
+    ui.browse = null;
     ui.resultView = "default";
     ui.listModels = false;
     syncHeaderControls();
@@ -1164,7 +1408,8 @@
   });
   sortEl.addEventListener("change", () => {
     ui.criteria.sort = sortEl.value;
-    if (ui.hasRun) runSearch();
+    if (ui.browse) runBrowse(ui.browse);
+    else if (ui.hasRun) runSearch();
   });
   resultViewEl.addEventListener("change", () => {
     ui.resultView = resultViewEl.value;
@@ -1214,6 +1459,12 @@
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || !ui.open) return;
     if (topModalIsOpen() || sidebarOverlayIsOpen()) return;
+    if (resultMenu) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeResultMenu();
+      return;
+    }
     event.preventDefault();
     event.stopImmediatePropagation();
     closeAdvancedSearch();
