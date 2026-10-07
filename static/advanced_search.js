@@ -899,12 +899,16 @@
   async function openSearchMode(related) {
     ui.related = related;
     await openAdvancedSearch();
-    // Results built for the other mode (or another chat) are re-run, so the
-    // chat being linked never lists itself and an ordinary search lists it.
-    if (ui.hasRun && ui.resultsExclude !== excludeKey()) {
-      if (ui.browse) runBrowse(ui.browse);
-      else runSearch();
-    }
+    rerunIfOtherMode();
+  }
+
+  // Results built for the other mode (or another chat) are re-run, so the
+  // chat being linked never lists itself and an ordinary search lists it.
+  // Also called when a request finishes, in case the mode changed meanwhile.
+  function rerunIfOtherMode() {
+    if (!ui.open || !ui.hasRun || ui.resultsExclude === excludeKey()) return;
+    if (ui.browse) runBrowse(ui.browse);
+    else runSearch();
   }
 
   function payload(offset = 0) {
@@ -948,6 +952,10 @@
     ui.criteria.sort = sortEl.value;
     const body = payload(0);
     const key = searchKey(body);
+    // Which chat this request leaves out, fixed now: the mode can change
+    // while the request is in flight.
+    const sentExclude = excludeKey();
+    let succeeded = false;
     // Load More only appends when the search is unchanged since the list was
     // built. If it changed, the list is replaced with the new search's results.
     const append = options?.append === true && key === ui.lastSearchKey;
@@ -969,7 +977,8 @@
       ui.total = Number(data.total || 0);
       ui.lastSearchKey = key;
       ui.browse = null;
-      ui.resultsExclude = excludeKey();
+      ui.resultsExclude = sentExclude;
+      succeeded = true;
       resultsStatus.textContent = "";
       renderResults();
       if (!append) await loadHistory();
@@ -980,6 +989,8 @@
       const next = ui.pendingSearch;
       ui.pendingSearch = null;
       if (next) next();
+      // Only after a success: a failing request must not retry in a loop.
+      else if (succeeded) rerunIfOtherMode();
     }
   }
 
@@ -996,6 +1007,9 @@
     // A location listing has no matches to count, so it sorts by date only:
     // show the sort it actually uses.
     if (sortEl.value === "matches") sortEl.value = "newest";
+    // Fixed before the request, as in runSearch().
+    const sentExclude = excludeKey();
+    let succeeded = false;
     resultsStatus.textContent = append ? "Loading more…" : "Loading…";
     try {
       const response = await fetch("/api/advanced-search/browse", {
@@ -1008,7 +1022,7 @@
           sort: sortEl.value,
           limit: 100,
           offset: append ? ui.results.length : 0,
-          exclude_ids: ui.related ? [ui.related.id] : [],
+          exclude_ids: sentExclude ? [sentExclude] : [],
         }),
       });
       const data = await response.json();
@@ -1017,7 +1031,8 @@
       ui.total = Number(data.total || 0);
       ui.lastSearchKey = null;
       ui.browse = location;
-      ui.resultsExclude = excludeKey();
+      ui.resultsExclude = sentExclude;
+      succeeded = true;
       resultsStatus.textContent = "";
       renderResults();
       if (keepScroll) resultsList.scrollTop = scroll;
@@ -1029,6 +1044,8 @@
       const next = ui.pendingSearch;
       ui.pendingSearch = null;
       if (next) next();
+      // Only after a success: a failing request must not retry in a loop.
+      else if (succeeded) rerunIfOtherMode();
     }
   }
 
