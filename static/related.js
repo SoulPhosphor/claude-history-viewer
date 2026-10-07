@@ -15,12 +15,12 @@
 // and closes the panel; the search itself is kept for next time, as Advanced
 // Search always is.
 //
-// Shared with other screens — change them together:
-//   • Rows reuse the sidebar row (app.js appendListItems): .conv-item,
-//     .conv-top-row, .conv-title, .conv-snippet, .conv-footer, label squares,
-//     summary hint and the ⋮ button.
-//   • The ⋮ items mirror the sidebar's openConvItemMenu(), with "Remove Link"
-//     on top, and pick Archive/Restore/Delete from where each chat lives.
+// Shared with other screens:
+//   • Rows are built by the sidebar's own row builder (app.js buildConvRow),
+//     so a change to sidebar rows reaches this panel too.
+//   • The ⋮ menu is drawn by app.js showConvItemMenu and reuses the sidebar's
+//     Rename, Compare and Summary items. Only "Remove Link" on top and
+//     Pin/Archive/Restore/Delete (chosen from where each chat lives) are here.
 //   • Location\Title matches Advanced Search's result titles (resultLocation).
 //
 // Loaded after app.js and advanced_search.js; leans on app.js globals.
@@ -71,7 +71,6 @@ const _related = {
   // True when that load failed; the panel says so until a load succeeds.
   loadFailed: false,
 };
-let _relatedMenuEl = null;
 let _unlinkResolve = null;
 let _unlinkSkipFallback = false;
 
@@ -170,7 +169,7 @@ async function loadRelatedFor(convId, title) {
   // chat while its list loads.
   _related.loading = true;
   _related.loadFailed = false;
-  closeRelatedRowMenu();
+  closeConvItemMenu();
   renderRelatedPanel();
   await reloadRelated();
 }
@@ -267,96 +266,20 @@ function renderRelatedPanel() {
   }
 }
 
-// One related chat, drawn as a sidebar row (see app.js appendListItems).
+// One related chat, drawn with the shared sidebar row (app.js buildConvRow).
 function buildRelatedRow(c) {
-  const el = document.createElement("div");
-  el.className = "conv-item" + (c.id === state.activeId ? " active" : "");
-  el.dataset.id = c.id;
-
-  const top = document.createElement("div");
-  top.className = "conv-top-row";
-  const titleEl = document.createElement("div");
-  titleEl.className = "conv-title";
-  titleEl.innerHTML = warningIconsHtml(c);
-  const location = relatedLocationName(c);
-  if (location !== null) {
-    const loc = document.createElement("span");
-    loc.className = "related-location";
-    loc.textContent = location;
-    const sep = document.createElement("span");
-    sep.className = "related-location-sep";
-    sep.textContent = "\\";
-    titleEl.append(loc, sep);
-  }
-  titleEl.append(c.title || "Untitled");
-  makeKeyboardAction(titleEl, `Open ${c.title || "Untitled"}`);
-  top.appendChild(titleEl);
-
-  const actions = document.createElement("div");
-  actions.className = "conv-actions";
-  const menuBtn = document.createElement("button");
-  menuBtn.type = "button";
-  menuBtn.className = "conv-menu-btn";
-  menuBtn.title = "More";
-  menuBtn.setAttribute("aria-label", "More");
-  menuBtn.setAttribute("aria-haspopup", "true");
-  menuBtn.innerHTML =
-    '<svg viewBox="0 0 4 16" width="4" height="16" aria-hidden="true">' +
-    '<circle cx="2" cy="2" r="1.7"/><circle cx="2" cy="8" r="1.7"/>' +
-    '<circle cx="2" cy="14" r="1.7"/></svg>';
-  menuBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    openRelatedRowMenu(c, menuBtn);
-  });
-  actions.appendChild(menuBtn);
-  top.appendChild(actions);
-  el.appendChild(top);
-
-  const snippet = (c.preview || "").trim();
-  if (snippet && state.preferences.showChatSnippet) {
-    const sn = document.createElement("div");
-    sn.className = "conv-snippet";
-    sn.textContent = snippet;
-    el.appendChild(sn);
-  }
-  const footer = document.createElement("div");
-  footer.className = "conv-footer";
-  const date = document.createElement("span");
-  date.textContent = formatDate(c.update_time || c.create_time);
-  const count = document.createElement("span");
-  count.textContent = `${c.message_count} msg${c.message_count !== 1 ? "s" : ""}`;
-  footer.append(date, count);
-  el.appendChild(footer);
-  paintRowLabels(el, c.id, c.labels || [], ".conv-title", footer);
-
-  if (state.preferences.showSummaryHints && c.has_condensed_summary) {
-    const hintEl = document.createElement("span");
-    hintEl.className = "conv-summary-hint";
-    hintEl.textContent = "Summary";
-    hintEl.dataset.convId = c.id;
-    prepareSummaryHint(hintEl);
-    top.after(hintEl);
-  }
-
-  el.addEventListener("click", () => {
+  return buildConvRow(c, {
+    location: relatedLocationName(c),
+    openMenu: openRelatedRowMenu,
     // While finding links, a row previews in the chat area and the search stays.
-    openConversation(c.id, null, null, { keepAdvancedSearch: !!_related.searching });
+    onOpen: () => openConversation(c.id, null, null, { keepAdvancedSearch: !!_related.searching }),
   });
-  return el;
 }
 
 // ── Row ⋮ menu ────────────────────────────────────────────────────────────────
-function closeRelatedRowMenu() {
-  if (!_relatedMenuEl) return;
-  restoreActionMenuFocus(_relatedMenuEl);
-  _relatedMenuEl.remove();
-  _relatedMenuEl = null;
-  document.removeEventListener("mousedown", onRelatedMenuOutside, true);
-  window.removeEventListener("scroll", closeRelatedRowMenu, true);
-}
-function onRelatedMenuOutside(e) {
-  if (_relatedMenuEl && !_relatedMenuEl.contains(e.target)) closeRelatedRowMenu();
-}
+// Drawn by the shared chat-row menu (app.js showConvItemMenu). Rename, Compare
+// and Summary are the sidebar's own items; the rest differ because one list
+// mixes chats from every location.
 
 // After a row action: refresh this list and the sidebar lists it can touch.
 async function afterRelatedRowChange() {
@@ -367,35 +290,13 @@ async function afterRelatedRowChange() {
 }
 
 function openRelatedRowMenu(c, anchorBtn) {
-  const wasForThis = _relatedMenuEl && _relatedMenuEl.dataset.convId === c.id;
-  closeRelatedRowMenu();
-  if (wasForThis) return; // clicking the same ⋮ again closes it
-
-  const menu = document.createElement("div");
-  menu.className = "sidebar-menu conv-item-menu";
-  menu.dataset.convId = c.id;
-  menu.setAttribute("role", "menu");
-
   const restoreMode = c.archived || c.deleted;
   // The chat this row is linked to, fixed when the menu opens.
   const subject = _related.convId;
   const items = [
     { label: "Remove Link", fn: () => relatedRemove(c.id, subject) },
-    {
-      label: "Rename",
-      fn: async () => {
-        await renameConversation(c);
-        await reloadRelated({ afterChange: true });
-      },
-    },
-    {
-      label: compareTabForConv(c.id) ? "Remove from Compare" : "Compare",
-      fn: () => {
-        const existing = compareTabForConv(c.id);
-        if (existing) removeFromCompare(existing.id);
-        else addToCompare(c.id, c.title, c.provider);
-      },
-    },
+    convRenameItem(c, () => reloadRelated({ afterChange: true })),
+    convCompareItem(c, c.provider),
     {
       label: c.pinned ? "Unpin" : "Pin",
       fn: async () => {
@@ -406,7 +307,7 @@ function openRelatedRowMenu(c, anchorBtn) {
         await afterRelatedRowChange();
       },
     },
-    { label: "Summary", fn: () => openSummaryForConversation(c.id) },
+    convSummaryItem(c),
     {
       label: restoreMode ? "Restore" : "Archive",
       fn: async () => {
@@ -426,39 +327,7 @@ function openRelatedRowMenu(c, anchorBtn) {
       },
     });
   }
-  for (const it of items) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "sidebar-menu-item";
-    b.setAttribute("role", "menuitem");
-    const text = document.createElement("span");
-    text.className = "sidebar-menu-item-label";
-    text.textContent = it.label;
-    b.appendChild(text);
-    b.addEventListener("click", (e) => {
-      e.stopPropagation();
-      closeRelatedRowMenu();
-      it.fn();
-    });
-    menu.appendChild(b);
-  }
-
-  $("workspace-controls").appendChild(menu);
-  _relatedMenuEl = menu;
-  // Under the button, right-aligned, kept on screen (as the sidebar menu).
-  const inset = themePixels("--popover-safe-inset");
-  const gap = themePixels("--popover-gap");
-  const r = anchorBtn.getBoundingClientRect();
-  const left = Math.max(inset, r.right - menu.offsetWidth);
-  let top = r.bottom + gap;
-  if (top + menu.offsetHeight > window.innerHeight - inset) {
-    top = r.top - menu.offsetHeight - gap;
-  }
-  menu.style.left = `${left}px`;
-  menu.style.top = `${top}px`;
-  prepareActionMenu(menu, anchorBtn, closeRelatedRowMenu);
-  document.addEventListener("mousedown", onRelatedMenuOutside, true);
-  window.addEventListener("scroll", closeRelatedRowMenu, true);
+  showConvItemMenu(c, anchorBtn, items);
 }
 
 // ── Panel open / close ────────────────────────────────────────────────────────
@@ -493,7 +362,7 @@ function openRelatedPanel() {
 
 function closeRelatedPanel() {
   if (!relatedPanel || relatedPanel.hidden) return;
-  closeRelatedRowMenu();
+  closeConvItemMenu();
   relatedPanel.hidden = true;
   updateRelatedToggle(false);
   restoreSidebarAfterOverlay();
@@ -570,9 +439,6 @@ relatedSortEl?.addEventListener("change", () => {
   _related.sort = relatedSortEl.value;
   renderRelatedPanel();
 });
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && _relatedMenuEl) closeRelatedRowMenu();
-});
 
 window.relatedConversations = {
   icon: relatedIconSvg,
@@ -582,5 +448,4 @@ window.relatedConversations = {
   searchEnded: relatedSearchEnded,
   exitSearch: exitRelatedSearch,
   isSearching: () => !!_related.searching,
-  menuOpen: () => !!_relatedMenuEl,
 };

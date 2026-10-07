@@ -1597,8 +1597,8 @@
     // Inline naming/tag editors get their own first Escape to cancel edits.
     if (isTextEntryTarget(event.target) && event.target !== queryEl) return;
     if (topModalIsOpen() || sidebarOverlayIsOpen()) return;
-    // A Related Conversations row menu takes this Escape (related.js).
-    if (window.relatedConversations?.menuOpen()) return;
+    // An open chat-row ⋮ menu (sidebar or Related panel) takes this Escape.
+    if (typeof convItemMenuIsOpen === "function" && convItemMenuIsOpen()) return;
     if (resultMenu) {
       event.preventDefault();
       event.stopImmediatePropagation();
