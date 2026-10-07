@@ -985,13 +985,14 @@
 
   // List every conversation in one location (a folder, Archived or Deleted)
   // in the results area, as the same result cards a search shows.
-  async function runBrowse(location, append = false) {
+  async function runBrowse(location, append = false, { keepScroll = false } = {}) {
     if (ui.busy) {
-      ui.pendingSearch = () => runBrowse(location, append);
+      ui.pendingSearch = () => runBrowse(location, append, { keepScroll });
       return;
     }
     ui.busy = true;
     ui.hasRun = true;
+    const scroll = resultsList.scrollTop;
     resultsStatus.textContent = append ? "Loading more…" : "Loading…";
     try {
       const response = await fetch("/api/advanced-search/browse", {
@@ -1016,7 +1017,8 @@
       ui.resultsExclude = excludeKey();
       resultsStatus.textContent = "";
       renderResults();
-      if (!append) resultsList.scrollTop = 0;
+      if (keepScroll) resultsList.scrollTop = scroll;
+      else if (!append) resultsList.scrollTop = 0;
     } catch (error) {
       resultsStatus.textContent = `Could not open ${location.name}: ${error.message}`;
     } finally {
@@ -1094,8 +1096,16 @@
     result.archived = false;
     result.pinned = false;
     syncActiveConversation(result);
-    refreshResults();
+    refreshAfterMove();
     await afterFolderChange();
+  }
+
+  // Moving, archiving, restoring or deleting changes which chats a listed
+  // location holds, so a location listing is fetched again (count and Load
+  // More stay right). A search keeps its cards and redraws their new place.
+  function refreshAfterMove() {
+    if (ui.browse) runBrowse(ui.browse, false, { keepScroll: true });
+    else refreshResults();
   }
 
   async function togglePinResult(result) {
@@ -1118,7 +1128,7 @@
     }
     result.archived = true;
     syncActiveConversation(result);
-    refreshResults();
+    refreshAfterMove();
     await afterFolderChange();
   }
 
@@ -1132,7 +1142,7 @@
       result.archived = false;
     }
     syncActiveConversation(result);
-    refreshResults();
+    refreshAfterMove();
     await afterFolderChange();
   }
 
@@ -1145,7 +1155,7 @@
     if (!ok) return;
     await apiUpdateConversationMeta(result.id, { deleted: true });
     result.deleted = true;
-    refreshResults();
+    refreshAfterMove();
     await afterFolderChange();
   }
 
