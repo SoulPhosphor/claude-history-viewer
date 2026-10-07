@@ -269,7 +269,9 @@ async function flushNotesSideAutosaves() {
 
 function restoreSidebarCollapsedState() {
   if (_sidebarWasCollapsed === null) return;
-  document.body.classList.toggle("sidebar-collapsed", _sidebarWasCollapsed);
+  // Leave the sidebar open while Related Conversations still covers it.
+  const relatedOpen = typeof relatedPanelIsOpen === "function" && relatedPanelIsOpen();
+  if (!relatedOpen) document.body.classList.toggle("sidebar-collapsed", _sidebarWasCollapsed);
   _sidebarWasCollapsed = null;
 }
 

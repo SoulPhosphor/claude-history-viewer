@@ -118,6 +118,37 @@
             </section>
           </div>
         </div>
+        <!-- Related Conversations temporarily covers the normal sidebar, like
+             Notes. During Find Related Conversations it stays here beside
+             Advanced Search. Behaviour lives in related.js. -->
+        <div id="related-panel" class="related-panel" hidden>
+          <div class="related-panel-top">
+            <button
+              id="related-panel-close"
+              class="related-panel-close"
+              type="button"
+              title="Close related conversations"
+              aria-label="Close related conversations"
+            >✕</button>
+          </div>
+          <div class="related-panel-heading">
+            <h2 class="related-panel-title" id="related-panel-title">Related Conversations</h2>
+            <button type="button" id="related-panel-for" class="related-panel-for" hidden></button>
+          </div>
+          <div id="related-sort-row" class="related-sort-row" hidden>
+            <label for="related-sort">Sort By:</label>
+            <select id="related-sort">
+              <option value="newest" selected>Date Newest</option>
+              <option value="oldest">Date Oldest</option>
+              <option value="az">A to Z</option>
+              <option value="za">Z to A</option>
+            </select>
+          </div>
+          <div id="related-list" class="related-list"></div>
+          <div id="related-find-wrap" class="related-find-wrap">
+            <button type="button" id="related-find-btn" class="related-find-btn">Find Related Conversations</button>
+          </div>
+        </div>
         <div class="sidebar-header">
           <div class="sidebar-title-row">
             <button
@@ -486,6 +517,19 @@
                the top of the pane is one slim line. -->
           <div class="thread-titlebar">
             <span id="thread-titlebar-label" role="heading" aria-level="1"></span>
+            <button
+              id="related-toggle-btn"
+              type="button"
+              title="Related Conversations"
+              aria-label="Open related conversations"
+              aria-pressed="false"
+              hidden
+            >
+              <!-- Google Material Symbols: hub (opens Related Conversations) -->
+              <svg class="related-toggle-icon" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
+                <path d="M240-40q-50 0-85-35t-35-85q0-50 35-85t85-35q14 0 26 3t23 8l57-71q-28-31-39-70t-5-78l-81-27q-17 25-43 40t-58 15q-50 0-85-35T0-580q0-50 35-85t85-35q50 0 85 35t35 85v8l81 28q20-36 53.5-61t75.5-32v-87q-39-11-64.5-42.5T360-840q0-50 35-85t85-35q50 0 85 35t35 85q0 42-26 73.5T510-724v87q42 7 75.5 32t53.5 61l81-28v-8q0-50 35-85t85-35q50 0 85 35t35 85q0 50-35 85t-85 35q-32 0-58.5-15T739-515l-81 27q6 39-5 77.5T614-340l57 70q11-5 23-7.5t26-2.5q50 0 85 35t35 85q0 50-35 85t-85 35q-50 0-85-35t-35-85q0-20 6.5-38.5T624-232l-57-71q-41 23-87.5 23T392-303l-56 71q11 15 17.5 33.5T360-160q0 50-35 85t-85 35ZM120-540q17 0 28.5-11.5T160-580q0-17-11.5-28.5T120-620q-17 0-28.5 11.5T80-580q0 17 11.5 28.5T120-540Zm120 420q17 0 28.5-11.5T280-160q0-17-11.5-28.5T240-200q-17 0-28.5 11.5T200-160q0 17 11.5 28.5T240-120Zm240-680q17 0 28.5-11.5T520-840q0-17-11.5-28.5T480-880q-17 0-28.5 11.5T440-840q0 17 11.5 28.5T480-800Zm0 440q42 0 71-29t29-71q0-42-29-71t-71-29q-42 0-71 29t-29 71q0 42 29 71t71 29Zm240 240q17 0 28.5-11.5T760-160q0-17-11.5-28.5T720-200q-17 0-28.5 11.5T680-160q0 17 11.5 28.5T720-120Zm120-420q17 0 28.5-11.5T880-580q0-17-11.5-28.5T840-620q-17 0-28.5 11.5T800-580q0 17 11.5 28.5T840-540ZM480-840ZM120-580Zm360 120Zm360-120ZM240-160Zm480 0Z"/>
+              </svg>
+            </button>
             <button
               id="notes-side-toggle-btn"
               type="button"
@@ -1599,6 +1643,20 @@
         </div>
       </div>
     </div>
+    <!-- Related Conversations: confirm removing a link (related.js). -->
+    <div id="unlink-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="unlink-modal-title">
+        <div class="modal-title" id="unlink-modal-title">Permanently Remove this link?</div>
+        <div class="modal-buttons">
+          <button id="unlink-modal-cancel" data-dialog-cancel data-dialog-initial-focus class="modal-btn">Cancel</button>
+          <button id="unlink-modal-ok" class="modal-btn modal-btn-danger">Okay</button>
+        </div>
+        <label class="modal-check">
+          <input type="checkbox" id="unlink-modal-skip" />
+          <span>Do not show this warning anymore for this session.</span>
+        </label>
+      </div>
+    </div>
     <!-- Snapshot restore: choose which metadata categories to restore. -->
     <div id="snapshot-restore-modal" class="modal-overlay" hidden>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="snapshot-restore-title" aria-describedby="snapshot-restore-text">
@@ -1663,6 +1721,7 @@
     <script src="/static/bookmarks.js"></script>
     <script src="/static/bookmarks_hub.js"></script>
     <script src="/static/advanced_search.js"></script>
+    <script src="/static/related.js"></script>
     <script
       src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
       crossorigin="anonymous"

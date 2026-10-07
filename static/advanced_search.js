@@ -94,6 +94,13 @@
     listModels: false,
     resultSize: "default",
     collapsed: {},
+    // Related mode (Find Related Conversations, related.js): {id, title} of the
+    // chat links are being found for, or null for an ordinary search. The
+    // filters, history and results are the same workspace either way.
+    related: null,
+    // Which chat the shown results left out ("" for none), so switching mode
+    // re-runs a search whose results were built for the other mode.
+    resultsExclude: "",
   };
 
   function clone(value) {
@@ -882,6 +889,22 @@
     resultsPanel.hidden = true;
     document.body.classList.remove("advanced-search-active");
     document.body.classList.remove("advanced-results-maximized");
+    if (ui.related) {
+      ui.related = null;
+      window.relatedConversations?.searchEnded();
+    }
+  }
+
+  // Ordinary Advanced Search, or Related mode for one chat ({id, title}).
+  async function openSearchMode(related) {
+    ui.related = related;
+    await openAdvancedSearch();
+    // Results built for the other mode (or another chat) are re-run, so the
+    // chat being linked never lists itself and an ordinary search lists it.
+    if (ui.hasRun && ui.resultsExclude !== excludeKey()) {
+      if (ui.browse) runBrowse(ui.browse);
+      else runSearch();
+    }
   }
 
   function payload(offset = 0) {
@@ -892,7 +915,12 @@
     value.list_models = ui.listModels;
     value.limit = 100;
     value.offset = offset;
+    if (ui.related) value.exclude_ids = [ui.related.id];
     return value;
+  }
+
+  function excludeKey() {
+    return ui.related ? ui.related.id : "";
   }
 
   function stableJson(value) {
@@ -941,6 +969,7 @@
       ui.total = Number(data.total || 0);
       ui.lastSearchKey = key;
       ui.browse = null;
+      ui.resultsExclude = excludeKey();
       resultsStatus.textContent = "";
       renderResults();
       if (!append) await loadHistory();
@@ -975,6 +1004,7 @@
           sort: sortEl.value,
           limit: 100,
           offset: append ? ui.results.length : 0,
+          exclude_ids: ui.related ? [ui.related.id] : [],
         }),
       });
       const data = await response.json();
@@ -983,6 +1013,7 @@
       ui.total = Number(data.total || 0);
       ui.lastSearchKey = null;
       ui.browse = location;
+      ui.resultsExclude = excludeKey();
       resultsStatus.textContent = "";
       renderResults();
       if (!append) resultsList.scrollTop = 0;
@@ -1104,6 +1135,38 @@
     await afterFolderChange();
   }
 
+  // ── Related mode ──────────────────────────────────────────────────────────
+  // Linking itself lives in related.js; these draw and route it on a result.
+  function relatedLinked(result) {
+    return Boolean(window.relatedConversations?.isLinked(result.id));
+  }
+
+  async function toggleRelatedLink(result) {
+    const related = window.relatedConversations;
+    if (!related) return;
+    if (relatedLinked(result)) await related.remove(result.id);
+    else await related.add(result.id);
+    refreshResults();
+  }
+
+  // Hub when already related (click to remove), Add Circle when not (click
+  // to add). Shared with Advanced Search's result card markup below.
+  function relatedLinkButton(result) {
+    const linked = relatedLinked(result);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "related-link-btn";
+    btn.dataset.linked = String(linked);
+    btn.title = linked ? "Already a Related Chat" : "Add to Related Chats";
+    btn.setAttribute("aria-label", btn.title);
+    btn.innerHTML = window.relatedConversations.icon(linked ? "hub" : "add");
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleRelatedLink(result);
+    });
+    return btn;
+  }
+
   function openResultMenu(result, anchor) {
     const wasForThis = resultMenu && resultMenu.dataset.convId === result.id;
     closeResultMenu();
@@ -1112,12 +1175,18 @@
     menu.className = "sidebar-menu conv-item-menu";
     menu.dataset.convId = result.id;
     menu.setAttribute("role", "menu");
-    const items = [
+    const items = [];
+    if (ui.related) {
+      items.push(relatedLinked(result)
+        ? ["Remove Link", () => toggleRelatedLink(result)]
+        : ["Add to Related Chats", () => toggleRelatedLink(result)]);
+    }
+    items.push(
       ["Add to Folder", () => addResultToFolder(result)],
       [result.pinned ? "Unpin" : "Pin", () => togglePinResult(result)],
       ["Archive", () => archiveResult(result)],
       ["Delete", () => deleteResult(result)],
-    ];
+    );
     for (const [label, fn] of items) {
       const btn = document.createElement("button");
       btn.type = "button";
@@ -1197,6 +1266,7 @@
     }
     const multiProvider = ui.criteria.providers.length > 1;
     for (const result of ui.results) {
+      if (ui.related && result.id === ui.related.id) continue;
       const card = document.createElement("article");
       card.className = "advanced-result-card";
       makeKeyboardAction(card, `Open ${result.title || "Untitled"}`);
@@ -1243,6 +1313,7 @@
         openResultMenu(result, menuBtn);
       });
       titleRow.append(title, matches, date, menuBtn);
+      if (ui.related) titleRow.insertBefore(relatedLinkButton(result), title);
       if (ui.resultView === "compact" && multiProvider) {
         const provider = document.createElement("span");
         provider.className = "advanced-provider-chip";
@@ -1299,7 +1370,10 @@
         }
         card.appendChild(bottom);
       }
-      const open = () => openConversation(result.id, null, result.target_seq);
+      // Related mode previews the chat and keeps the search open.
+      const open = () => openConversation(result.id, null, result.target_seq, {
+        keepAdvancedSearch: Boolean(ui.related),
+      });
       card.addEventListener("click", open);
       resultsList.appendChild(card);
     }
@@ -1341,8 +1415,13 @@
     return [$("bookmark-panel"), $("notes-side-panel")].some((item) => item && !item.hidden);
   }
 
-  $("manage-search-btn")?.addEventListener("click", openAdvancedSearch);
-  $("advanced-close")?.addEventListener("click", closeAdvancedSearch);
+  $("manage-search-btn")?.addEventListener("click", () => openSearchMode(null));
+  // Closing a Related search returns to its chat (related.js exitSearch).
+  function closeOrExitRelated() {
+    if (ui.related && window.relatedConversations) window.relatedConversations.exitSearch();
+    else closeAdvancedSearch();
+  }
+  $("advanced-close")?.addEventListener("click", closeOrExitRelated);
   $("advanced-clear-all")?.addEventListener("click", () => {
     ui.criteria = defaultCriteria();
     ui.editModes = {};
@@ -1463,6 +1542,8 @@
     // Inline naming/tag editors get their own first Escape to cancel edits.
     if (isTextEntryTarget(event.target) && event.target !== queryEl) return;
     if (topModalIsOpen() || sidebarOverlayIsOpen()) return;
+    // A Related Conversations row menu takes this Escape (related.js).
+    if (window.relatedConversations?.menuOpen()) return;
     if (resultMenu) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -1471,13 +1552,16 @@
     }
     event.preventDefault();
     event.stopImmediatePropagation();
-    closeAdvancedSearch();
+    closeOrExitRelated();
   }, true);
 
   window.advancedSearchController = {
-    open: openAdvancedSearch,
+    open: () => openSearchMode(null),
+    openRelated: (target) => openSearchMode(target),
     close: closeAdvancedSearch,
     isOpen: () => ui.open,
+    // related.js calls this when the links change, to redraw the icons.
+    refreshRelated: () => { if (ui.open && ui.related) refreshResults(); },
   };
 
   syncResultSizeButtons();

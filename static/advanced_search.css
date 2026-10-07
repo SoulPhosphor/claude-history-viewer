@@ -735,6 +735,38 @@ body.advanced-results-maximized #main > :not(#tabs-wrap):not(#advanced-results-p
   flex-shrink: 0;
 }
 
+/* Related mode: Hub (already related) or Add Circle before the title.
+   Theme values: --related-link-* in theme.css. Logic: relatedLinkButton(). */
+.related-link-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: var(--related-link-hit-size);
+  height: var(--related-link-hit-size);
+  padding: 0;
+  border: none;
+  border-radius: var(--related-link-radius);
+  background: transparent;
+  color: var(--related-link-color);
+  cursor: pointer;
+}
+
+.related-link-btn[data-linked="true"] {
+  color: var(--related-linked-color);
+}
+
+.related-link-btn:hover {
+  background: var(--related-link-hover-bg);
+  color: var(--related-link-hover-color);
+}
+
+.related-link-btn .related-icon {
+  display: block;
+  width: var(--related-link-icon-size);
+  height: var(--related-link-icon-size);
+}
+
 .advanced-result-snippet {
   display: -webkit-box;
   margin-top: var(--space-6px);

@@ -167,7 +167,7 @@ const artifactPanel = $("artifact-panel");
 const artifactPanelTitle = $("artifact-panel-title");
 const artifactPanelBody = $("artifact-panel-body");
 
-// Temporary sidebar surfaces (Bookmarks and Notes) form a small visual stack.
+// Temporary sidebar surfaces (Bookmarks, Notes, Related Conversations) form a small visual stack.
 // Whichever one the user opens next rises above the others; closing it reveals
 // the previous surface with its state intact.
 let _sidebarOverlayLayer = 6;
@@ -2337,7 +2337,7 @@ const EMPTY_CONV_NOTICE = {
   default: "This conversation has no displayable messages.",
 };
 
-async function openConversation(id, clickedEl, targetSeq = null) {
+async function openConversation(id, clickedEl, targetSeq = null, { keepAdvancedSearch = false } = {}) {
   if (typeof summaryHasUnsavedChanges === "function" && summaryHasUnsavedChanges()) {
     const r = await openSummaryUnsavedModal();
     if (r === "cancel") return;
@@ -2354,7 +2354,8 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   }
   // Choosing a conversation returns to the normal reading layout. Advanced
   // Search keeps its draft and last results in memory for this browser session.
-  if (window.advancedSearchController?.isOpen()) {
+  // Find Related Conversations previews chats with the search still open.
+  if (!keepAdvancedSearch && window.advancedSearchController?.isOpen()) {
     window.advancedSearchController.close();
   }
   state.activeSpecialView = null;
@@ -2412,6 +2413,7 @@ async function openConversation(id, clickedEl, targetSeq = null) {
   state.tags = data.tags || [];
   state.moodTags = data.mood_tags || [];
   renderThreadTags();
+  if (typeof relatedConversationOpened === "function") relatedConversationOpened(conv);
 
   if (typeof finishOpeningNotesConversationVisit === "function") {
     await finishOpeningNotesConversationVisit(id);
@@ -5485,6 +5487,8 @@ function setThreadTitle(text) {
   const notesSideToggleBtn = $("notes-side-toggle-btn");
   if (notesToggleBtn) notesToggleBtn.hidden = !text;
   if (notesSideToggleBtn) notesSideToggleBtn.hidden = !text;
+  const relatedToggleBtn = $("related-toggle-btn");
+  if (relatedToggleBtn) relatedToggleBtn.hidden = !text;
   updateSummaryToggleIcon(false);
   if (typeof updateNotesScreenIcon === "function") updateNotesScreenIcon(false);
   if (typeof updateNotesSideIcon === "function") {

@@ -9,7 +9,7 @@ from pathlib import Path
 # Reusable business/data logic for the labeling features. server.py stays the
 # HTTP/routing shell; these modules own the SQL, validation, and transactions
 # and raise ApiError for error responses.
-import labels, bulk_labels, snapshots, gizmos, updater, advanced_search
+import labels, bulk_labels, snapshots, gizmos, updater, advanced_search, related
 from api_common import ApiError
 
 # Set CHV_TIMING=1 to log each request's method, path, and duration to stderr.
@@ -38,7 +38,7 @@ def _code_signature() -> str:
     h = hashlib.sha256()
     for name in ("server.py", "build_db.py", "api_common.py",
                  "labels.py", "bulk_labels.py", "snapshots.py", "gizmos.py",
-                 "updater.py", "advanced_search.py"):
+                 "updater.py", "advanced_search.py", "related.py"):
         try:
             h.update((here / name).read_bytes())
         except OSError:
@@ -58,7 +58,7 @@ def _static_signature() -> str:
                  "advanced_search.js", "advanced_search.css",
                  "labels_screen.js", "bulk_labels.js", "snapshots.js",
                  "gizmos.js", "bookmarks.js", "bookmarks_hub.js", "notes.js",
-                 "summary.js", "summary_editor_core.js"):
+                 "summary.js", "summary_editor_core.js", "related.js"):
         try:
             h.update((static_dir / name).read_bytes())
         except OSError:
@@ -443,6 +443,18 @@ def _ensure_userdata_schema(db_path: Path) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_conv_labels_label
                 ON conversation_labels (label_id);
+
+            -- Related Conversations: one row per reciprocal link. The pair is
+            -- stored in sorted order (conversation_a < conversation_b), so
+            -- linking A to B and B to A is the same row. See related.py.
+            CREATE TABLE IF NOT EXISTS conversation_links (
+                conversation_a TEXT NOT NULL,
+                conversation_b TEXT NOT NULL,
+                linked_at      REAL,
+                PRIMARY KEY (conversation_a, conversation_b)
+            );
+            CREATE INDEX IF NOT EXISTS idx_conv_links_b
+                ON conversation_links (conversation_b);
 
             -- A short, durable log of each successful conditional bulk-label
             -- operation. Not an undo journal — it holds no conversation bodies
@@ -1275,6 +1287,9 @@ def _purge_conversation(conn, cid: str) -> bool:
         # Notes are conversation-owned viewer metadata and must not reappear if
         # a purged conversation with the same stable ID is imported later.
         "DELETE FROM udb.conversation_notes WHERE conversation_id = ?",
+        # Related-conversation links on either side of the pair.
+        "DELETE FROM udb.conversation_links WHERE conversation_a = ?",
+        "DELETE FROM udb.conversation_links WHERE conversation_b = ?",
     ):
         try:
             conn.execute(stmt, (cid,))
@@ -1405,6 +1420,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/advanced-search/browse":
             payload = self._read_json_body()
             self._handle_db(lambda conn: advanced_search.browse(conn, payload))
+        elif path == "/api/related":
+            payload = self._read_json_body()
+            self._handle_db(lambda conn: related.link(conn, payload))
         elif path == "/api/advanced-search/saved":
             payload = self._read_json_body()
             self._handle_db(lambda conn: advanced_search.save_search(conn, payload))
@@ -1476,6 +1494,11 @@ class Handler(BaseHTTPRequestHandler):
             self._api_snapshot_delete(urllib.parse.unquote(path[len("/api/snapshots/"):]))
         elif path.startswith("/api/bookmarks/"):
             self._api_bookmark_delete(urllib.parse.unquote(path[len("/api/bookmarks/"):]))
+        elif path == "/api/related":
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            a = (qs.get("a") or [""])[0]
+            b = (qs.get("b") or [""])[0]
+            self._handle_db(lambda conn: related.unlink(conn, a, b))
         elif path.startswith("/api/advanced-search/saved/"):
             saved_id = urllib.parse.unquote(path[len("/api/advanced-search/saved/"):])
             self._handle_db(lambda conn: advanced_search.delete_saved(conn, saved_id))
@@ -1615,6 +1638,9 @@ class Handler(BaseHTTPRequestHandler):
             self._api_search(qs)
         elif path == "/api/advanced-search/options":
             self._handle_db(advanced_search.options)
+        elif path.startswith("/api/related/"):
+            self._handle_db(lambda conn: self._related_list(
+                conn, urllib.parse.unquote(path[len("/api/related/"):])))
         elif path == "/api/advanced-search/history":
             self._handle_db(advanced_search.history)
         elif path == "/api/gallery":
@@ -1906,6 +1932,20 @@ class Handler(BaseHTTPRequestHandler):
             unverified = 0
         self.send_json({"conversations": convs, "total": total, "offset": offset,
                         "limit": limit, "unverified_count": unverified})
+
+    def _related_list(self, conn, cid):
+        """Related Conversations for one chat, as sidebar rows (labels, summary
+        hint and, for Claude chats, the model warning icons) plus location."""
+        rows = related.list_related(conn, cid)
+        claude_rows = [r for r in rows if r.get("provider") == "claude"]
+        flags = _compute_conv_flags(
+            conn, [(r["id"], r.get("create_time"), r.get("update_time")) for r in claude_rows]
+        )
+        for r in rows:
+            f = flags.get(r["id"])
+            r["warn_range"] = bool(f and f["warn_range"])
+            r["warn_coverage"] = bool(f and f["warn_coverage"])
+        return {"related": rows}
 
     def _api_conversations(self, qs):
         limit  = int((qs.get("limit") or ["50"])[0])

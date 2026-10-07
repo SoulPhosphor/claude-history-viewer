@@ -683,6 +683,68 @@
     --advanced-location-sep-gap: 2px;
   
   
+  /* ── Related Conversations ──────────────────────────────────────────────
+     The Hub button in the chat title bar, the panel over the sidebar (built
+     like the bookmark panel), its Sort By row, empty note and Find button
+     (built like Load more), Location\Title on its rows, and the Hub / Add
+     Circle buttons on Advanced Search results in Related mode. The rows are
+     ordinary sidebar rows, so they follow the sidebar's own values. */
+  --related-toggle-icon-size: var(--notes-toggle-icon-size);
+  --related-toggle-hit-size: var(--notes-toggle-hit-size);
+  --related-toggle-color: var(--muted);
+  --related-toggle-hover-color: var(--text);
+  --related-toggle-radius: var(--radius-4px);
+  --related-panel-bg: var(--bookmark-panel-bg);
+  --related-panel-padding: var(--bookmark-panel-padding);
+  --related-panel-close-color: var(--bookmark-panel-close-color);
+  --related-panel-close-size: var(--font-size-16px);
+  --related-panel-title-size: var(--bookmark-panel-title-size);
+  --related-panel-title-weight: var(--bookmark-panel-title-weight);
+  --related-panel-title-color: var(--bookmark-panel-title-color);
+  /* The chat title under "Related Conversations for" (click to go back). */
+  --related-panel-for-color: var(--bookmark-panel-item-color);
+  --related-panel-for-size: var(--bookmark-panel-title-size);
+  --related-panel-for-weight: var(--bookmark-panel-title-weight);
+  --related-panel-heading-gap: var(--space-12px);
+  --related-sort-gap: var(--space-6px);
+  --related-sort-size: var(--font-size-12px);
+  --related-sort-color: var(--muted);
+  --related-sort-select-bg: var(--bg);
+  --related-sort-select-color: var(--text);
+  --related-sort-select-border: var(--border);
+  --related-sort-select-focus-border: var(--accent);
+  --related-sort-select-radius: var(--radius-6px);
+  --related-sort-select-padding: var(--space-4px) var(--space-6px);
+  --related-empty-size: var(--font-size-13px);
+  --related-empty-color: var(--muted);
+  --related-empty-padding: var(--space-14px) 0;
+  --related-find-wrap-padding: var(--space-10px) 0 0;
+  --related-find-wrap-border: var(--border);
+  --related-find-padding: var(--space-6px) 0;
+  --related-find-border: var(--border);
+  --related-find-radius: var(--radius-6px);
+  --related-find-color: var(--muted);
+  --related-find-size: var(--font-size-12px);
+  --related-find-hover-bg: var(--hover);
+  --related-find-hover-color: var(--text);
+  --related-location-color: var(--advanced-location-color);
+  --related-location-weight: var(--advanced-location-weight);
+  --related-location-sep-color: var(--advanced-location-sep-color);
+  --related-location-sep-gap: var(--advanced-location-sep-gap);
+  /* Hub (already related) / Add Circle (not yet) before a result's title. */
+  --related-link-icon-size: var(--size-16px);
+  --related-link-hit-size: var(--size-22px);
+  --related-link-radius: var(--radius-4px);
+  --related-link-color: var(--advanced-muted);
+  --related-link-hover-color: var(--advanced-accent);
+  --related-link-hover-bg: var(--advanced-surface-raised);
+  --related-linked-color: var(--advanced-accent);
+  /* A checkbox line in a dialog ("Do not show this warning anymore…"). */
+  --modal-check-gap: var(--space-8px);
+  --modal-check-margin: var(--space-14px);
+  --modal-check-size: var(--font-size-13px);
+  --modal-check-color: var(--muted);
+
   /* Narrow desktop layout retains the previous search-panel width. */
   --advanced-panel-w-compact: 326px;
 }

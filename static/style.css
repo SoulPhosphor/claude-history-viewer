@@ -1591,6 +1591,178 @@ kbd {
   min-height: 0;
   overflow-y: auto;
 }
+/* ── Related Conversations panel (related.js) ─────────────────────────────── */
+/* Same temporary sidebar overlay as Notes and Bookmarks. Its rows are the
+   sidebar's own .conv-item rows. */
+.related-panel[hidden],
+.related-panel-for[hidden],
+.related-sort-row[hidden],
+.related-find-wrap[hidden] {
+  display: none;
+}
+.related-panel {
+  position: absolute;
+  inset: 0;
+  z-index: var(--sidebar-overlay-layer, 6);
+  display: flex;
+  flex-direction: column;
+  background: var(--related-panel-bg);
+  padding: var(--related-panel-padding);
+}
+.related-panel-top {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+.related-panel-close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--related-panel-close-color);
+  font-size: var(--related-panel-close-size);
+  line-height: 1;
+  padding: var(--space-4px);
+  border-radius: var(--radius-4px);
+}
+.related-panel-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.related-panel-heading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  margin-bottom: var(--related-panel-heading-gap);
+  flex-shrink: 0;
+}
+.related-panel-title {
+  margin: 0;
+  font-size: var(--related-panel-title-size);
+  font-weight: var(--related-panel-title-weight);
+  color: var(--related-panel-title-color);
+}
+.related-panel-for {
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--related-panel-for-size);
+  font-weight: var(--related-panel-for-weight);
+  color: var(--related-panel-for-color);
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.related-panel-for:hover {
+  text-decoration: underline;
+}
+.related-sort-row {
+  display: flex;
+  align-items: center;
+  gap: var(--related-sort-gap);
+  margin-bottom: var(--related-panel-heading-gap);
+  font-size: var(--related-sort-size);
+  color: var(--related-sort-color);
+  flex-shrink: 0;
+}
+#related-sort {
+  font-family: inherit;
+  font-size: var(--related-sort-size);
+  color: var(--related-sort-select-color);
+  background: var(--related-sort-select-bg);
+  border: var(--stroke-1px) solid var(--related-sort-select-border);
+  border-radius: var(--related-sort-select-radius);
+  padding: var(--related-sort-select-padding);
+}
+#related-sort:focus {
+  outline: none;
+  border-color: var(--related-sort-select-focus-border);
+}
+.related-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.related-empty {
+  text-align: center;
+  font-size: var(--related-empty-size);
+  color: var(--related-empty-color);
+  padding: var(--related-empty-padding);
+}
+.related-location {
+  color: var(--related-location-color);
+  font-weight: var(--related-location-weight);
+}
+.related-location-sep {
+  margin: 0 var(--related-location-sep-gap);
+  color: var(--related-location-sep-color);
+}
+.related-find-wrap {
+  flex-shrink: 0;
+  padding: var(--related-find-wrap-padding);
+  border-top: var(--stroke-1px) solid var(--related-find-wrap-border);
+}
+.related-find-btn {
+  width: 100%;
+  padding: var(--related-find-padding);
+  background: transparent;
+  border: var(--stroke-1px) solid var(--related-find-border);
+  border-radius: var(--related-find-radius);
+  color: var(--related-find-color);
+  font-family: inherit;
+  font-size: var(--related-find-size);
+  cursor: pointer;
+  transition: background var(--duration-0-1s),
+    color var(--duration-0-1s);
+}
+.related-find-btn:hover {
+  background: var(--related-find-hover-bg);
+  color: var(--related-find-hover-color);
+}
+
+/* Hub button in the chat title bar, left of the Notes panel button. */
+#related-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--related-toggle-hit-size);
+  height: var(--related-toggle-hit-size);
+  padding: 0;
+  border: none;
+  border-radius: var(--related-toggle-radius);
+  background: transparent;
+  color: var(--related-toggle-color);
+  cursor: pointer;
+  flex-shrink: 0;
+  /* First of the title-bar icons: pushes the group to the right edge. */
+  margin-left: auto;
+}
+#related-toggle-btn[hidden] {
+  display: none;
+}
+#related-toggle-btn:hover {
+  background: var(--hover);
+  color: var(--related-toggle-hover-color);
+}
+.related-toggle-icon {
+  display: block;
+  width: var(--related-toggle-icon-size);
+  height: var(--related-toggle-icon-size);
+}
+
+/* A checkbox line inside a dialog. */
+.modal-check {
+  display: flex;
+  align-items: center;
+  gap: var(--modal-check-gap);
+  margin-top: var(--modal-check-margin);
+  font-size: var(--modal-check-size);
+  color: var(--modal-check-color);
+  cursor: pointer;
+}
+
 .notes-side-save-status {
   display: flex;
   align-items: center;
@@ -5087,9 +5259,8 @@ kbd {
   cursor: pointer;
   flex-shrink: 0;
 }
-#notes-side-toggle-btn {
-  margin-left: auto;
-}
+/* The Hub button (#related-toggle-btn) now leads this group and pushes it to
+   the right edge; see the Related Conversations section. */
 #summary-toggle-btn[hidden],
 #notes-toggle-btn[hidden],
 #notes-side-toggle-btn[hidden] {

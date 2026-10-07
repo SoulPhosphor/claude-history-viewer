@@ -87,7 +87,7 @@ Structural CSS can use `0`, percentages, `auto`, `none`, `inherit`, `currentColo
 | File/artifact controls | `.file-chip`, `.artifact-chip`, `#file-panel`, `#artifact-panel` | Chip widths, `--file-panel-*`, `--artifact-panel-*`, `--side-panel-*` |
 | Media gallery | `.media-hub-*`, `.gallery-thumb` | Shared roles/scale, `--media-grid-min-column`, surface sheen/shadow |
 | Memory/project cards | `.memory-block`, `.project-card`, `.project-docs-loading`, `.project-docs-empty` | Reading widths and shared roles/scale |
-| Dialog | `.modal-overlay`, `.modal`, `.modal-title`, `.modal-buttons`, `.modal-btn`, `.modal-btn-primary`, `.modal-btn-danger` | Modal dimensions/shadow/backdrop and action/warning roles |
+| Dialog | `.modal-overlay`, `.modal`, `.modal-title`, `.modal-buttons`, `.modal-btn`, `.modal-btn-primary`, `.modal-btn-danger`, `.modal-check` (a checkbox line) | Modal dimensions/shadow/backdrop and action/warning roles, `--modal-check-*` |
 | Screen heading | `.thread-header h1` | Existing screen-title type/colour scale; document headings use separate `.message-body h*` rules. |
 | Tags and selection chips | `.tag-chip`, `.tag-chip-name`, `.tag-add-btn`, `.tag-add-input` | Shared role/scale, tag field/truncation variables |
 | Conversation labels | `.label-chip`, `.label-square`, `.label-text`, `.label-indicator`, `.conv-label-row` | `--label-*` and runtime `--label-color` |
@@ -104,11 +104,24 @@ Structural CSS can use `0`, percentages, `auto`, `none`, `inherit`, `currentColo
 | Temporary Notes sidebar | `.notes-side-panel`, `.notes-side-section`, `.notes-side-heading-row`, `.notes-side-revert` | `--notes-panel-*` |
 | Conversation bookmarks | `.bookmark-msg-btn`, `.bookmark-title`, `.bookmark-name-dialog`, `.bookmark-bar`, `.bookmark-panel` | `--bookmark-*` |
 | Global bookmarks | `.gb-*`, `#global-bookmarks-toolbar`, `#global-bookmarks-scroll` | `--gb-*` |
+| Related Conversations | `#related-toggle-btn`, `.related-panel`, `.related-panel-*`, `.related-sort-row`, `.related-list`, `.related-empty`, `.related-find-*`, `.related-location*`, `.related-link-btn`; rows are sidebar `.conv-item` rows | `--related-*` (aliases the bookmark-panel, Load more and Advanced Search location values) |
 | Advanced filters/results | `.advanced-filter-*`, `.advanced-chip-*`, `.advanced-result-*`, `.advanced-results-*` | `--advanced-*` |
 | Warning / hidden accessible copy | `.warning-text`, `.sr-only` | Warning roles; keep `.sr-only` geometry intact |
 | Branch visibility and resizing | `.branch-hidden`, `body.resizing-columns`, `body.resizing-rows` | State/interaction only, no palette |
 
 Class names above are a lookup map, not interchangeable utilities: read the corresponding component section before reusing a class with different markup. Many IDs define screen-specific layout and should not be copied into new controls.
+
+## Features that share code (change together)
+
+**Related Conversations** (`related.js`, `related.py`) is built from existing pieces. When one of these changes, check the other place:
+
+| What | Shared with | Where |
+| --- | --- | --- |
+| Rows in the Related panel | Sidebar rows | `buildRelatedRow()` in `related.js` copies `appendListItems()` in `app.js` (same `.conv-item` classes, label squares, summary hint, ⋮ button). A new piece of information on sidebar rows needs adding to both. |
+| ⋮ menu on Related rows | Sidebar ⋮ menu | `openRelatedRowMenu()` in `related.js` mirrors `openConvItemMenu()` in `app.js`, with "Remove Link" on top. Archive/Restore/Delete follow where each chat lives instead of the sidebar view. |
+| Location\Title | Advanced Search results | Advanced Search: `resultLocation()` and `.advanced-result-location` (a button that lists the location). Related panel: `relatedLocationName()` and `.related-location` (plain text). `--related-location-*` aliases `--advanced-location-*`, so one change rethemes both. |
+| Find Related Conversations | Advanced Search itself | Not a copy: it is Advanced Search in Related mode (`ui.related` in `advanced_search.js`). Filters, history, result cards and the result ⋮ menu are the same code, so Advanced Search changes apply to both. Related mode only adds: `relatedLinkButton()` (Hub / Add Circle before the title), the top ⋮ item ("Add to Related Chats" / "Remove Link"), result clicks that preview without closing the search, and `exclude_ids` so the chat never lists itself. |
+| "Permanently Remove this link?" | Dialog styles | `#unlink-modal` in `index.html`; standard `.modal` classes plus `.modal-check`. |
 
 ## State and dynamic exceptions
 
@@ -124,7 +137,7 @@ These runtime changes are legitimate and intentional:
 | `--sidebar-w` | Saved sidebar width / drag result. Supported persisted limits are 220–520px; backend and form validation share that product contract. |
 | `--file-panel-width`, `--artifact-panel-width` on `#main` | User drag measurements. CSS computes message clearance from the same width and gap; no duplicated `paddingRight` styling. |
 | `--advanced-results-height` | User-dragged result height. Existing min/default/max classes/data attributes continue to control layout. |
-| `--sidebar-overlay-layer` | Notes/bookmarks opening order. CSS owns the layer declaration; JS supplies the stack order. |
+| `--sidebar-overlay-layer` | Notes/bookmarks/Related Conversations opening order. CSS owns the layer declaration; JS supplies the stack order. |
 | Inline `left` / `top` for popovers | Measured anchor coordinates and viewport collision handling cannot be a static stylesheet value. Only position, not colour/font/padding, is supplied at runtime. |
 | `<input type="color">.value` | Native editable form data. Defaults are read from CSS; user edits remain data. |
 | KaTeX-generated inline geometry | Vendor output needed to position formula parts; do not strip it. |

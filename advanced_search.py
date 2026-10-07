@@ -269,6 +269,11 @@ def _base_rows(conn, criteria: dict) -> list[dict]:
         providers = ["claude"]
     where = [f"c.provider IN ({_placeholders(providers)})"]
     params: list = list(providers)
+    # Related Conversations search leaves out the chat it is finding links for.
+    excluded_ids = [str(v) for v in _json_list(criteria.get("exclude_ids")) if v]
+    if excluded_ids:
+        where.append(f"c.id NOT IN ({_placeholders(excluded_ids)})")
+        params.extend(excluded_ids)
 
     statuses = [s for s in _json_list(criteria.get("statuses")) if s in ("active", "archived", "deleted")]
     if not statuses:
@@ -487,6 +492,8 @@ def _criteria_for_storage(payload: dict) -> dict:
     out = json.loads(json.dumps(payload, ensure_ascii=False))
     out.pop("offset", None)
     out.pop("limit", None)
+    # Which chat a Related search was for is not part of the search itself.
+    out.pop("exclude_ids", None)
     return out
 
 
@@ -603,6 +610,7 @@ def browse(conn, payload: dict) -> dict:
         "sort": payload.get("sort") if payload.get("sort") in ("newest", "oldest") else "newest",
         "offset": payload.get("offset"),
         "limit": payload.get("limit"),
+        "exclude_ids": payload.get("exclude_ids"),
     }
     if kind == "folder":
         # A folder shows what the sidebar shows in it: everything but deleted chats.
