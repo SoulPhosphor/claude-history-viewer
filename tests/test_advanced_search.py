@@ -207,6 +207,46 @@ class AdvancedSearchTests(unittest.TestCase):
         })
         self.assertEqual([row["id"] for row in data["results"]], ["exact"])
 
+    def _put_in_folder(self, cid, pinned=0):
+        self.conn.execute(
+            "INSERT INTO udb.folders(id,name,created_at,provider) VALUES ('f1','Work',1,'chatgpt')"
+        )
+        self.conn.execute(
+            "INSERT INTO udb.folder_items(conversation_id,folder_id,added_at,pinned) VALUES (?,?,1,?)",
+            (cid, "f1", pinned),
+        )
+        self.conn.commit()
+
+    def test_results_carry_their_location(self):
+        self._put_in_folder("exact", pinned=1)
+        self.conn.execute(
+            "INSERT INTO conversation_meta(conversation_id,archived,deleted) VALUES ('gapped',1,0)"
+        )
+        self.conn.commit()
+        data = advanced_search.search(self.conn, {
+            **self.criteria("all"), "statuses": ["active", "archived"],
+        })
+        rows = {row["id"]: row for row in data["results"]}
+        self.assertEqual(rows["exact"]["folder"], {"id": "f1", "name": "Work"})
+        self.assertTrue(rows["exact"]["pinned"])
+        self.assertTrue(rows["gapped"]["archived"])
+        self.assertIsNone(rows["gapped"]["folder"])
+
+    def test_browse_lists_a_folder_without_adding_a_recent_search(self):
+        self._put_in_folder("exact")
+        data = advanced_search.browse(self.conn, {"kind": "folder", "id": "f1"})
+        self.assertEqual([row["id"] for row in data["results"]], ["exact"])
+        self.assertEqual(advanced_search.history(self.conn)["recent"], [])
+
+    def test_browse_lists_deleted_conversations(self):
+        self.conn.execute(
+            "INSERT INTO conversation_meta(conversation_id,archived,deleted) VALUES ('gapped',0,1)"
+        )
+        self.conn.commit()
+        data = advanced_search.browse(self.conn, {"kind": "deleted", "provider": "chatgpt"})
+        self.assertEqual([row["id"] for row in data["results"]], ["gapped"])
+        self.assertTrue(data["results"][0]["deleted"])
+
 
 def chat(cid, texts, attachments=None):
     """A ChatGPT conversation with one message per (role, text) pair."""
@@ -336,7 +376,6 @@ class AdvancedTextMatchingTests(unittest.TestCase):
         self.assertIn("one-word", self.ids("plan.md", "all", sources=("attachments",)))
         row = self.search("rent", "all", sources=("attachments",))[0]
         self.assertNotIn("{", row["snippet"])
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -139,7 +139,7 @@ function renderBulkChipRow(kind) {
       const text = String(chip.label.name || "").trim();
       const mark = document.createElement("span");
       mark.className = text ? "menu-label-dot" : "menu-label-bar";
-      mark.style.background = _validHexColor(chip.label.color) ? chip.label.color : "#888888";
+      setLabelColor(mark, chip.label.color);
       name.appendChild(mark);
       if (text) name.append(text);
     } else {
@@ -806,7 +806,7 @@ function reuseBulkCriteria(crit) {
 
   invalidateBulkPreview();
   showBulkError("");
-  $("bulk-provider")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  $("bulk-provider")?.scrollIntoView({ behavior: preferredScrollBehavior(), block: "center" });
 }
 
 // ── Bulk-tool event wiring ────────────────────────────────────────────────────

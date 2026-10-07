@@ -87,10 +87,20 @@
     hasRun: false,
     lastSearchKey: null,
     pendingSearch: null,
+    // The location being listed (a folder, Archived or Deleted) when the
+    // results show a location instead of a search.
+    browse: null,
     resultView: "default",
     listModels: false,
     resultSize: "default",
     collapsed: {},
+    // Related mode (Find Related Conversations, related.js): {id, title} of the
+    // chat links are being found for, or null for an ordinary search. The
+    // filters, history and results are the same workspace either way.
+    related: null,
+    // Which chat the shown results left out ("" for none), so switching mode
+    // re-runs a search whose results were built for the other mode.
+    resultsExclude: "",
   };
 
   function clone(value) {
@@ -152,10 +162,10 @@
 
   let sectionBadges = {};
 
-  // Values that narrow the results. "All" on its own narrows nothing.
+  // Values selected in a filter. "All" and "None" select no values, so
+  // neither adds to the count.
   function filterCount(filter) {
-    if (!filter) return 0;
-    if (filter.none) return 1;
+    if (!filter || filter.none) return 0;
     return filter.include.filter((value) => value !== ALL).length + filter.exclude.length;
   }
 
@@ -526,7 +536,7 @@
     chip.className = "label-chip";
     const square = document.createElement("span");
     square.className = "label-square";
-    square.style.background = _validHexColor(label.color) ? label.color : "#888888";
+    setLabelColor(square, label.color);
     chip.appendChild(square);
     const name = String(label.name || "").trim();
     if (showName && name) {
@@ -769,20 +779,13 @@
     for (const row of rows) {
       const item = document.createElement("div");
       item.className = "advanced-history-row";
-      item.tabIndex = 0;
-      item.setAttribute("role", "button");
       const text = document.createElement("span");
       text.className = "advanced-history-label";
       text.textContent = saved ? row.name : historyLabel(row.criteria);
+      makeKeyboardAction(text, `Use search: ${text.textContent}`);
       item.title = text.textContent;
       item.appendChild(text);
       item.addEventListener("click", () => applyStoredCriteria(row.criteria));
-      item.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          applyStoredCriteria(row.criteria);
-        }
-      });
       if (saved) {
         const remove = document.createElement("button");
         remove.type = "button";
@@ -848,6 +851,7 @@
     ui.total = 0;
     ui.hasRun = false;
     ui.lastSearchKey = null;
+    ui.browse = null;
     syncHeaderControls();
     renderFilters();
     renderResults();
@@ -879,11 +883,32 @@
 
   function closeAdvancedSearch() {
     if (!ui.open) return;
+    closeResultMenu();
     ui.open = false;
     panel.hidden = true;
     resultsPanel.hidden = true;
     document.body.classList.remove("advanced-search-active");
     document.body.classList.remove("advanced-results-maximized");
+    if (ui.related) {
+      ui.related = null;
+      window.relatedConversations?.searchEnded();
+    }
+  }
+
+  // Ordinary Advanced Search, or Related mode for one chat ({id, title}).
+  async function openSearchMode(related) {
+    ui.related = related;
+    await openAdvancedSearch();
+    rerunIfOtherMode();
+  }
+
+  // Results built for the other mode (or another chat) are re-run, so the
+  // chat being linked never lists itself and an ordinary search lists it.
+  // Also called when a request finishes, in case the mode changed meanwhile.
+  function rerunIfOtherMode() {
+    if (!ui.open || !ui.hasRun || ui.resultsExclude === excludeKey()) return;
+    if (ui.browse) runBrowse(ui.browse);
+    else runSearch();
   }
 
   function payload(offset = 0) {
@@ -894,7 +919,12 @@
     value.list_models = ui.listModels;
     value.limit = 100;
     value.offset = offset;
+    if (ui.related) value.exclude_ids = [ui.related.id];
     return value;
+  }
+
+  function excludeKey() {
+    return ui.related ? ui.related.id : "";
   }
 
   function stableJson(value) {
@@ -915,13 +945,17 @@
     if (ui.busy) {
       // Run it once the current search finishes, so the newest request
       // (a sort change, a second click) is never dropped.
-      ui.pendingSearch = options || {};
+      ui.pendingSearch = () => runSearch(options || {});
       return;
     }
     ui.criteria.query = queryEl.value.trim();
     ui.criteria.sort = sortEl.value;
     const body = payload(0);
     const key = searchKey(body);
+    // Which chat this request leaves out, fixed now: the mode can change
+    // while the request is in flight.
+    const sentExclude = excludeKey();
+    let succeeded = false;
     // Load More only appends when the search is unchanged since the list was
     // built. If it changed, the list is replaced with the new search's results.
     const append = options?.append === true && key === ui.lastSearchKey;
@@ -942,6 +976,9 @@
         : (data.results || []);
       ui.total = Number(data.total || 0);
       ui.lastSearchKey = key;
+      ui.browse = null;
+      ui.resultsExclude = sentExclude;
+      succeeded = true;
       resultsStatus.textContent = "";
       renderResults();
       if (!append) await loadHistory();
@@ -951,8 +988,284 @@
       ui.busy = false;
       const next = ui.pendingSearch;
       ui.pendingSearch = null;
-      if (next) runSearch(next);
+      if (next) next();
+      // Only after a success: a failing request must not retry in a loop.
+      else if (succeeded) rerunIfOtherMode();
     }
+  }
+
+  // List every conversation in one location (a folder, Archived or Deleted)
+  // in the results area, as the same result cards a search shows.
+  async function runBrowse(location, append = false, { keepScroll = false } = {}) {
+    if (ui.busy) {
+      ui.pendingSearch = () => runBrowse(location, append, { keepScroll });
+      return;
+    }
+    ui.busy = true;
+    ui.hasRun = true;
+    const scroll = resultsList.scrollTop;
+    // A location listing has no matches to count, so it sorts by date only:
+    // show the sort it actually uses.
+    if (sortEl.value === "matches") sortEl.value = "newest";
+    // Fixed before the request, as in runSearch().
+    const sentExclude = excludeKey();
+    let succeeded = false;
+    resultsStatus.textContent = append ? "Loading more…" : "Loading…";
+    try {
+      const response = await fetch("/api/advanced-search/browse", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          kind: location.kind,
+          id: location.id,
+          provider: location.provider,
+          sort: sortEl.value,
+          limit: 100,
+          offset: append ? ui.results.length : 0,
+          exclude_ids: sentExclude ? [sentExclude] : [],
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      ui.results = append ? ui.results.concat(data.results || []) : (data.results || []);
+      ui.total = Number(data.total || 0);
+      ui.lastSearchKey = null;
+      ui.browse = location;
+      ui.resultsExclude = sentExclude;
+      succeeded = true;
+      resultsStatus.textContent = "";
+      renderResults();
+      if (keepScroll) resultsList.scrollTop = scroll;
+      else if (!append) resultsList.scrollTop = 0;
+    } catch (error) {
+      resultsStatus.textContent = `Could not open ${location.name}: ${error.message}`;
+    } finally {
+      ui.busy = false;
+      const next = ui.pendingSearch;
+      ui.pendingSearch = null;
+      if (next) next();
+      // Only after a success: a failing request must not retry in a loop.
+      else if (succeeded) rerunIfOtherMode();
+    }
+  }
+
+  // Where a result lives, shown before its title. Deleted wins over the
+  // rest, then Archived, then the folder; null when it is in none of them.
+  function resultLocation(result) {
+    if (result.deleted) return { kind: "deleted", name: "Deleted", provider: result.provider };
+    if (result.archived) return { kind: "archived", name: "Archived", provider: result.provider };
+    if (result.folder) {
+      return { kind: "folder", id: result.folder.id, name: result.folder.name, provider: result.provider };
+    }
+    return null;
+  }
+
+  // ── Result ⋮ menu ─────────────────────────────────────────────────────────
+  let resultMenu = null;
+
+  function closeResultMenu() {
+    if (!resultMenu) return;
+    restoreActionMenuFocus(resultMenu);
+    resultMenu.remove();
+    resultMenu = null;
+    document.removeEventListener("mousedown", onResultMenuOutside, true);
+    window.removeEventListener("scroll", closeResultMenu, true);
+  }
+
+  function onResultMenuOutside(event) {
+    if (resultMenu && !resultMenu.contains(event.target)) closeResultMenu();
+  }
+
+  // Re-draw the cards after an action, keeping the list where it was.
+  function refreshResults() {
+    const scroll = resultsList.scrollTop;
+    renderResults();
+    resultsList.scrollTop = scroll;
+  }
+
+  // Keep the open conversation's own pin/folder state in step, so the
+  // conversation's ⋮ menu acts on what the result menu just changed.
+  function syncActiveConversation(result) {
+    if (state.activeId !== result.id) return;
+    state.activeFolderId = result.folder ? result.folder.id : null;
+    state.activeFolderPinned = Boolean(result.folder && result.pinned);
+    state.activePinned = Boolean(!result.folder && result.pinned);
+  }
+
+  async function addResultToFolder(result) {
+    let folders = [];
+    try {
+      const response = await fetch(`/api/folders?${new URLSearchParams({ provider: result.provider })}`);
+      folders = (await response.json()).folders || [];
+    } catch (_) {
+      resultsStatus.textContent = "Could not load the folders.";
+      return;
+    }
+    const folderId = await openFolderPicker(folders, result.folder?.id);
+    // The folder it is already in: nothing to move (moving would clear its
+    // pin within the folder).
+    if (!folderId || folderId === result.folder?.id) return;
+    const data = await apiMoveToFolder(folderId, result.id);
+    if (!data || data.error) {
+      resultsStatus.textContent = "Could not add the conversation to the folder.";
+      return;
+    }
+    const folder = folders.find((item) => item.id === folderId);
+    // Moving into a folder un-archives it and drops its pin.
+    result.folder = { id: folderId, name: folder ? folder.name : "" };
+    result.archived = false;
+    result.pinned = false;
+    syncActiveConversation(result);
+    refreshAfterMove();
+    await afterFolderChange();
+  }
+
+  // Moving, archiving, restoring or deleting changes which chats a listed
+  // location holds, so a location listing is fetched again (count and Load
+  // More stay right). A search keeps its cards and redraws their new place.
+  function refreshAfterMove() {
+    if (ui.browse) runBrowse(ui.browse, false, { keepScroll: true });
+    else refreshResults();
+  }
+
+  async function togglePinResult(result) {
+    const next = !result.pinned;
+    if (result.folder) await apiFolderPin(result.id, next);
+    else if (next) await apiPinConversation(result.id);
+    else await apiUnpinConversation(result.id);
+    result.pinned = next;
+    syncActiveConversation(result);
+    refreshResults();
+    await afterFolderChange();
+  }
+
+  async function archiveResult(result) {
+    await apiUpdateConversationMeta(result.id, { archived: true });
+    // Archiving takes a chat out of its folder, and its pin there with it.
+    if (result.folder) {
+      result.folder = null;
+      result.pinned = false;
+    }
+    result.archived = true;
+    syncActiveConversation(result);
+    refreshAfterMove();
+    await afterFolderChange();
+  }
+
+  // Restore from Archived or the Recycle Bin, as the sidebar's Restore does.
+  async function restoreResult(result) {
+    if (result.deleted) {
+      await apiUpdateConversationMeta(result.id, { deleted: false });
+      result.deleted = false;
+    } else {
+      await apiUpdateConversationMeta(result.id, { archived: false });
+      result.archived = false;
+    }
+    syncActiveConversation(result);
+    refreshAfterMove();
+    await afterFolderChange();
+  }
+
+  async function deleteResult(result) {
+    const ok = await openConfirm({
+      title: "Delete conversation?",
+      text: `"${result.title || "Untitled"}" will be moved to the Recycle Bin.`,
+      okLabel: "Delete",
+    });
+    if (!ok) return;
+    await apiUpdateConversationMeta(result.id, { deleted: true });
+    result.deleted = true;
+    refreshAfterMove();
+    await afterFolderChange();
+  }
+
+  // ── Related mode ──────────────────────────────────────────────────────────
+  // Linking itself lives in related.js; these draw and route it on a result.
+  function relatedLinked(result) {
+    return Boolean(window.relatedConversations?.isLinked(result.id));
+  }
+
+  async function toggleRelatedLink(result) {
+    const related = window.relatedConversations;
+    if (!related) return;
+    if (relatedLinked(result)) await related.remove(result.id);
+    else await related.add(result.id);
+    refreshResults();
+  }
+
+  // Hub when already related (click to remove), Add Circle when not (click
+  // to add). Shared with Advanced Search's result card markup below.
+  function relatedLinkButton(result) {
+    const linked = relatedLinked(result);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "related-link-btn";
+    btn.dataset.linked = String(linked);
+    btn.title = linked ? "Already a Related Chat" : "Add to Related Chats";
+    btn.setAttribute("aria-label", btn.title);
+    btn.innerHTML = window.relatedConversations.icon(linked ? "hub" : "add");
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      toggleRelatedLink(result);
+    });
+    return btn;
+  }
+
+  function openResultMenu(result, anchor) {
+    const wasForThis = resultMenu && resultMenu.dataset.convId === result.id;
+    closeResultMenu();
+    if (wasForThis) return; // clicking the same ⋮ again closes it
+    const menu = document.createElement("div");
+    menu.className = "sidebar-menu conv-item-menu";
+    menu.dataset.convId = result.id;
+    menu.setAttribute("role", "menu");
+    const items = [];
+    if (ui.related) {
+      items.push(relatedLinked(result)
+        ? ["Remove Link", () => toggleRelatedLink(result)]
+        : ["Add to Related Chats", () => toggleRelatedLink(result)]);
+    }
+    items.push(
+      ["Add to Folder", () => addResultToFolder(result)],
+      [result.pinned ? "Unpin" : "Pin", () => togglePinResult(result)],
+    );
+    // As in the sidebar: archived and deleted chats get Restore, and a chat
+    // already in the Recycle Bin gets no Delete.
+    if (result.archived || result.deleted) items.push(["Restore", () => restoreResult(result)]);
+    else items.push(["Archive", () => archiveResult(result)]);
+    if (!result.deleted) items.push(["Delete", () => deleteResult(result)]);
+    for (const [label, fn] of items) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "sidebar-menu-item";
+      btn.setAttribute("role", "menuitem");
+      const text = document.createElement("span");
+      text.className = "sidebar-menu-item-label";
+      text.textContent = label;
+      btn.appendChild(text);
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        closeResultMenu();
+        fn();
+      });
+      menu.appendChild(btn);
+    }
+    $("workspace-controls").appendChild(menu);
+    resultMenu = menu;
+    // Under the button, right-aligned, kept on screen.
+    const inset = themePixels("--popover-safe-inset");
+    const gap = themePixels("--popover-gap");
+    const rect = anchor.getBoundingClientRect();
+    const left = Math.max(inset, rect.right - menu.offsetWidth);
+    let top = rect.bottom + gap;
+    if (top + menu.offsetHeight > window.innerHeight - inset) {
+      top = rect.top - menu.offsetHeight - gap;
+    }
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    prepareActionMenu(menu, anchor, closeResultMenu);
+    document.addEventListener("mousedown", onResultMenuOutside, true);
+    window.addEventListener("scroll", closeResultMenu, true);
   }
 
   function formatStartDate(value) {
@@ -971,11 +1284,18 @@
   }
 
   function renderResults() {
+    // Most Matches only applies to a search, not a location listing.
+    const matchesOption = sortEl.querySelector('option[value="matches"]');
+    if (matchesOption) matchesOption.disabled = Boolean(ui.browse);
     resultsList.innerHTML = "";
     resultsList.dataset.view = ui.resultView;
-    resultsCount.textContent = ui.hasRun
-      ? `${ui.total.toLocaleString()} Search Result${ui.total === 1 ? "" : "s"}`
-      : "Search Results";
+    if (ui.browse) {
+      resultsCount.textContent = `${ui.browse.name}: ${ui.total.toLocaleString()} Conversation${ui.total === 1 ? "" : "s"}`;
+    } else {
+      resultsCount.textContent = ui.hasRun
+        ? `${ui.total.toLocaleString()} Search Result${ui.total === 1 ? "" : "s"}`
+        : "Search Results";
+    }
     if (!ui.hasRun) {
       const empty = document.createElement("div");
       empty.className = "advanced-empty-note";
@@ -987,28 +1307,68 @@
     if (!ui.results.length) {
       const empty = document.createElement("div");
       empty.className = "advanced-empty-note";
-      empty.textContent = "No conversations matched these filters.";
+      empty.textContent = ui.browse
+        ? `No conversations in ${ui.browse.name}.`
+        : "No conversations matched these filters.";
       resultsList.appendChild(empty);
       syncResultSizeButtons();
       return;
     }
     const multiProvider = ui.criteria.providers.length > 1;
     for (const result of ui.results) {
+      if (ui.related && result.id === ui.related.id) continue;
       const card = document.createElement("article");
       card.className = "advanced-result-card";
-      card.tabIndex = 0;
       const titleRow = document.createElement("div");
       titleRow.className = "advanced-result-title-row";
       const title = document.createElement("span");
       title.className = "advanced-result-title";
-      title.textContent = result.title || "Untitled";
+      // Location\chat name. Clicking the location lists everything in it.
+      const location = resultLocation(result);
+      if (location) {
+        const locationBtn = document.createElement("button");
+        locationBtn.type = "button";
+        locationBtn.className = "advanced-result-location";
+        locationBtn.textContent = location.name;
+        locationBtn.title = `Open ${location.name}`;
+        locationBtn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          runBrowse(location);
+        });
+        const sep = document.createElement("span");
+        sep.className = "advanced-result-location-sep";
+        sep.textContent = "\\";
+        title.append(locationBtn, sep);
+      }
+      // The chat name is the keyboard action, not the card: the card holds
+      // other buttons (location, Related link, ⋮), which a button role hides.
+      const name = document.createElement("span");
+      name.className = "advanced-result-name";
+      name.textContent = result.title || "Untitled";
+      makeKeyboardAction(name, `Open ${result.title || "Untitled"}`);
+      title.append(name);
       const matches = document.createElement("span");
       matches.className = "advanced-result-matches";
       matches.textContent = `${Number(result.match_count || 0).toLocaleString()} match${Number(result.match_count || 0) === 1 ? "" : "es"}`;
       const date = document.createElement("span");
       date.className = "advanced-result-date";
       date.textContent = formatStartDate(result.create_time);
-      titleRow.append(title, matches, date);
+      const menuBtn = document.createElement("button");
+      menuBtn.type = "button";
+      menuBtn.className = "conv-menu-btn advanced-result-menu-btn";
+      menuBtn.title = "More";
+      menuBtn.setAttribute("aria-label", "More");
+      menuBtn.setAttribute("aria-haspopup", "menu");
+      menuBtn.innerHTML =
+        '<svg viewBox="0 0 4 16" width="4" height="16" aria-hidden="true">'
+        + '<circle cx="2" cy="2" r="1.7"/><circle cx="2" cy="8" r="1.7"/>'
+        + '<circle cx="2" cy="14" r="1.7"/></svg>';
+      menuBtn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openResultMenu(result, menuBtn);
+      });
+      titleRow.append(title, matches, date, menuBtn);
+      if (ui.related) titleRow.insertBefore(relatedLinkButton(result), title);
       if (ui.resultView === "compact" && multiProvider) {
         const provider = document.createElement("span");
         provider.className = "advanced-provider-chip";
@@ -1065,14 +1425,11 @@
         }
         card.appendChild(bottom);
       }
-      const open = () => openConversation(result.id, null, result.target_seq);
-      card.addEventListener("click", open);
-      card.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          open();
-        }
+      // Related mode previews the chat and keeps the search open.
+      const open = () => openConversation(result.id, null, result.target_seq, {
+        keepAdvancedSearch: Boolean(ui.related),
       });
+      card.addEventListener("click", open);
       resultsList.appendChild(card);
     }
     if (ui.results.length < ui.total) {
@@ -1080,7 +1437,10 @@
       more.type = "button";
       more.className = "advanced-load-more";
       more.textContent = `Load More (${ui.results.length.toLocaleString()} of ${ui.total.toLocaleString()})`;
-      more.addEventListener("click", () => runSearch({ append: true }));
+      more.addEventListener("click", () => {
+        if (ui.browse) runBrowse(ui.browse, true);
+        else runSearch({ append: true });
+      });
       resultsList.appendChild(more);
     }
     syncResultSizeButtons();
@@ -1089,7 +1449,7 @@
   function setResultSize(size) {
     ui.resultSize = size;
     resultsPanel.dataset.size = size;
-    resultsPanel.style.removeProperty("flex-basis");
+    resultsPanel.style.removeProperty("--advanced-results-height");
     syncResultSizeButtons();
   }
 
@@ -1103,15 +1463,20 @@
   }
 
   function topModalIsOpen() {
-    return [...document.querySelectorAll(".modal-overlay")].some((item) => !item.hidden);
+    return [...document.querySelectorAll('[role="dialog"]')].some((item) => !item.closest("[hidden]") && item.getClientRects().length);
   }
 
   function sidebarOverlayIsOpen() {
     return [$("bookmark-panel"), $("notes-side-panel")].some((item) => item && !item.hidden);
   }
 
-  $("manage-search-btn")?.addEventListener("click", openAdvancedSearch);
-  $("advanced-close")?.addEventListener("click", closeAdvancedSearch);
+  $("manage-search-btn")?.addEventListener("click", () => openSearchMode(null));
+  // Closing a Related search returns to its chat (related.js exitSearch).
+  function closeOrExitRelated() {
+    if (ui.related && window.relatedConversations) window.relatedConversations.exitSearch();
+    else closeAdvancedSearch();
+  }
+  $("advanced-close")?.addEventListener("click", closeOrExitRelated);
   $("advanced-clear-all")?.addEventListener("click", () => {
     ui.criteria = defaultCriteria();
     ui.editModes = {};
@@ -1120,6 +1485,7 @@
     ui.total = 0;
     ui.hasRun = false;
     ui.lastSearchKey = null;
+    ui.browse = null;
     ui.resultView = "default";
     ui.listModels = false;
     syncHeaderControls();
@@ -1164,7 +1530,8 @@
   });
   sortEl.addEventListener("change", () => {
     ui.criteria.sort = sortEl.value;
-    if (ui.hasRun) runSearch();
+    if (ui.browse) runBrowse(ui.browse);
+    else if (ui.hasRun) runSearch();
   });
   resultViewEl.addEventListener("change", () => {
     ui.resultView = resultViewEl.value;
@@ -1183,28 +1550,42 @@
   });
 
   if (resizeHandle) {
+    const heightBounds = () => {
+      const min = themePixels("--advanced-results-min-h");
+      return [min, Math.max(min, $("main").clientHeight - themePixels("--advanced-results-top-clearance"))];
+    };
+    setupResizeHandle(resizeHandle, {
+      label: "Search results height", orientation: "horizontal", controls: "advanced-results-panel", reverse: true,
+      getValue: () => resultsPanel.offsetHeight,
+      getBounds: heightBounds,
+      setValue: (height) => {
+        ui.resultSize = "default";
+        resultsPanel.dataset.size = "default";
+        resultsPanel.style.setProperty("--advanced-results-height", `${height}px`);
+        syncResultSizeButtons();
+      },
+    });
     let dragging = false;
     resizeHandle.addEventListener("mousedown", (event) => {
       if (ui.resultSize === "max") setResultSize("default");
       dragging = true;
-      document.body.style.cursor = "row-resize";
-      document.body.style.userSelect = "none";
+      document.body.classList.add("resizing-rows");
       event.preventDefault();
     });
     document.addEventListener("mousemove", (event) => {
       if (!dragging) return;
       const mainRect = $("main").getBoundingClientRect();
-      const height = Math.max(49, Math.min(mainRect.height - 48, mainRect.bottom - event.clientY));
+      const [min, max] = heightBounds();
+      const height = Math.max(min, Math.min(max, mainRect.bottom - event.clientY));
       ui.resultSize = "default";
       resultsPanel.dataset.size = "default";
-      resultsPanel.style.flexBasis = `${height}px`;
+      resultsPanel.style.setProperty("--advanced-results-height", `${height}px`);
       syncResultSizeButtons();
     });
     document.addEventListener("mouseup", () => {
       if (!dragging) return;
       dragging = false;
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
+      document.body.classList.remove("resizing-rows");
     });
   }
 
@@ -1213,16 +1594,29 @@
   // first Escape; the next one reaches this mode.
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || !ui.open) return;
+    // Inline naming/tag editors get their own first Escape to cancel edits.
+    if (isTextEntryTarget(event.target) && event.target !== queryEl) return;
     if (topModalIsOpen() || sidebarOverlayIsOpen()) return;
+    // A Related Conversations row menu takes this Escape (related.js).
+    if (window.relatedConversations?.menuOpen()) return;
+    if (resultMenu) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      closeResultMenu();
+      return;
+    }
     event.preventDefault();
     event.stopImmediatePropagation();
-    closeAdvancedSearch();
+    closeOrExitRelated();
   }, true);
 
   window.advancedSearchController = {
-    open: openAdvancedSearch,
+    open: () => openSearchMode(null),
+    openRelated: (target) => openSearchMode(target),
     close: closeAdvancedSearch,
     isOpen: () => ui.open,
+    // related.js calls this when the links change, to redraw the icons.
+    refreshRelated: () => { if (ui.open && ui.related) refreshResults(); },
   };
 
   syncResultSizeButtons();

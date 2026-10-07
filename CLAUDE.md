@@ -59,3 +59,13 @@ These are hard rules. Follow them exactly.
   all the current filter criteria to the conversation list** so the user can
   review which conversations match — it is not a stats-only readout. The user is
   **never required** to press Preview before Apply; Apply works on its own.
+
+## Style references
+
+Read [STYLE_GUIDE.md](STYLE_GUIDE.md) before changing UI markup or styles.
+`static/theme.css` is the central appearance-value source; component CSS uses
+those variables. Keep decorative CSS out of HTML and JavaScript. Preserve
+existing visual differences unless the user asks to change them; report them
+in [STYLE_REVIEW.md](STYLE_REVIEW.md). Run `python scripts/check_styles.py` after
+style changes. Standalone advanced-search mockups are design references and
+must not be applied as an unrequested theme.

@@ -45,7 +45,7 @@ running, just replace the files:
   `bulk_labels.py`, `snapshots.py`, `api_common.py`) and the running server
   re-launches itself within a second or two; the open browser tab reloads on
   its own.
-- Replace anything in `static/` (`index.html`, `style.css`, `app.js` or the
+- Replace anything in `static/` (`index.html`, `theme.css`, component CSS, `app.js` or the
   feature modules) and the tab reloads on its own — no server restart needed.
 
 Your database is never touched by this — new tables are created automatically on
@@ -195,7 +195,11 @@ find . -name '.DS_Store' -delete
 | `bulk_labels.py`    | Conditional bulk labeling: criteria, preview, apply, saved runs    |
 | `snapshots.py`      | Manual safety snapshots: capture, list, restore                    |
 | `static/index.html` | App shell                                                          |
+| `static/theme.css`  | Central appearance variables; see [STYLE_GUIDE.md](STYLE_GUIDE.md) |
 | `static/style.css`  | UI styles                                                          |
+| `static/accessibility.js` | Shared dialog, menu, keyboard, resize, and motion behaviour |
+| `scripts/check_styles.py` | Dependency-free central-style guard |
+| `STYLE_REVIEW.md` | Audit results and retained visual/contrast findings |
 | `static/app.js`     | Frontend state, rendering, tabs, quick views, interactions         |
 | `static/labels_screen.js` | Labels screen: settings and label definitions                |
 | `static/bulk_labels.js`   | Bulk-label tool UI and Unfinished Label Runs                 |
