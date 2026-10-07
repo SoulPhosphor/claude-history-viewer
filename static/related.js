@@ -9,9 +9,11 @@
 // "Find Related Conversations" opens Advanced Search in its Related mode
 // (advanced_search.js: ui.related). This panel stays over the sidebar for the
 // whole search and is fixed to the chat the search is for, so the links stay in
-// view while results are previewed in the chat area. Clicking that chat's title
-// at the top of the panel (or closing the search) returns to it and closes the
-// panel; the search itself is kept for next time, as Advanced Search always is.
+// view while results are previewed in the chat area. Clicking the Hub button
+// while previewing another chat switches the job to that chat. Clicking the
+// chat's title at the top of the panel (or closing the search) returns to it
+// and closes the panel; the search itself is kept for next time, as Advanced
+// Search always is.
 //
 // Shared with other screens — change them together:
 //   • Rows reuse the sidebar row (app.js appendListItems): .conv-item,
@@ -487,6 +489,17 @@ function findRelatedConversations() {
   controller.openRelated({ ..._related.searching });
 }
 
+// Hub clicked on a chat being previewed during Find: that chat becomes the one
+// links are found for. The search stays open and its results re-run for it.
+async function retargetRelatedSearch() {
+  const id = state.activeId;
+  if (!id || !_related.searching) return;
+  const title = $("thread-title")?.textContent || "";
+  _related.searching = { id, title };
+  window.advancedSearchController?.openRelated({ id, title });
+  await loadRelatedFor(id, title);
+}
+
 // Advanced Search closed while it was in Related mode: the panel goes with it.
 function relatedSearchEnded() {
   if (!_related.searching) return;
@@ -521,8 +534,9 @@ function relatedConversationOpened(conv) {
 // ── Wiring ────────────────────────────────────────────────────────────────────
 relatedToggleBtn?.addEventListener("click", () => {
   if (!relatedPanelIsOpen()) openRelatedPanel();
-  else if (_related.searching) exitRelatedSearch();
-  else closeRelatedPanel();
+  else if (!_related.searching) closeRelatedPanel();
+  else if (state.activeId !== _related.searching.id) retargetRelatedSearch();
+  else exitRelatedSearch();
 });
 $("related-panel-close")?.addEventListener("click", () => {
   if (_related.searching) exitRelatedSearch();
