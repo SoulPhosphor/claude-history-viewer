@@ -211,9 +211,9 @@ async function spMergeNewerContent(id) {
   const data = await spApi.get(id);
   const pad = data.scratch_pad;
   if (sp.current?.id !== id) return false;
-  const base = sp.saved.replace(/\n+$/, "");
-  if (!pad.content.startsWith(base)) return false;
-  const added = pad.content.slice(base.length).replace(/^\n+/, "");
+  // Only links added by Add to Scratch Pad are merged (InternalLinks.appendedLinks).
+  const added = spLinks.appendedLinks(sp.saved, pad.content);
+  if (added === null) return false;
   const draft = spMarkdown();
   sp.saved = pad.content;
   sp.current.version = pad.version || 0;

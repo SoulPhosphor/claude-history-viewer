@@ -77,5 +77,23 @@
     return `[${cleanLabel(label)}](${target})`;
   }
 
-  return { SCHEME, conversationLink, messageLink, parse, externalUrl, cleanLabel, markdown };
+  // What another window added to a pad since `saved`, when that is only what
+  // Add to Scratch Pad writes: whole links, each its own paragraph at the end
+  // (the server's append rule). Returns the added links ("" for no change),
+  // or null for any other change, which must not be merged automatically.
+  function appendedLinks(saved, current) {
+    const base = String(saved || "").replace(/\n+$/, "");
+    current = String(current || "");
+    if (!current.startsWith(base)) return null;
+    let rest = current.slice(base.length);
+    if (base && rest) {
+      if (!rest.startsWith("\n\n")) return null;
+      rest = rest.slice(2);
+    }
+    if (!rest) return "";
+    const blocks = rest.split("\n\n");
+    return blocks.every((block) => /^\[[^\]\n]+\]\([^)\s]+\)$/.test(block)) ? blocks.join("\n\n") : null;
+  }
+
+  return { SCHEME, conversationLink, messageLink, parse, externalUrl, cleanLabel, markdown, appendedLinks };
 });

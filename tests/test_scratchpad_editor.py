@@ -62,6 +62,21 @@ class InternalLinkFormatTests(unittest.TestCase):
         self.assertEqual(result[2], "mailto:me@example.com")
         self.assertEqual(result[3:], [None, None, None])
 
+    def test_only_added_links_are_merged_after_a_conflict(self):
+        cases = [
+            ("foo", "foobar", None),                      # an ordinary edit that extends the text
+            ("foo", "foo\n\n[L](chv://conversation/1)", "[L](chv://conversation/1)"),
+            ("foo\n", "foo\n\n[A](chv://conversation/1)\n\n[B](https://x.org)", "[A](chv://conversation/1)\n\n[B](https://x.org)"),
+            ("", "[L](chv://conversation/1)", "[L](chv://conversation/1)"),
+            ("", "typed elsewhere", None),
+            ("foo", "foo\n\nnot a link", None),
+            ("foo", "changed", None),
+            ("foo", "foo", ""),
+        ]
+        for saved, current, expected in cases:
+            result = run_node(f"out(L.appendedLinks({json.dumps(saved)}, {json.dumps(current)}));")
+            self.assertEqual(result, expected, (saved, current))
+
     def test_labels_cannot_break_the_link(self):
         result = run_node("out([L.markdown('a [b]\\n c', 'chv://conversation/1'), L.cleanLabel('  ')]);")
         self.assertEqual(result, ["[a (b) c](chv://conversation/1)", "Link"])
