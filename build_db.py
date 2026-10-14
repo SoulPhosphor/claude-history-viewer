@@ -1394,6 +1394,15 @@ def _ts_close(a, b) -> bool:
     return abs(float(a) - float(b)) < 1.0
 
 
+def _fill_message_ids(conn, cid: str, msgs: list) -> None:
+    conn.executemany(
+        "UPDATE messages SET message_uuid = ? WHERE conversation_id = ? AND message_uuid IS NULL "
+        "AND seq = ? AND role = ? AND content = ?",
+        [(m["message_uuid"], cid, m.get("seq"), m.get("role"), m.get("content"))
+         for m in msgs if m.get("message_uuid")],
+    )
+
+
 def _bookmarks_before_replace(conn, cid: str):
     """message_ids.bookmarks_before_replace, when the user-data database is
     attached (it is not during a plain build)."""
@@ -1468,6 +1477,10 @@ def reconcile_backup(conn, records: list, provider: str) -> dict:
                 and (existing[5] or None) == (meta.get("gizmo_type") or None)
             )
             if same:
+                # Unchanged, but this backup may carry message ids the stored
+                # copy lacks (imported before ids were kept): fill them in,
+                # matching position, role and exact text.
+                _fill_message_ids(conn, cid, msgs)
                 counts["unchanged"] += 1
                 continue
             # Never let an older backup roll a newer conversation backward: files

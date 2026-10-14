@@ -384,5 +384,31 @@ class MessageIdTests(unittest.TestCase):
         self.assertTrue(rows["a"][1].startswith(message_ids.GONE_PREFIX))
 
 
+    def test_two_bookmarks_on_repeated_text_each_get_their_own_message(self):
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.execute("UPDATE messages SET content = 'same' WHERE seq IN (0, 2)")
+        fp = message_ids.message_fingerprint("user", "same")
+        # Both point at a position that no longer holds their text.
+        for bid, seq in (("a", 3), ("b", 10)):  # both nearest to 2
+            self.conn.execute(
+                "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at, message_hash) "
+                "VALUES (?, 'c1', ?, '', 9e9, 9e9, ?)", (bid, seq, fp))
+        self.conn.commit()
+        message_ids.reanchor_bookmarks(self.conn, "c1")
+        rows = {r[0]: (r[1], r[2]) for r in self.conn.execute(
+            "SELECT id, seq, message_uuid FROM udb.conversation_bookmarks")}
+        self.assertEqual(sorted(seq for seq, _ in rows.values()), [0, 2])
+        self.assertTrue(all(uuid is None for _, uuid in rows.values()))
+
+    def test_unchanged_reimport_fills_missing_ids(self):
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.commit()
+        records = build_db.parse_backup([chat("c1", TURNS, "a2")], "chatgpt")
+        counts = build_db.reconcile_backup(self.conn, records, "chatgpt")
+        self.conn.commit()
+        self.assertEqual(counts["unchanged"], 1)
+        self.assertEqual(self.seq_of("a2"), 3)
+
+
 if __name__ == "__main__":
     unittest.main()
