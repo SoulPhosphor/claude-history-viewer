@@ -569,7 +569,10 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 -- The bookmarked message's export id (message_ids.py). It is
                 -- the bookmark's identity; seq follows it and is unique per
                 -- message only through this id (see the indexes below).
-                message_uuid    TEXT
+                message_uuid    TEXT,
+                -- Fingerprint of the message's role and text, so a bookmark
+                -- recognises its message after a rebuild even without an id.
+                message_hash    TEXT
             );
 
             -- Advanced searches intentionally live in the portable user-data
@@ -650,6 +653,11 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                     ALTER TABLE conversation_bookmarks_new RENAME TO conversation_bookmarks;
                     """
                 )
+        except sqlite3.Error:
+            pass
+        # Fingerprint of the bookmarked message (message_ids.message_fingerprint).
+        try:
+            conn.execute("ALTER TABLE conversation_bookmarks ADD COLUMN message_hash TEXT")
         except sqlite3.Error:
             pass
         for idx_sql in (
@@ -4010,9 +4018,10 @@ class Handler(BaseHTTPRequestHandler):
                 bid = uuid.uuid4().hex
                 conn.execute(
                     "INSERT INTO udb.conversation_bookmarks "
-                    "(id, conversation_id, seq, name, source, created_at, updated_at, message_uuid) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (bid, conv_id, seq, name, source, now, now, message_uuid),
+                    "(id, conversation_id, seq, name, source, created_at, updated_at, message_uuid, message_hash) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (bid, conv_id, seq, name, source, now, now, message_uuid,
+                     message_ids.bookmark_fingerprint_at(conn, conv_id, seq)),
                 )
                 conn.commit()
             row = conn.execute(
@@ -4553,18 +4562,19 @@ def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source"),
     _build_source_index(source_dir)
     # Messages imported before export message ids were kept get them from the
     # backups in source/, in the background so start-up is not delayed.
-    def fill_ids():
-        message_ids.fill_missing_from_sources(db_path, source_dir)
-        # Then every bookmark made before ids were kept learns its message's
-        # id while its position still points at that message.
-        conn = open_db(db_path)
-        try:
-            message_ids.bind_legacy_bookmarks(conn)
-        except sqlite3.Error:
-            pass
-        finally:
-            conn.close()
-    threading.Thread(target=fill_ids, daemon=True).start()
+    # Finished before the server answers anything, so no link or bookmark is
+    # ever made from a message whose id is still missing. Real work happens
+    # once; later starts find nothing to do.
+    message_ids.fill_missing_from_sources(db_path, source_dir)
+    # Then every bookmark made before ids were kept learns its message's id
+    # and fingerprint while its position still points at that message.
+    conn = open_db(db_path)
+    try:
+        message_ids.bind_legacy_bookmarks(conn)
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
     Handler.db_path = db_path
     Handler.source_dir = source_dir
     # ThreadingHTTPServer: handle each request on its own thread so one slow or

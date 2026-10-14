@@ -18,6 +18,7 @@ ids from different providers can never be confused with one another.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -72,36 +73,91 @@ def message_uuid_at(conn, conversation_id: str, seq):
     return row[0] if row and row[0] else None
 
 
+def message_fingerprint(role, content):
+    """A short fingerprint of a message's role and exact text, kept on its
+    bookmark so the bookmark can recognise its message after a rebuild, even
+    when that message has no id."""
+    if role is None or content is None:
+        return None
+    return hashlib.sha1(f"{role}\n{content}".encode("utf-8")).hexdigest()
+
+
+def _message_at(conn, conversation_id: str, seq):
+    return conn.execute(
+        "SELECT role, content, message_uuid FROM messages WHERE conversation_id = ? AND seq = ? LIMIT 1",
+        (conversation_id, seq),
+    ).fetchone()
+
+
+def _nearest_with_fingerprint(conn, conversation_id: str, fingerprint: str, seq):
+    best = None
+    for row_seq, role, content, row_uuid in conn.execute(
+        "SELECT seq, role, content, message_uuid FROM messages WHERE conversation_id = ?",
+        (conversation_id,),
+    ):
+        if message_fingerprint(role, content) == fingerprint:
+            if best is None or abs(row_seq - seq) < abs(best[0] - seq):
+                best = (row_seq, row_uuid)
+    return best
+
+
+def bookmark_fingerprint_at(conn, conversation_id: str, seq):
+    row = _message_at(conn, conversation_id, seq)
+    return message_fingerprint(row[0], row[1]) if row else None
+
+
 def reanchor_bookmarks(conn, conversation_id: str) -> None:
     """Point each bookmark of a conversation at its message's current seq.
 
-    A bookmark that knows its message id follows that message. One made before
-    ids were recorded learns its id from where it points now. If its message
-    is gone the bookmark is kept but left unattached: `bookmark_missing` then
-    reports it, and it never lands on another message."""
+    A bookmark that knows its message id follows that message. One without an
+    id is checked against the fingerprint of its message: it stays if the
+    message at its position still matches, moves to the nearest message that
+    does, or is marked gone. Only a bookmark with neither (made before this
+    version and never seen since) takes the message at its position, and it
+    records that message's id and fingerprint at once. A bookmark whose
+    message is gone is kept but never placed on another message."""
     rows = conn.execute(
-        "SELECT id, seq, message_uuid FROM udb.conversation_bookmarks WHERE conversation_id = ?",
+        "SELECT id, seq, message_uuid, message_hash FROM udb.conversation_bookmarks "
+        "WHERE conversation_id = ?",
         (conversation_id,),
     ).fetchall()
     changed = False
-    for bookmark_id, seq, message_uuid in rows:
+    for bookmark_id, seq, message_uuid, fingerprint in rows:
         try:
             if message_uuid:
                 current = message_seq(conn, conversation_id, message_uuid)
-                if current is not None and current != seq:
+                if current is not None and (current != seq or not fingerprint):
                     conn.execute(
-                        "UPDATE udb.conversation_bookmarks SET seq = ? WHERE id = ?",
-                        (current, bookmark_id),
+                        "UPDATE udb.conversation_bookmarks SET seq = ?, "
+                        "message_hash = COALESCE(message_hash, ?) WHERE id = ?",
+                        (current, bookmark_fingerprint_at(conn, conversation_id, current), bookmark_id),
                     )
                     changed = True
-            else:
-                found = message_uuid_at(conn, conversation_id, seq)
-                if found:
+                continue
+            here = _message_at(conn, conversation_id, seq)
+            if fingerprint:
+                if here and message_fingerprint(here[0], here[1]) == fingerprint:
+                    target = (seq, here[2])
+                else:
+                    target = _nearest_with_fingerprint(conn, conversation_id, fingerprint, seq)
+                if target is None:
                     conn.execute(
                         "UPDATE udb.conversation_bookmarks SET message_uuid = ? WHERE id = ?",
-                        (found, bookmark_id),
+                        (GONE_PREFIX + bookmark_id, bookmark_id),
                     )
                     changed = True
+                elif target != (seq, None):
+                    conn.execute(
+                        "UPDATE udb.conversation_bookmarks SET seq = ?, message_uuid = ? WHERE id = ?",
+                        (target[0], target[1], bookmark_id),
+                    )
+                    changed = True
+            elif here:
+                conn.execute(
+                    "UPDATE udb.conversation_bookmarks SET message_uuid = ?, message_hash = ? WHERE id = ?",
+                    (here[2], message_fingerprint(here[0], here[1]), bookmark_id),
+                )
+                changed = True
         except sqlite3.IntegrityError:
             continue
     if changed:
@@ -150,6 +206,7 @@ def fill_missing_from_sources(db_path: Path, source_dir: Path) -> int:
         done = conn.execute("SELECT signature FROM message_id_backfill WHERE id = 1").fetchone()
         if done and done[0] == signature:
             return 0
+        print("Recording message ids from the backups in source/ (one time)…", flush=True)
         def records_of(path):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
@@ -254,8 +311,8 @@ def bookmarks_after_replace(conn, conversation_id: str, remembered: list) -> Non
         try:
             if match:
                 conn.execute(
-                    "UPDATE udb.conversation_bookmarks SET seq = ?, message_uuid = ? WHERE id = ?",
-                    (match[0], match[1], bookmark_id),
+                    "UPDATE udb.conversation_bookmarks SET seq = ?, message_uuid = ?, message_hash = ? WHERE id = ?",
+                    (match[0], match[1], message_fingerprint(role, content), bookmark_id),
                 )
             else:
                 conn.execute(

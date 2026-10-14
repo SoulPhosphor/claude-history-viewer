@@ -168,6 +168,14 @@ class LineEditingTests(unittest.TestCase):
         self.assertIsNone(self.join("abc", 3, "forward"))
 
 
+class StartupOrderTests(unittest.TestCase):
+    def test_message_ids_are_filled_before_the_server_answers(self):
+        server = (ROOT / "server.py").read_text()
+        body = server[server.index("def serve("):]
+        self.assertLess(body.index("message_ids.fill_missing_from_sources"), body.index("_bind_server(port)"))
+        self.assertLess(body.index("message_ids.bind_legacy_bookmarks"), body.index("_bind_server(port)"))
+
+
 class WiringContractTests(unittest.TestCase):
     def test_new_modules_are_valid_javascript(self):
         for filename in ("static/internal_links.js", "static/scratchpads.js", "static/advanced_search.js",

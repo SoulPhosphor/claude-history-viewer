@@ -269,6 +269,62 @@ class MessageIdTests(unittest.TestCase):
         self.assertEqual(self.seq_of("a2"), 3)
         self.assertIsNone(self.seq_of("a2-old"))
 
+    def test_bookmark_survives_a_full_rebuild_by_its_fingerprint(self):
+        # An export without message ids: only text can identify a message.
+        def no_ids(conv):
+            for entry in conv["mapping"].values():
+                entry["message"]["id"] = None
+            return conv
+        def strip(conv):
+            conv = no_ids(conv)
+            return conv
+        source = self.source / "conversations.json"
+        source.write_text(json.dumps([strip(chat("c1", TURNS, "a2"))]))
+        self.conn.close()
+        self.db.unlink()
+        build_db.build(source, self.db)
+        _ensure_runtime_schema(self.db)
+        self.conn = open_db(self.db)
+        # Node ids still fill in when the message has none; drop them to model
+        # an export that has no ids at all.
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.execute(
+            "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
+            "VALUES ('bm', 'c1', 3, 'cats', 1, 1)")  # "cats are great" (a2)
+        self.conn.commit()
+        message_ids.bind_legacy_bookmarks(self.conn)  # first start: learns the fingerprint
+        # Full rebuild (rm history.db) from an export where the chat shows
+        # branch b, so "cats are great" now sits one place further down.
+        source.write_text(json.dumps([strip(chat("c1", TURNS, "a3b"))]))
+        self.conn.close()
+        self.db.unlink()
+        build_db.build(source, self.db)
+        _ensure_runtime_schema(self.db)
+        self.conn = open_db(self.db)
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.commit()
+        message_ids.bind_legacy_bookmarks(self.conn)
+        seq = self.conn.execute("SELECT seq FROM udb.conversation_bookmarks WHERE id = 'bm'").fetchone()[0]
+        content = self.conn.execute(
+            "SELECT content FROM messages WHERE conversation_id = 'c1' AND seq = ?", (seq,)).fetchone()[0]
+        self.assertEqual(content, "cats are great")
+        self.assertEqual(seq, 5)
+
+    def test_rebuilt_chat_without_the_message_marks_the_bookmark_gone(self):
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.execute(
+            "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
+            "VALUES ('bm', 'c1', 3, 'x', 1, 1)")
+        self.conn.commit()
+        message_ids.bind_legacy_bookmarks(self.conn)
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.execute("UPDATE messages SET content = 'rewritten' WHERE seq = 3")
+        self.conn.execute("UPDATE udb.conversation_bookmarks SET message_uuid = NULL")
+        self.conn.commit()
+        message_ids.reanchor_bookmarks(self.conn, "c1")
+        row = self.conn.execute("SELECT seq, message_uuid FROM udb.conversation_bookmarks WHERE id = 'bm'").fetchone()
+        self.assertTrue(row["message_uuid"].startswith(message_ids.GONE_PREFIX))
+
 
 if __name__ == "__main__":
     unittest.main()
