@@ -477,7 +477,7 @@ async function bulkApply() {
         ? "The remaining conversations will be saved as an Unfinished Label Run " +
           "you can continue later. "
         : "") +
-      "This is not undoable — make a Backup first if you want a recovery point.",
+      "This is not undoable — make a Safety Snapshot first if you want a recovery point.",
     okLabel: "Apply label",
   });
   if (!ok) return;

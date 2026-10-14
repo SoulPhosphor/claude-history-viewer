@@ -196,15 +196,15 @@ def snapshot_create(conn, payload_in):
     if count >= SNAPSHOT_MAX:
         # Never auto-delete the oldest; the user must make room.
         raise ApiError(
-            f"Maximum of {SNAPSHOT_MAX} backups reached. "
-            "Delete a backup before creating another.", 409)
+            f"Maximum of {SNAPSHOT_MAX} snapshots reached. "
+            "Delete a snapshot before creating another.", 409)
     data, counts = capture_snapshot(conn)
     blob = json.dumps(
         {"version": SNAPSHOT_SCHEMA_VERSION, "categories": counts, "data": data},
         ensure_ascii=False,
     )
     if not name:
-        name = "Backup " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+        name = "Snapshot " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     sid = uuid.uuid4().hex
     conn.execute(
         "INSERT INTO udb.snapshots(id, name, created_at, schema_version, payload, "
@@ -238,13 +238,13 @@ def snapshot_restore(conn, sid, body):
         "SELECT payload, schema_version FROM udb.snapshots WHERE id = ?", (sid,)
     ).fetchone()
     if not row:
-        raise ApiError("Unknown backup", 404)
+        raise ApiError("Unknown snapshot", 404)
     try:
         parsed = json.loads(row["payload"] or "{}")
     except Exception:
-        raise ApiError("Backup payload is corrupt", 400)
+        raise ApiError("Snapshot payload is corrupt", 400)
     if int(parsed.get("version") or row["schema_version"] or 0) != SNAPSHOT_SCHEMA_VERSION:
-        raise ApiError("Backup version is not supported", 400)
+        raise ApiError("Snapshot schema version is not supported", 400)
     data = parsed.get("data") or {}
     try:
         skipped = restore_categories(conn, data, selected)

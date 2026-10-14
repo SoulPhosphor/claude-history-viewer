@@ -203,7 +203,7 @@ find . -name '.DS_Store' -delete
 | `api_common.py`     | `ApiError` - how core logic signals an HTTP error status           |
 | `labels.py`         | Label definitions and conversation label assignment                |
 | `bulk_labels.py`    | Conditional bulk labeling: criteria, preview, apply, saved runs    |
-| `snapshots.py`      | Backups (Labels screen): capture, list, restore. Called snapshots in the code |
+| `snapshots.py`      | Safety Snapshots (Labels screen) of label/folder/tag metadata: capture, list, restore. Not a full backup |
 | `message_ids.py`    | Stable message ids: lookup, bookmark re-anchoring, filling older databases |
 | `scratchpads.py`    | Scratch Pad storage, link suggestions and link checks              |
 | `static/index.html` | App shell                                                          |
@@ -215,7 +215,7 @@ find . -name '.DS_Store' -delete
 | `static/app.js`     | Frontend state, rendering, tabs, quick views, interactions         |
 | `static/labels_screen.js` | Labels screen: settings and label definitions                |
 | `static/bulk_labels.js`   | Bulk-label tool UI and Unfinished Label Runs                 |
-| `static/snapshots.js`     | Backups UI and the restore-category dialog                   |
+| `static/snapshots.js`     | Safety Snapshots UI and the restore-category dialog          |
 | `static/summary.js`       | Visual Markdown editor engine (Summary and Scratch Pads)     |
 | `static/internal_links.js`| The internal link format (`chv://…`)                         |
 | `static/scratchpads.js`   | Scratch Pads workspace, Insert Link, Add to Scratch Pad      |
