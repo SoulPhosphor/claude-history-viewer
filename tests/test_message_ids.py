@@ -213,6 +213,62 @@ class MessageIdTests(unittest.TestCase):
         self.assertEqual(self.conn.execute(
             "SELECT message_uuid FROM udb.conversation_bookmarks WHERE id = 'old'").fetchone()[0], "u2")
 
+    def test_old_bookmark_follows_its_text_through_a_reimport(self):
+        # A chat imported before ids were kept, with a bookmark that only knows
+        # a position.
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        cats_answer = 3
+        self.conn.execute(
+            "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
+            "VALUES ('bm', 'c1', ?, 'cats', 1, 1)", (cats_answer,))
+        self.conn.execute(
+            "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
+            "VALUES ('bm2', 'c1', 2, 'gone', 1, 1)")
+        self.conn.commit()
+        self.reimport_branch_b()
+        rows = {r[0]: (r[1], r[2]) for r in self.conn.execute(
+            "SELECT id, seq, message_uuid FROM udb.conversation_bookmarks")}
+        # "cats are great" moved down one place and got a new id: it follows.
+        self.assertEqual(rows["bm"], (self.seq_of("a3b"), "a3b"))
+        # "tell me about cats" (u2) has the same text as u3b, so it follows too.
+        self.assertEqual(rows["bm2"][1], "u3b")
+
+    def test_old_bookmark_on_a_message_that_vanished_is_marked_gone(self):
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.execute("UPDATE messages SET content = 'only in the old version' WHERE seq = 3")
+        self.conn.execute(
+            "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
+            "VALUES ('bm', 'c1', 3, 'x', 1, 1)")
+        self.conn.commit()
+        self.reimport_branch_b()
+        bookmark = self.conn.execute(
+            "SELECT seq, message_uuid FROM udb.conversation_bookmarks WHERE id = 'bm'").fetchone()
+        self.assertTrue(bookmark["message_uuid"].startswith(message_ids.GONE_PREFIX))
+        self.assertTrue(message_ids.bookmark_missing(self.conn, "c1", bookmark))
+
+    def test_bind_legacy_bookmarks_at_start(self):
+        self.conn.execute(
+            "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
+            "VALUES ('bm', 'c1', 2, 'x', 1, 1)")
+        self.conn.commit()
+        message_ids.bind_legacy_bookmarks(self.conn)
+        self.assertEqual(self.conn.execute(
+            "SELECT message_uuid FROM udb.conversation_bookmarks WHERE id = 'bm'").fetchone()[0], "u2")
+
+    def test_backfill_takes_ids_from_the_newest_backup(self):
+        # An older backup of the same chat where the last reply had another id
+        # (regenerated with the same text) must not win.
+        old = chat("c1", TURNS, "a2")
+        old["update_time"] = 1
+        old["mapping"]["a2"]["message"]["id"] = "a2-old"
+        (self.source / "aaa-older.json").write_text(json.dumps([old]))
+        (self.source / "conversations.json").write_text(json.dumps([dict(chat("c1", TURNS, "a2"), update_time=5)]))
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.commit()
+        message_ids.fill_missing_from_sources(self.db, self.source)
+        self.assertEqual(self.seq_of("a2"), 3)
+        self.assertIsNone(self.seq_of("a2-old"))
+
 
 if __name__ == "__main__":
     unittest.main()

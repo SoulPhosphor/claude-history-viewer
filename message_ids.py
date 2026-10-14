@@ -49,6 +49,8 @@ def conversation_has_ids(conn, conversation_id: str) -> bool:
 def locate(conn, conversation_id: str, message_uuid, seq):
     """The current seq of a linked or bookmarked message, or None when it is
     gone. By id whenever the conversation has ids; by position otherwise."""
+    if message_uuid and str(message_uuid).startswith(GONE_PREFIX):
+        return None
     if message_uuid and conversation_has_ids(conn, conversation_id):
         return message_seq(conn, conversation_id, message_uuid)
     # No id to go by (an older link, or a chat without ids): its position.
@@ -148,16 +150,39 @@ def fill_missing_from_sources(db_path: Path, source_dir: Path) -> int:
         done = conn.execute("SELECT signature FROM message_id_backfill WHERE id = 1").fetchone()
         if done and done[0] == signature:
             return 0
-        for path in paths:
+        def records_of(path):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
-                continue
+                return None, []
             provider = build_db.detect_provider(data)
             if provider is None:
+                return None, []
+            return provider, build_db.parse_backup(data, provider)
+
+        # A chat can be in several backups, and a regenerated message can keep
+        # its text and position while getting a new id. The stored chat is the
+        # newest version (imports never roll back), so take each chat's ids
+        # only from the newest backup that holds it: pass one finds it, pass
+        # two applies it.
+        newest: dict = {}
+        for index, path in enumerate(paths):
+            provider, records = records_of(path)
+            for record in records:
+                meta = record.get("meta") or {}
+                key = (provider, meta.get("id"))
+                when = float(meta.get("update_time") or 0)
+                if key not in newest or when >= newest[key][0]:
+                    newest[key] = (when, index)
+        for index, path in enumerate(paths):
+            if not any(best == index for _when, best in newest.values()):
                 continue
+            provider, records = records_of(path)
             updates = []
-            for record in build_db.parse_backup(data, provider):
+            for record in records:
+                meta = record.get("meta") or {}
+                if newest.get((provider, meta.get("id")), (0, None))[1] != index:
+                    continue
                 for m in record.get("msgs") or []:
                     if m.get("message_uuid"):
                         updates.append((m["message_uuid"], m["conversation_id"], provider,
@@ -172,10 +197,6 @@ def fill_missing_from_sources(db_path: Path, source_dir: Path) -> int:
             )
             conn.commit()
             filled += conn.total_changes - before
-            if not conn.execute(
-                "SELECT 1 FROM messages WHERE message_uuid IS NULL LIMIT 1"
-            ).fetchone():
-                break
         try:
             conn.execute(
                 "INSERT OR REPLACE INTO message_id_backfill (id, signature) VALUES (1, ?)",
@@ -187,3 +208,59 @@ def fill_missing_from_sources(db_path: Path, source_dir: Path) -> int:
     finally:
         conn.close()
     return filled
+
+
+# ── Bookmarks made before message ids were kept ───────────────────────────────
+# Such a bookmark only knows a position. It must learn its message's id while
+# that position still points at its message, which is before anything replaces
+# the chat's messages: at start-up (bind_legacy_bookmarks) and just before a
+# re-import replaces a chat (bookmarks_before_replace / bookmarks_after_replace).
+
+GONE_PREFIX = "gone:"
+
+
+def bind_legacy_bookmarks(conn) -> None:
+    """Give every bookmark without a message id the id at its position."""
+    for (conversation_id,) in conn.execute(
+        "SELECT DISTINCT conversation_id FROM udb.conversation_bookmarks WHERE message_uuid IS NULL"
+    ).fetchall():
+        reanchor_bookmarks(conn, conversation_id)
+
+
+def bookmarks_before_replace(conn, conversation_id: str) -> list:
+    """Call before a chat's messages are replaced. Binds what can be bound by
+    id, and remembers the text of the rest (messages that have no id)."""
+    reanchor_bookmarks(conn, conversation_id)
+    return conn.execute(
+        "SELECT b.id, b.seq, m.role, m.content FROM udb.conversation_bookmarks b "
+        "LEFT JOIN messages m ON m.conversation_id = b.conversation_id AND m.seq = b.seq "
+        "WHERE b.conversation_id = ? AND b.message_uuid IS NULL",
+        (conversation_id,),
+    ).fetchall()
+
+
+def bookmarks_after_replace(conn, conversation_id: str, remembered: list) -> None:
+    """Call after the messages were replaced. Each remembered bookmark goes to
+    the message with the same role and text nearest its old position. With no
+    such message it is marked gone, so it never lands on another message."""
+    for bookmark_id, old_seq, role, content in remembered:
+        match = None
+        if role is not None:
+            match = conn.execute(
+                "SELECT seq, message_uuid FROM messages WHERE conversation_id = ? "
+                "AND role = ? AND content = ? ORDER BY ABS(seq - ?) LIMIT 1",
+                (conversation_id, role, content, old_seq),
+            ).fetchone()
+        try:
+            if match:
+                conn.execute(
+                    "UPDATE udb.conversation_bookmarks SET seq = ?, message_uuid = ? WHERE id = ?",
+                    (match[0], match[1], bookmark_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE udb.conversation_bookmarks SET message_uuid = ? WHERE id = ?",
+                    (GONE_PREFIX + bookmark_id, bookmark_id),
+                )
+        except sqlite3.IntegrityError:
+            continue

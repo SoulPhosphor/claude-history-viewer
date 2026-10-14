@@ -175,7 +175,7 @@ function spUseEditor() {
 
 function spLoadIntoEditor(pad) {
   _spLoadToken += 1;
-  sp.current = { id: pad.id, title: pad.title, created_at: pad.created_at, updated_at: pad.updated_at };
+  sp.current = { id: pad.id, title: pad.title, created_at: pad.created_at, updated_at: pad.updated_at, version: pad.version || 0 };
   sp.saved = pad.content || "";
   spInput.value = sp.saved;
   clearEditorHistory(scratchEditor);
@@ -203,27 +203,60 @@ function spShowEditor() {
   hideLinkBubble();
 }
 
+// Another window added to this pad (Add to Scratch Pad) after it was opened
+// here, so the save was refused. When the only change there is lines added at
+// the end, add the same lines to this draft and keep going; anything else is
+// left for the user to resolve. Returns true when merged.
+async function spMergeNewerContent(id) {
+  const data = await spApi.get(id);
+  const pad = data.scratch_pad;
+  if (sp.current?.id !== id) return false;
+  const base = sp.saved.replace(/\n+$/, "");
+  if (!pad.content.startsWith(base)) return false;
+  const added = pad.content.slice(base.length).replace(/^\n+/, "");
+  const draft = spMarkdown();
+  sp.saved = pad.content;
+  sp.current.version = pad.version || 0;
+  sp.current.updated_at = pad.updated_at;
+  if (added) {
+    scratchEditor.undo.push(draft);
+    scratchEditor.redo = [];
+    spInput.value = spCore.appendBlock(draft, added);
+    renderVisual(scratchEditor);
+  }
+  return true;
+}
+
 async function spSave() {
   if (!sp.current) return true;
   if (sp.saving) return sp.saving;
   const id = sp.current.id;
-  const text = spMarkdown();
   sp.saving = (async () => {
     spSetStatus("Saving…");
     try {
-      const data = await spApi.update(id, { content: text });
-      if (sp.current?.id === id) {
-        sp.saved = text;
-        sp.current.updated_at = data.scratch_pad.updated_at;
-        spSetStatus(spIsDirty() ? "Unsaved changes" : "Saved");
+      for (let attempt = 0; ; attempt += 1) {
+        const text = spMarkdown();
+        try {
+          const data = await spApi.update(id, { content: text, base_version: sp.current.version });
+          if (sp.current?.id === id) {
+            sp.saved = text;
+            sp.current.updated_at = data.scratch_pad.updated_at;
+            sp.current.version = data.scratch_pad.version || 0;
+            spSetStatus(spIsDirty() ? "Unsaved changes" : "Saved");
+          }
+          spUpsertListRow(data.scratch_pad);
+          return true;
+        } catch (error) {
+          if (error.status !== 409 || attempt > 0 || !(await spMergeNewerContent(id))) throw error;
+        }
       }
-      spUpsertListRow(data.scratch_pad);
-      return true;
     } catch (error) {
       // The text stays in the editor, still marked unsaved.
       spSetStatus(error.status === 404
         ? "This Scratch Pad was deleted elsewhere. Copy your text before leaving."
-        : "Could not save. Your changes are still here; try Save again.", "error");
+        : error.status === 409
+          ? "This Scratch Pad was changed in another window. Your text is still here; copy it, then reopen the pad."
+          : "Could not save. Your changes are still here; try Save again.", "error");
       return false;
     } finally {
       sp.saving = null;
@@ -1262,6 +1295,7 @@ function spMergeAppended(pad, line) {
   const draft = spMarkdown();
   sp.saved = pad.content;
   sp.current.updated_at = pad.updated_at;
+  sp.current.version = pad.version || 0;
   const next = dirty ? spCore.appendBlock(draft, line) : pad.content;
   if (next !== draft) {
     scratchEditor.undo.push(draft);

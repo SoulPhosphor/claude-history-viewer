@@ -592,7 +592,8 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 title      TEXT NOT NULL,
                 content    TEXT NOT NULL DEFAULT '',
                 created_at REAL NOT NULL,
-                updated_at REAL NOT NULL
+                updated_at REAL NOT NULL,
+                version    INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_scratch_pads_updated
                 ON scratch_pads (updated_at DESC);
@@ -609,6 +610,11 @@ def _ensure_userdata_schema(db_path: Path) -> None:
         # were scoped by provider. ADD COLUMN errors if it already exists.
         try:
             conn.execute("ALTER TABLE folders ADD COLUMN provider TEXT")
+        except sqlite3.Error:
+            pass
+        # Scratch Pad content version (scratchpads.update_pad).
+        try:
+            conn.execute("ALTER TABLE scratch_pads ADD COLUMN version INTEGER NOT NULL DEFAULT 0")
         except sqlite3.Error:
             pass
         # Bookmarks made before message ids were kept learn theirs on first use.
@@ -4547,10 +4553,18 @@ def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source"),
     _build_source_index(source_dir)
     # Messages imported before export message ids were kept get them from the
     # backups in source/, in the background so start-up is not delayed.
-    threading.Thread(
-        target=lambda: message_ids.fill_missing_from_sources(db_path, source_dir),
-        daemon=True,
-    ).start()
+    def fill_ids():
+        message_ids.fill_missing_from_sources(db_path, source_dir)
+        # Then every bookmark made before ids were kept learns its message's
+        # id while its position still points at that message.
+        conn = open_db(db_path)
+        try:
+            message_ids.bind_legacy_bookmarks(conn)
+        except sqlite3.Error:
+            pass
+        finally:
+            conn.close()
+    threading.Thread(target=fill_ids, daemon=True).start()
     Handler.db_path = db_path
     Handler.source_dir = source_dir
     # ThreadingHTTPServer: handle each request on its own thread so one slow or

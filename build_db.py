@@ -1388,6 +1388,26 @@ def _ts_close(a, b) -> bool:
     return abs(float(a) - float(b)) < 1.0
 
 
+def _bookmarks_before_replace(conn, cid: str):
+    """message_ids.bookmarks_before_replace, when the user-data database is
+    attached (it is not during a plain build)."""
+    import message_ids
+    try:
+        return message_ids.bookmarks_before_replace(conn, cid)
+    except sqlite3.Error:
+        return None
+
+
+def _bookmarks_after_replace(conn, cid: str, remembered) -> None:
+    if remembered is None:
+        return
+    import message_ids
+    try:
+        message_ids.bookmarks_after_replace(conn, cid, remembered)
+    except sqlite3.Error:
+        pass
+
+
 def reconcile_backup(conn, records: list, provider: str) -> dict:
     """
     Merge one backup's records into an existing database, honoring conversation
@@ -1459,8 +1479,12 @@ def reconcile_backup(conn, records: list, provider: str) -> dict:
             ):
                 counts["unchanged"] += 1
                 continue
+            # Bookmarks on this chat learn their message's id before the
+            # messages are replaced, so none ends up on a different message.
+            remembered = _bookmarks_before_replace(conn, cid)
             _delete_conv_rows(conn, cid)
             _insert_conv_rows(conn, meta, msgs, artifacts, provider)
+            _bookmarks_after_replace(conn, cid, remembered)
             counts["updated"] += 1
         except Exception:  # noqa: BLE001 — one bad record must not abort the merge
             counts["errors"] += 1

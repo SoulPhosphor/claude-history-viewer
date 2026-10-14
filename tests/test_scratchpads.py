@@ -108,6 +108,23 @@ class ScratchPadStorageTests(unittest.TestCase):
         with self.assertRaises(ApiError):
             scratchpads.append_to_pad(self.conn, pad_id, {"markdown": "two\nlines"})
 
+    def test_save_from_an_older_copy_is_refused(self):
+        pad = scratchpads.create_pad(self.conn, {"content": "draft"})["scratch_pad"]
+        opened_at = pad["version"]
+        # Renaming is not a content change.
+        renamed = scratchpads.update_pad(self.conn, pad["id"], {"title": "Renamed"})["scratch_pad"]
+        self.assertEqual(renamed["version"], opened_at)
+        # Another window adds a link, then this window saves from its old copy.
+        appended = scratchpads.append_to_pad(self.conn, pad["id"], {"markdown": "[L](chv://conversation/one)"})
+        self.assertEqual(appended["scratch_pad"]["version"], opened_at + 1)
+        with self.assertRaises(ApiError) as caught:
+            scratchpads.update_pad(self.conn, pad["id"], {"content": "mine", "base_version": opened_at})
+        self.assertEqual(caught.exception.status, 409)
+        self.assertIn("[L]", scratchpads.get_pad(self.conn, pad["id"])["scratch_pad"]["content"])
+        # Saving against the current version works and bumps it.
+        saved = scratchpads.update_pad(self.conn, pad["id"], {"content": "mine", "base_version": opened_at + 1})
+        self.assertEqual(saved["scratch_pad"]["version"], opened_at + 2)
+
     def test_overlapping_appends_both_land(self):
         pad_id = scratchpads.create_pad(self.conn, {"content": "start"})["scratch_pad"]["id"]
         lines = [f"[L{i}](chv://conversation/one)" for i in range(8)]

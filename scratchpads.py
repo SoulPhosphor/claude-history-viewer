@@ -27,7 +27,7 @@ TITLE_MAX = 200
 SUGGEST_CONVERSATIONS = 8
 SUGGEST_BOOKMARKS = 6
 
-_COLUMNS = "id, title, content, created_at, updated_at"
+_COLUMNS = "id, title, content, created_at, updated_at, version"
 
 
 def _row(row) -> dict:
@@ -37,6 +37,9 @@ def _row(row) -> dict:
         "content": row["content"] or "",
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        # Goes up by one with every change to the content (saves and
+        # appends, not renames). A save names the version it was based on.
+        "version": row["version"] or 0,
     }
 
 
@@ -102,20 +105,34 @@ def update_pad(conn, pad_id: str, payload: dict) -> dict:
     if "title" in payload:
         sets.append("title = ?")
         params.append(_clean_title(payload.get("title"), fallback=None))
+    where, where_params = "id = ?", [pad_id]
     if "content" in payload:
         content = payload.get("content")
         if not isinstance(content, str):
             raise ApiError("Content must be text.", 400)
         sets.append("content = ?")
         params.append(content)
+        sets.append("version = COALESCE(version, 0) + 1")
+        # A save made from an older copy (another window added a link since)
+        # must not overwrite that change: it is refused, and the editor
+        # merges the newer content in and saves again.
+        if payload.get("base_version") is not None:
+            try:
+                base = int(payload.get("base_version"))
+            except (TypeError, ValueError):
+                raise ApiError("Invalid version.", 400)
+            where += " AND COALESCE(version, 0) = ?"
+            where_params.append(base)
     if sets:
         sets.append("updated_at = ?")
         params.append(time.time())
-        conn.execute(
-            f"UPDATE udb.scratch_pads SET {', '.join(sets)} WHERE id = ?",
-            (*params, pad_id),
+        cursor = conn.execute(
+            f"UPDATE udb.scratch_pads SET {', '.join(sets)} WHERE {where}",
+            (*params, *where_params),
         )
         conn.commit()
+        if cursor.rowcount == 0:
+            raise ApiError("This Scratch Pad was changed elsewhere since it was opened.", 409)
     return get_pad(conn, pad_id)
 
 
@@ -149,7 +166,7 @@ def append_to_pad(conn, pad_id: str, payload: dict) -> dict:
         "UPDATE udb.scratch_pads SET content = CASE "
         "WHEN TRIM(content, ' ' || char(9) || char(10) || char(13)) = '' THEN ?1 "
         "ELSE RTRIM(content, char(10)) || char(10) || char(10) || ?1 END, "
-        "updated_at = ?2 WHERE id = ?3",
+        "version = COALESCE(version, 0) + 1, updated_at = ?2 WHERE id = ?3",
         (block, time.time(), pad_id),
     )
     conn.commit()
