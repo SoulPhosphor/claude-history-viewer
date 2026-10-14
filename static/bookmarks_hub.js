@@ -259,12 +259,15 @@ function gbRenderBookmark(c, bm) {
   b.type = "button";
   const paint = (current) => {
     const name = (current.name || "").trim();
-    b.className = "gb-bookmark" + (name ? "" : " gb-unnamed");
+    b.className = "gb-bookmark" + (name ? "" : " gb-unnamed") + (current.missing ? " gb-missing" : "");
     b.textContent = name || "Untitled bookmark";
+    // Its message is no longer in the chat (re-imported without it): say so,
+    // and open the chat itself rather than whatever message sits there now.
+    if (current.missing) b.textContent += " (message no longer in this chat)";
     b.title = b.textContent;
   };
   paint(bm);
-  b.addEventListener("click", () => gbOpenConversation(c.id, bm.seq));
+  b.addEventListener("click", () => gbOpenConversation(c.id, bm.missing ? null : bm.seq));
   const ctx = {
     conversationId: c.id,
     conversationTitle: c.title || "Untitled",

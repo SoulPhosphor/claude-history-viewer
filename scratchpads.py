@@ -191,8 +191,12 @@ def link_suggestions(conn, q: str) -> dict:
         "AND b.name LIKE ? ESCAPE '\\' "
         "ORDER BY (b.name LIKE ? ESCAPE '\\') DESC, c.update_time DESC, b.seq "
         "LIMIT ?",
-        (like, prefix, SUGGEST_BOOKMARKS),
+        (like, prefix, SUGGEST_BOOKMARKS * 2),
     ).fetchall()
+    # A bookmark whose message is gone is not offered as a link target.
+    bookmarks = [
+        b for b in bookmarks if not message_ids.bookmark_missing(conn, b["conversation_id"], b)
+    ][:SUGGEST_BOOKMARKS]
     return {
         "q": q,
         "conversations": [dict(r) for r in conversations],
@@ -240,21 +244,20 @@ def resolve_link(conn, conversation_id: str, seq=None, message_id: str = "") -> 
         "archived": bool(row["archived"]),
     })
     message_id = (message_id or "").strip()
-    if message_id:
-        current = message_ids.message_seq(conn, conversation_id, message_id)
+    if seq is not None or message_id:
+        # By the message's id; its old position is never a stand-in for a
+        # message that is gone (message_ids.locate).
+        current = message_ids.locate(conn, conversation_id, message_id or None, seq)
+        out["message_exists"] = current is not None
         if current is not None:
             seq = current
             out["seq"] = current
-    if seq is not None:
-        hit = conn.execute(
-            "SELECT 1 FROM messages WHERE conversation_id = ? AND seq = ? LIMIT 1",
-            (conversation_id, seq),
-        ).fetchone()
-        out["message_exists"] = bool(hit)
-        bookmark = conn.execute(
-            "SELECT name FROM udb.conversation_bookmarks "
-            "WHERE conversation_id = ? AND seq = ?",
-            (conversation_id, seq),
-        ).fetchone()
+        bookmark = None
+        if out["message_exists"]:
+            bookmark = conn.execute(
+                "SELECT name FROM udb.conversation_bookmarks WHERE conversation_id = ? "
+                "AND (message_uuid = ? OR (message_uuid IS NULL AND seq = ?)) LIMIT 1",
+                (conversation_id, message_ids.message_uuid_at(conn, conversation_id, seq), seq),
+            ).fetchone()
         out["bookmark_name"] = (bookmark["name"] or "").strip() if bookmark else ""
     return out

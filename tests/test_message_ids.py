@@ -8,7 +8,8 @@ from pathlib import Path
 import build_db
 import message_ids
 import scratchpads
-from server import _ensure_runtime_schema, _ensure_userdata_schema, open_db
+import sqlite3
+from server import _ensure_runtime_schema, _ensure_userdata_schema, _userdata_path, open_db
 
 
 def node(node_id, parent, role, text):
@@ -140,6 +141,77 @@ class MessageIdTests(unittest.TestCase):
             "SELECT seq, message_uuid FROM messages WHERE conversation_id = 'c1'").fetchall())
         self.assertIsNone(rows[0])  # text no longer matches the backup
         self.assertNotIn("claude-1", rows.values())
+
+    def test_a_gone_message_is_never_replaced_by_its_old_position(self):
+        old_seq = self.seq_of("a2")
+        self.reimport_branch_b()
+        # Something else now sits at a2's old position; the link must not open it.
+        self.assertIsNotNone(self.conn.execute(
+            "SELECT 1 FROM messages WHERE conversation_id = 'c1' AND seq = ?", (old_seq,)).fetchone())
+        resolved = scratchpads.resolve_link(self.conn, "c1", old_seq, "a2")
+        self.assertFalse(resolved["message_exists"])
+
+    def test_bookmark_on_a_gone_message_stays_but_is_not_placed(self):
+        old_seq = self.seq_of("a2")
+        self.conn.execute(
+            "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at, message_uuid) "
+            "VALUES ('bm', 'c1', ?, 'cats', 1, 1, 'a2')", (old_seq,))
+        self.conn.commit()
+        self.reimport_branch_b()
+        message_ids.reanchor_bookmarks(self.conn, "c1")
+        row = self.conn.execute("SELECT seq, message_uuid FROM udb.conversation_bookmarks WHERE id = 'bm'").fetchone()
+        self.assertEqual(tuple(row), (old_seq, "a2"))  # kept, untouched
+        bookmark = self.conn.execute("SELECT seq, message_uuid FROM udb.conversation_bookmarks WHERE id = 'bm'").fetchone()
+        self.assertTrue(message_ids.bookmark_missing(self.conn, "c1", bookmark))
+        # The message now at that position can still get its own bookmark.
+        now_there = message_ids.message_uuid_at(self.conn, "c1", old_seq)
+        self.conn.execute(
+            "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at, message_uuid) "
+            "VALUES ('bm2', 'c1', ?, 'new', 1, 1, ?)", (old_seq, now_there))
+        self.conn.commit()
+
+    def test_one_bookmark_per_message(self):
+        for bid in ("x", "y"):
+            try:
+                self.conn.execute(
+                    "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at, message_uuid) "
+                    f"VALUES ('{bid}', 'c1', 0, '', 1, 1, 'u1')")
+            except sqlite3.IntegrityError:
+                self.assertEqual(bid, "y")
+                return
+        self.fail("two bookmarks were allowed on one message")
+
+    def test_chat_without_ids_falls_back_to_position(self):
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.commit()
+        self.assertEqual(message_ids.locate(self.conn, "c1", "a2", 3), 3)
+        self.assertIsNone(message_ids.locate(self.conn, "c1", None, 99))
+
+    def test_old_bookmark_table_is_upgraded_without_losing_bookmarks(self):
+        self.conn.close()
+        udb = sqlite3.connect(_userdata_path(self.db))
+        udb.executescript(
+            """
+            DROP TABLE conversation_bookmarks;
+            CREATE TABLE conversation_bookmarks (
+                id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, seq INTEGER NOT NULL,
+                name TEXT, source TEXT DEFAULT 'user', created_at REAL, updated_at REAL,
+                UNIQUE(conversation_id, seq));
+            INSERT INTO conversation_bookmarks VALUES ('old', 'c1', 2, 'kept', 'user', 1, 1);
+            """
+        )
+        udb.commit()
+        udb.close()
+        _ensure_userdata_schema(self.db)
+        self.conn = open_db(self.db)
+        sql = self.conn.execute(
+            "SELECT sql FROM udb.sqlite_master WHERE name = 'conversation_bookmarks'").fetchone()[0]
+        self.assertNotIn("UNIQUE(conversation_id, seq)", sql)
+        row = self.conn.execute("SELECT id, seq, name FROM udb.conversation_bookmarks").fetchone()
+        self.assertEqual(tuple(row), ("old", 2, "kept"))
+        message_ids.reanchor_bookmarks(self.conn, "c1")
+        self.assertEqual(self.conn.execute(
+            "SELECT message_uuid FROM udb.conversation_bookmarks WHERE id = 'old'").fetchone()[0], "u2")
 
 
 if __name__ == "__main__":

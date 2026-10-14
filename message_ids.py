@@ -2,10 +2,16 @@
 
 A message's `seq` is its position in the chat's shown branch. It can move when
 a backup is re-imported and an earlier message was edited or regenerated (the
-chat switches branches). Each export also gives every message its own id
-(Claude `uuid`, ChatGPT node `id`), which never moves; build_db stores it in
-`messages.message_uuid`. Message links and bookmarks keep that id and use it
-to find the message's current seq, with the seq only as a fallback.
+chat switches branches), and would move if messages could ever be edited or
+deleted in the app. Each export also gives every message its own id (Claude
+`uuid`, ChatGPT node `id`), which never moves; build_db stores it in
+`messages.message_uuid`.
+
+The id is the identity. Message links and bookmarks find their message by
+id, and when that id is gone the message is gone: they never fall back to
+whatever now sits at the old position. The position is used only for a
+conversation that has no ids at all (an export without them, or an older
+database whose backups are no longer in source/).
 
 A message id is only ever looked up together with its conversation id, so
 ids from different providers can never be confused with one another.
@@ -33,6 +39,28 @@ def message_seq(conn, conversation_id: str, message_uuid: str):
     return row[0] if row else None
 
 
+def conversation_has_ids(conn, conversation_id: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM messages WHERE conversation_id = ? AND message_uuid IS NOT NULL LIMIT 1",
+        (conversation_id,),
+    ).fetchone() is not None
+
+
+def locate(conn, conversation_id: str, message_uuid, seq):
+    """The current seq of a linked or bookmarked message, or None when it is
+    gone. By id whenever the conversation has ids; by position otherwise."""
+    if message_uuid and conversation_has_ids(conn, conversation_id):
+        return message_seq(conn, conversation_id, message_uuid)
+    # No id to go by (an older link, or a chat without ids): its position.
+    if seq is None:
+        return None
+    row = conn.execute(
+        "SELECT 1 FROM messages WHERE conversation_id = ? AND seq = ? LIMIT 1",
+        (conversation_id, seq),
+    ).fetchone()
+    return seq if row else None
+
+
 def message_uuid_at(conn, conversation_id: str, seq):
     """The message id at a seq, or None (no message, or no id recorded)."""
     row = conn.execute(
@@ -46,9 +74,9 @@ def reanchor_bookmarks(conn, conversation_id: str) -> None:
     """Point each bookmark of a conversation at its message's current seq.
 
     A bookmark that knows its message id follows that message. One made before
-    ids were recorded learns its id from where it points now. If the message
-    is gone the bookmark is left as it was. Collisions (two bookmarks on one
-    message) are left alone rather than merged."""
+    ids were recorded learns its id from where it points now. If its message
+    is gone the bookmark is kept but left unattached: `bookmark_missing` then
+    reports it, and it never lands on another message."""
     rows = conn.execute(
         "SELECT id, seq, message_uuid FROM udb.conversation_bookmarks WHERE conversation_id = ?",
         (conversation_id,),
@@ -76,6 +104,11 @@ def reanchor_bookmarks(conn, conversation_id: str) -> None:
             continue
     if changed:
         conn.commit()
+
+
+def bookmark_missing(conn, conversation_id: str, bookmark) -> bool:
+    """True when a bookmark's message is no longer in the conversation."""
+    return locate(conn, conversation_id, bookmark["message_uuid"], bookmark["seq"]) is None
 
 
 def fill_missing_from_sources(db_path: Path, source_dir: Path) -> int:

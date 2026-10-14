@@ -566,10 +566,10 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 source          TEXT DEFAULT 'user',
                 created_at      REAL,
                 updated_at      REAL,
-                -- The bookmarked message's export id (message_ids.py). seq
-                -- follows it if the message moves on a re-import.
-                message_uuid    TEXT,
-                UNIQUE(conversation_id, seq)
+                -- The bookmarked message's export id (message_ids.py). It is
+                -- the bookmark's identity; seq follows it and is unique per
+                -- message only through this id (see the indexes below).
+                message_uuid    TEXT
             );
 
             -- Advanced searches intentionally live in the portable user-data
@@ -616,6 +616,45 @@ def _ensure_userdata_schema(db_path: Path) -> None:
             conn.execute("ALTER TABLE conversation_bookmarks ADD COLUMN message_uuid TEXT")
         except sqlite3.Error:
             pass
+        # Bookmarks used to be unique by position (conversation_id, seq). A
+        # bookmark is now identified by its message's id, so a bookmark whose
+        # message is gone may share a position with a new one. Rebuild the
+        # table without the position rule, carrying every bookmark over.
+        try:
+            table_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'conversation_bookmarks'"
+            ).fetchone()
+            if table_sql and "UNIQUE(conversation_id, seq)" in (table_sql[0] or ""):
+                conn.executescript(
+                    """
+                    CREATE TABLE conversation_bookmarks_new (
+                        id              TEXT PRIMARY KEY,
+                        conversation_id TEXT NOT NULL,
+                        seq             INTEGER NOT NULL,
+                        name            TEXT,
+                        source          TEXT DEFAULT 'user',
+                        created_at      REAL,
+                        updated_at      REAL,
+                        message_uuid    TEXT
+                    );
+                    INSERT INTO conversation_bookmarks_new
+                        SELECT id, conversation_id, seq, name, source, created_at, updated_at, message_uuid
+                        FROM conversation_bookmarks;
+                    DROP TABLE conversation_bookmarks;
+                    ALTER TABLE conversation_bookmarks_new RENAME TO conversation_bookmarks;
+                    """
+                )
+        except sqlite3.Error:
+            pass
+        for idx_sql in (
+            "CREATE INDEX IF NOT EXISTS idx_bookmarks_conv_seq ON conversation_bookmarks (conversation_id, seq)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_bookmarks_message "
+            "ON conversation_bookmarks (conversation_id, message_uuid) WHERE message_uuid IS NOT NULL",
+        ):
+            try:
+                conn.execute(idx_sql)
+            except sqlite3.Error:
+                pass
         # summary column for snapshots created before it existed.
         try:
             conn.execute("ALTER TABLE snapshots ADD COLUMN summary TEXT")
@@ -3791,13 +3830,15 @@ class Handler(BaseHTTPRequestHandler):
     # (UUID) so a rename never changes what identifies it; the conversation id
     # is never touched here.
     def _conv_bookmarks(self, conn, conv_id):
+        # Only bookmarks whose message is still in the chat are placed on it; one
+        # whose message is gone never moves onto a different message.
         message_ids.reanchor_bookmarks(conn, conv_id)
         rows = conn.execute(
             "SELECT id, conversation_id, seq, name, source, created_at, updated_at, message_uuid "
             "FROM udb.conversation_bookmarks WHERE conversation_id = ? ORDER BY seq",
             (conv_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in rows if not message_ids.bookmark_missing(conn, conv_id, r)]
 
     def _api_bookmarks_get(self, conv_id):
         if not conv_id:
@@ -3903,7 +3944,12 @@ class Handler(BaseHTTPRequestHandler):
                     "title": r["title"],
                     "provider": r["provider"],
                     "last_user_time": r["last_user_time"],
-                    "bookmarks": [dict(b) for b in bms],
+                    # A bookmark whose message is gone stays listed (it is the
+                    # user's), marked missing so it never opens another message.
+                    "bookmarks": [
+                        {**dict(b), "missing": message_ids.bookmark_missing(conn, r["id"], b)}
+                        for b in bms
+                    ],
                 })
 
             self.send_json({
@@ -3936,12 +3982,22 @@ class Handler(BaseHTTPRequestHandler):
         try:
             now = time.time()
             # Toggling the same message on twice must not make a second bookmark:
-            # return the one already there rather than erroring on the UNIQUE key.
-            existing = conn.execute(
-                "SELECT id FROM udb.conversation_bookmarks "
-                "WHERE conversation_id = ? AND seq = ?",
-                (conv_id, seq),
-            ).fetchone()
+            # return the one already there. A bookmark belongs to a message by
+            # its id; position only identifies one made without an id.
+            message_uuid = message_ids.message_uuid_at(conn, conv_id, seq)
+            message_ids.reanchor_bookmarks(conn, conv_id)
+            if message_uuid:
+                existing = conn.execute(
+                    "SELECT id FROM udb.conversation_bookmarks "
+                    "WHERE conversation_id = ? AND message_uuid = ?",
+                    (conv_id, message_uuid),
+                ).fetchone()
+            else:
+                existing = conn.execute(
+                    "SELECT id FROM udb.conversation_bookmarks "
+                    "WHERE conversation_id = ? AND seq = ? AND message_uuid IS NULL",
+                    (conv_id, seq),
+                ).fetchone()
             if existing:
                 bid = existing["id"]
             else:
@@ -3950,8 +4006,7 @@ class Handler(BaseHTTPRequestHandler):
                     "INSERT INTO udb.conversation_bookmarks "
                     "(id, conversation_id, seq, name, source, created_at, updated_at, message_uuid) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (bid, conv_id, seq, name, source, now, now,
-                     message_ids.message_uuid_at(conn, conv_id, seq)),
+                    (bid, conv_id, seq, name, source, now, now, message_uuid),
                 )
                 conn.commit()
             row = conn.execute(
