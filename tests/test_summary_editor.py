@@ -161,7 +161,8 @@ class SummaryEditorBehaviorTests(unittest.TestCase):
         self.assertIn("function clearVisualHistory()", SUMMARY)
         self.assertIn("clearVisualHistory();\n  if (messagesEl)", SUMMARY)
         self.assertIn("clearVisualHistory();\n  summaryInput.value = _savedSummary", SUMMARY)
-        self.assertIn("clearVisualHistory();\n  updateSummaryButtons();", SUMMARY)
+        # Typing in the Markdown textarea clears that editor's own visual history.
+        self.assertIn("clearEditorHistory(ed);\n    ed.onChange();", SUMMARY)
         self.assertIn("historyUndo", SUMMARY)
         self.assertIn("historyRedo", SUMMARY)
 
@@ -378,8 +379,10 @@ class SummaryEditorBehaviorTests(unittest.TestCase):
         self.assertIn("function rememberVisualSelection()", SUMMARY)
         self.assertIn("function visualCommandRange()", SUMMARY)
         self.assertIn("document.addEventListener(\"selectionchange\"", SUMMARY)
-        self.assertIn("summaryToolbar?.addEventListener(\"mousedown\"", SUMMARY)
-        self.assertIn("summaryHighlightMenu?.addEventListener(\"mousedown\"", SUMMARY)
+        # Each editor (Summary, Scratch Pads) is wired by the same function.
+        self.assertIn("ed.toolbar?.addEventListener(\"mousedown\"", SUMMARY)
+        self.assertIn("ed.highlightMenu?.addEventListener(\"mousedown\"", SUMMARY)
+        self.assertIn("attachVisualEditor(summaryEditor);", SUMMARY)
         for marker in ("applyInlineFormat", "applyHighlight", "removeHighlight", "applyBlockFormat"):
             self.assertIn("visualCommandRange()", SUMMARY[SUMMARY.index(f"function {marker}"):])
 

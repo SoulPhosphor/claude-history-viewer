@@ -8,7 +8,7 @@
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   root.SummaryEditorCore = api;
 })(typeof window !== "undefined" ? window : globalThis, function () {
-  const INLINE_RE = /\*\*~~[^*~\n]+~~\*\*|~~\*\*[^*~\n]+\*\*~~|\*~~[^*~\n]+~~\*|~~\*[^*~\n]+\*~~|\*\*\*[^*\n]+\*\*\*|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\+\+[^+\n]+\+\+|==(?:\{#[0-9a-fA-F]{6}\})?[^=\n]+==|\*[^*\n]+\*|`[^`\n]+`|\[[^\]]+\]\((?:https?:|mailto:|\/|#|\.\.?\/)[^)]+\)/g;
+  const INLINE_RE = /\*\*~~[^*~\n]+~~\*\*|~~\*\*[^*~\n]+\*\*~~|\*~~[^*~\n]+~~\*|~~\*[^*~\n]+\*~~|\*\*\*[^*\n]+\*\*\*|\*\*[^*\n]+\*\*|~~[^~\n]+~~|\+\+[^+\n]+\+\+|==(?:\{#[0-9a-fA-F]{6}\})?[^=\n]+==|\*[^*\n]+\*|`[^`\n]+`|\[[^\]]+\]\((?:https?:|mailto:|chv:|\/|#|\.\.?\/)[^)]+\)/g;
 
   function inlineSegments(source, offset = 0) {
     const segments = [];
@@ -157,6 +157,12 @@
   }
 
   function safeReplaceVisibleRange(source, start, end, replacement) {
+    return safeReplaceVisibleRangeAt(source, start, end, replacement).source;
+  }
+
+  // Same edit, also reporting where the replacement text landed (`at`), which
+  // can differ from `start` when a partly selected token is split around it.
+  function safeReplaceVisibleRangeAt(source, start, end, replacement) {
     const tokens = inlineSegments(source).filter((segment) => segment.tokenStart != null);
     const contained = tokens.find((token) =>
       token.sourceStart <= start && end <= token.sourceEnd
@@ -164,13 +170,19 @@
 
     // A normal edit inside one visible token must patch only its content. This
     // keeps the token's delimiters, link target, or highlight metadata intact
-    // and makes inserted text inherit the token's formatting.
-    if (contained) return replaceRange(source, start, end, replacement);
+    // and makes inserted text inherit the token's formatting. Deleting every
+    // visible character removes the token, so no bare delimiters are left.
+    if (contained) {
+      if (!replacement && start === contained.sourceStart && end === contained.sourceEnd) {
+        return { source: replaceRange(source, contained.tokenStart, contained.tokenEnd, ""), at: contained.tokenStart };
+      }
+      return { source: replaceRange(source, start, end, replacement), at: start };
+    }
 
     const overlapping = tokens.filter((token) =>
       token.sourceStart < end && token.sourceEnd > start
     );
-    if (!overlapping.length) return replaceRange(source, start, end, replacement);
+    if (!overlapping.length) return { source: replaceRange(source, start, end, replacement), at: start };
 
     const first = overlapping[0];
     const last = overlapping[overlapping.length - 1];
@@ -182,7 +194,7 @@
       : "";
     const prefix = source.slice(0, Math.min(start, first.tokenStart));
     const suffix = source.slice(Math.max(end, last.tokenEnd));
-    return prefix + left + replacement + right + suffix;
+    return { source: prefix + left + replacement + right + suffix, at: prefix.length + left.length };
   }
 
   function inlineTokenForRange(source, start, end) {
@@ -304,6 +316,122 @@
     return { source: safeReplaceVisibleRange(source, start, end, "\n"), caret: start + 1 };
   }
 
+  // ── Links ─────────────────────────────────────────────────────────────────
+  function linkTarget(token) {
+    const raw = sourceForToken(token);
+    return raw.slice(raw.indexOf("](") + 2, -1);
+  }
+
+  // The link whose visible text holds this range (its edges included).
+  function linkTokenAt(source, start, end = start) {
+    return inlineSegments(source).find((segment) =>
+      segment.kind === "link" && segment.sourceStart <= start && end <= segment.sourceEnd
+    ) || null;
+  }
+
+  // Insert `[label](target)` at a visible range, replacing any selected text.
+  // A link is never nested inside other formatting (the parser could not draw
+  // it), so a token holding the range is split around the new link. A caret
+  // inside an existing link puts the new one right after it. When the link
+  // would end a line or touch the next token, a space follows it so the caret
+  // has plain text to land in. Returns the new source and the caret after it.
+  function insertLink(source, start, end, label, target) {
+    const link = `[${label}](${target})`;
+    let next;
+    let at;
+    const tokens = inlineSegments(source).filter((segment) => segment.tokenStart != null);
+    const holder = tokens.find((token) => token.sourceStart <= start && end <= token.sourceEnd);
+    if (holder && holder.kind === "link") {
+      if (start === end) {
+        at = holder.tokenEnd;
+        next = replaceRange(source, at, at, link);
+      } else {
+        at = holder.tokenStart;
+        next = replaceRange(source, holder.tokenStart, holder.tokenEnd, link);
+      }
+    } else if (holder) {
+      const content = source.slice(holder.sourceStart, holder.sourceEnd);
+      const before = formatWithWhitespace(holder, content.slice(0, start - holder.sourceStart));
+      const after = formatWithWhitespace(holder, content.slice(end - holder.sourceStart));
+      at = holder.tokenStart + before.length;
+      next = replaceRange(source, holder.tokenStart, holder.tokenEnd, before + link + after);
+    } else {
+      const placed = safeReplaceVisibleRangeAt(source, start, end, link);
+      next = placed.source;
+      at = placed.at;
+    }
+    let caret = at + link.length;
+    const following = next[caret];
+    const touchesToken = inlineSegments(next).some((segment) => segment.tokenStart === caret);
+    if (following === undefined || following === "\n" || touchesToken) {
+      next = replaceRange(next, caret, caret, " ");
+      caret += 1;
+    }
+    return { source: next, start: at, end: at + link.length, caret };
+  }
+
+  // The text a reader sees between two source positions (no Markdown marks).
+  function visibleText(source, start, end) {
+    let text = "";
+    for (const segment of visibleSegments(source)) {
+      const from = Math.max(start, segment.sourceStart);
+      const to = Math.min(end, segment.sourceEnd);
+      if (to > from) text += segment.text.slice(from - segment.sourceStart, to - segment.sourceStart);
+    }
+    return text;
+  }
+
+  // Keep a link's visible text and drop its destination.
+  function removeLink(source, token) {
+    return replaceRange(source, token.tokenStart, token.tokenEnd, source.slice(token.sourceStart, token.sourceEnd));
+  }
+
+  // Point an existing link somewhere else, keeping its visible text.
+  function replaceLinkTarget(source, token, target) {
+    return replaceRange(source, token.tokenStart, token.tokenEnd, `[${source.slice(token.sourceStart, token.sourceEnd)}](${target})`);
+  }
+
+  // A Markdown block added as its own paragraph at the end of a document.
+  // Mirrors scratchpads.appended_content on the server.
+  function appendBlock(source, block) {
+    if (!String(source || "").trim()) return block;
+    return String(source).replace(/\n+$/, "") + "\n\n" + block;
+  }
+
+  // Backspace at the start of a line's text, or Delete at the end of a line.
+  // Backspace first drops a heading / list marker (the line becomes normal
+  // text), then joins the line to the one above. Delete joins the next line
+  // on, dropping that line's marker. Returns null when the caret is not at
+  // such an edge, so ordinary deletion applies.
+  function deleteLineBreak(source, position, direction) {
+    const lines = sourceLines(source);
+    const index = lines.findIndex((line) => position >= line.start && position <= line.end);
+    if (index < 0) return null;
+    const line = lines[index];
+    const content = visibleContent(line);
+    // Where the visible text starts and ends; formatting or a link at the
+    // edge puts these inside its markers.
+    const edges = (row, text) => {
+      const segments = inlineSegments(text.text, text.start);
+      return segments.length
+        ? { first: segments[0].sourceStart, last: segments[segments.length - 1].sourceEnd }
+        : { first: text.start, last: row.end };
+    };
+    const own = edges(line, content);
+    if (direction === "backward") {
+      if (position !== content.start && position !== own.first) return null;
+      const marker = content.start - line.start;
+      if (marker > 0) return { source: replaceRange(source, line.start, content.start, ""), caret: own.first - marker };
+      if (index === 0) return null;
+      const previous = lines[index - 1];
+      const caret = edges(previous, visibleContent(previous)).last;
+      return { source: replaceRange(source, line.start - 1, line.start, ""), caret };
+    }
+    if ((position !== line.end && position !== own.last) || index === lines.length - 1) return null;
+    const next = visibleContent(lines[index + 1]);
+    return { source: replaceRange(source, line.end, next.start, ""), caret: position };
+  }
+
   function deleteVisibleCharacter(source, sourcePosition, direction) {
     const segments = visibleSegments(source).filter((segment) => segment.kind !== "newline");
     const index = segments.findIndex((segment) => sourcePosition >= segment.sourceStart && sourcePosition <= segment.sourceEnd);
@@ -314,5 +442,5 @@
     return source;
   }
 
-  return { inlineSegments, inlineTokenForRange, isSupportedVisualInputType, isToolbarFormatRangeSafe, toggleInlineFormat, removeHighlightRange, replaceHighlightRange, insertParagraph, safeReplaceVisibleRange, mapElementBoundary, sourceLines, visibleContent, visibleSegments, visibleRangeToSource, replaceRange, applyBlockFormat, deleteVisibleCharacter };
+  return { deleteLineBreak, visibleText, linkTarget, linkTokenAt, insertLink, removeLink, replaceLinkTarget, appendBlock, safeReplaceVisibleRangeAt, inlineSegments, inlineTokenForRange, isSupportedVisualInputType, isToolbarFormatRangeSafe, toggleInlineFormat, removeHighlightRange, replaceHighlightRange, insertParagraph, safeReplaceVisibleRange, mapElementBoundary, sourceLines, visibleContent, visibleSegments, visibleRangeToSource, replaceRange, applyBlockFormat, deleteVisibleCharacter };
 });

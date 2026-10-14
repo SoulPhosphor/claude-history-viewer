@@ -37,6 +37,13 @@ These are findings for a future design decision, not changes made by this refact
 | Workspace on phones | The app is a multi-pane workspace. At very narrow widths it allows horizontal workspace scrolling; each pane adapts its own contents. | A mobile navigation redesign would be separate work. Tables/code retain internal scrolling where appropriate. |
 | Recycle controls | Existing `#recycle-controls` display rules can override the element's `hidden` attribute. Changing that would remove currently rendered controls from ordinary views. | Resolve the intended visibility separately; this appearance-preserving refactor does not silently change it. |
 
+## Scratch Pads additions
+
+- New appearance values are `--scratchpad-*`, `--conv-link-*`, `--message-link-pick-*` and `--advanced-link-chat-*` in `theme.css`. Each aliases an existing role or component value; no new colours were introduced.
+- The Summary editor's appearance is unchanged. It now shares its engine with the Scratch Pad editor; its links carry `.visual-link`, which only the Scratch Pad editor styles.
+- Following the guide, no focus outlines or rings were added. Pop-up suggestions use combobox / listbox semantics with the active option shown by background.
+- The Scratch Pads sidebar replaces the conversation list above the footer (instead of covering the whole sidebar like Notes and Related), so the briefcase and ⓘ menus stay reachable while it is open.
+
 ## Colour contrast findings retained for the colour pass
 
 The current palette still fails several text-contrast checks. Correcting these requires changing visible colours, conflicting with the request to keep the present appearance. They have not been silently recoloured. Accessibility fixes above do not imply full WCAG conformance.

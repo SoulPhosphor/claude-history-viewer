@@ -8,19 +8,48 @@ let _savedCondensed = "";
 let _savedSummary = "";
 let _condensedAuthor = "";
 let _summaryAuthor = "";
-let _summaryMode = "visual";
-let _visualUndo = [];
-let _visualRedo = [];
-let _savedVisualSelection = null;
 // Starting swatches are centralized; edited swatches are saved author data.
+// One palette serves every visual editor (Summary and Scratch Pads).
 let _summaryPalette = ["default", "green", "blue", "purple"].map(
   (name) => themeValue(`--summary-palette-${name}`),
 );
 
+// ── Visual editors ──────────────────────────────────────────────────────────
+// The engine below drives any number of visual Markdown editors with the same
+// code: the Summary editor here and the Scratch Pad editor (scratchpads.js).
+// Each editor is one of these records; `_editor` is the one the user is
+// working in, set by every event that reaches an editor.
+function createVisualEditor(parts) {
+  return {
+    visual: null,
+    input: null,
+    toolbar: null,
+    highlightMenu: null,
+    highlightButton: null,
+    modeVisual: null,
+    modeMarkdown: null,
+    onChange: () => {},
+    isOpen: () => false,
+    onPaste: null,
+    onLinkCommand: null,
+    ...parts,
+    mode: "visual",
+    undo: [],
+    redo: [],
+    savedSelection: null,
+  };
+}
+const _visualEditors = [];
+let _editor = null;
+
+function clearEditorHistory(ed) {
+  ed.undo = [];
+  ed.redo = [];
+  ed.savedSelection = null;
+}
+
 function clearVisualHistory() {
-  _visualUndo = [];
-  _visualRedo = [];
-  _savedVisualSelection = null;
+  clearEditorHistory(summaryEditor);
 }
 
 const summaryBodyEl = $("summary-body");
@@ -43,6 +72,19 @@ const summaryToolbar = $("summary-toolbar");
 const summaryModeVisual = $("summary-mode-visual");
 const summaryModeMarkdown = $("summary-mode-markdown");
 const summaryHighlightMenu = $("summary-highlight-menu");
+
+const summaryEditor = createVisualEditor({
+  visual: summaryVisual,
+  input: summaryInput,
+  toolbar: summaryToolbar,
+  highlightMenu: summaryHighlightMenu,
+  highlightButton: $("summary-highlight-button"),
+  modeVisual: summaryModeVisual,
+  modeMarkdown: summaryModeMarkdown,
+  onChange: () => updateSummaryButtons(),
+  isOpen: () => summaryIsOpen(),
+});
+_editor = summaryEditor;
 
 function summaryIsOpen() {
   return summaryBodyEl && !summaryBodyEl.hidden;
@@ -149,55 +191,53 @@ function updatePaletteFromPicker(input) {
   applyHighlight(color);
 }
 
-function replaceSourceRange(start, end, replacement) {
-  const source = summaryMarkdown();
-  const next = source.slice(0, start) + replacement + source.slice(end);
-  if (next === source) return;
-  _visualUndo.push(source);
-  _visualRedo = [];
-  summaryInput.value = next;
-  renderVisual();
-  updateSummaryButtons();
+// The Markdown of the editor being worked in.
+function editorMarkdown() {
+  return _editor?.input ? _editor.input.value : "";
 }
 
 function applyInlineFormat(type) {
   const range = visualCommandRange();
   if (!range || range.start === range.end) return;
-  commitVisualSource(summaryCore.toggleInlineFormat(summaryMarkdown(), range.start, range.end, type), range.start);
+  commitVisualSource(summaryCore.toggleInlineFormat(editorMarkdown(), range.start, range.end, type), range.start);
 }
 
 function applyHighlight(color) {
   const range = visualCommandRange();
   if (!range || range.start === range.end) return;
-  const source = summaryMarkdown();
+  const source = editorMarkdown();
   const token = summaryCore.inlineTokenForRange(source, range.start, range.end);
   if (token && token.kind !== "highlight") return;
   const next = summaryCore.replaceHighlightRange(source, range.start, range.end, color.toLowerCase() === "#fff3a3" /* persisted shorthand sentinel */ ? "" : color.toLowerCase());
   commitVisualSource(next, range.start);
-  if (summaryHighlightMenu) summaryHighlightMenu.hidden = true;
+  if (_editor.highlightMenu) _editor.highlightMenu.hidden = true;
 }
 
 function removeHighlight() {
   const range = visualCommandRange();
   if (!range || range.start === range.end) return;
-  commitVisualSource(summaryCore.removeHighlightRange(summaryMarkdown(), range.start, range.end), range.start);
-  if (summaryHighlightMenu) summaryHighlightMenu.hidden = true;
+  commitVisualSource(summaryCore.removeHighlightRange(editorMarkdown(), range.start, range.end), range.start);
+  if (_editor.highlightMenu) _editor.highlightMenu.hidden = true;
 }
 
-function renderVisual() {
-  if (!summaryVisual) return;
-  renderMarkdownSource(summaryMarkdown(), summaryVisual);
+function renderVisual(ed = _editor) {
+  if (!ed?.visual) return;
+  renderMarkdownSource(ed.input.value, ed.visual);
+}
+
+function setEditorMode(ed, mode) {
+  ed.mode = mode;
+  const visual = mode === "visual";
+  if (ed.visual) ed.visual.hidden = !visual;
+  if (ed.input) ed.input.hidden = visual;
+  if (ed.toolbar) ed.toolbar.hidden = !visual;
+  if (ed.modeVisual) ed.modeVisual.setAttribute("aria-pressed", String(visual));
+  if (ed.modeMarkdown) ed.modeMarkdown.setAttribute("aria-pressed", String(!visual));
+  if (visual) renderVisual(ed);
 }
 
 function setSummaryMode(mode) {
-  _summaryMode = mode;
-  const visual = mode === "visual";
-  if (summaryVisual) summaryVisual.hidden = !visual;
-  if (summaryInput) summaryInput.hidden = visual;
-  if (summaryToolbar) summaryToolbar.hidden = !visual;
-  if (summaryModeVisual) summaryModeVisual.setAttribute("aria-pressed", String(visual));
-  if (summaryModeMarkdown) summaryModeMarkdown.setAttribute("aria-pressed", String(!visual));
-  if (visual) renderVisual();
+  setEditorMode(summaryEditor, mode);
 }
 
 async function saveCondensedSummary() {
@@ -295,7 +335,7 @@ async function openSummaryForConversation(convId) {
   } catch (_) {
     _summaryPalette = normalizePalette(_summaryPalette);
   }
-  refreshPaletteControls();
+  refreshPaletteControls(summaryEditor);
   setSummaryMode("visual");
   updateCondensedButtons();
   updateSummaryButtons();
@@ -350,7 +390,8 @@ window.addEventListener("beforeunload", (e) => {
 
 // ── Safe source-mapped visual editing overrides ─────────────────────────────
 // These helpers use explicit source segments and beforeinput. The browser is
-// never asked to serialize a contenteditable DOM back into Markdown.
+// never asked to serialize a contenteditable DOM back into Markdown. They act
+// on `_editor`, the editor the current event belongs to.
 const summaryCore = window.SummaryEditorCore;
 
 function mappedSourceRange(node) {
@@ -386,11 +427,11 @@ function summarySourcePoint(node, offset) {
   return point == null ? 0 : point;
 }
 
-function sourceRangeFromSelection() {
+function sourceRangeFromSelection(ed = _editor) {
   const selection = window.getSelection?.();
-  if (!summaryVisual || !selection?.rangeCount) return null;
+  if (!ed?.visual || !selection?.rangeCount) return null;
   const range = selection.getRangeAt(0);
-  if (!summaryVisual.contains(range.startContainer) || !summaryVisual.contains(range.endContainer)) return null;
+  if (!ed.visual.contains(range.startContainer) || !ed.visual.contains(range.endContainer)) return null;
   const start = summarySourcePoint(range.startContainer, range.startOffset);
   const end = summarySourcePoint(range.endContainer, range.endOffset);
   return { start: Math.min(start, end), end: Math.max(start, end) };
@@ -398,12 +439,12 @@ function sourceRangeFromSelection() {
 
 function rememberVisualSelection() {
   const range = sourceRangeFromSelection();
-  if (range) _savedVisualSelection = range;
+  if (range) _editor.savedSelection = range;
   return range;
 }
 
 function visualCommandRange() {
-  return sourceRangeFromSelection() || _savedVisualSelection;
+  return sourceRangeFromSelection() || _editor.savedSelection;
 }
 
 function appendMappedSegment(parent, segment) {
@@ -436,7 +477,13 @@ function appendMappedSegment(parent, segment) {
   element.dataset.tokenEnd = String(segment.tokenEnd ?? segment.sourceEnd);
   element.textContent = segment.text;
   if (segment.kind === "highlight" && segment.color) element.style.setProperty("--summary-inline-highlight-color", segment.color);
-  if (segment.kind === "link") element.title = "Markdown link";
+  if (segment.kind === "link") {
+    // The destination rides on the leaf so a click can follow or edit it.
+    // Scratch Pads draw these as links; Summary keeps its plain appearance.
+    element.className = "visual-link";
+    element.dataset.href = summaryCore.linkTarget(segment);
+    element.title = "Markdown link";
+  }
   parent.appendChild(element);
 }
 
@@ -467,14 +514,17 @@ function renderMarkdownSource(source, root) {
       br.dataset.sourceStart = String(line.newlineStart);
       br.dataset.sourceEnd = String(line.newlineEnd);
       block.appendChild(br);
+    } else if (!content.text) {
+      // An empty last line still needs a line box for the caret to sit in.
+      wrapper.appendChild(document.createElement("br"));
     }
     root.appendChild(block);
   }
 }
 
-function setVisualCaret(sourcePosition) {
-  if (!summaryVisual) return;
-  const walker = document.createTreeWalker(summaryVisual, NodeFilter.SHOW_TEXT);
+function setVisualCaret(sourcePosition, ed = _editor) {
+  if (!ed?.visual) return;
+  const walker = document.createTreeWalker(ed.visual, NodeFilter.SHOW_TEXT);
   let node;
   while ((node = walker.nextNode())) {
     const leaf = node.parentElement.closest("[data-source-start]");
@@ -491,42 +541,65 @@ function setVisualCaret(sourcePosition) {
       return;
     }
   }
+  // An empty line has no text to hold the caret. Put it on that line: before
+  // the line's own break, or inside the last line's placeholder.
+  for (const block of ed.visual.querySelectorAll(".summary-visual-line")) {
+    const wrapper = block.querySelector("p, li, h1, h2, h3");
+    if (!wrapper || wrapper.textContent) continue;
+    if (sourcePosition < Number(wrapper.dataset.sourceStart) || sourcePosition > Number(wrapper.dataset.sourceEnd)) continue;
+    const range = document.createRange();
+    const lineBreak = [...block.children].find((child) => child.tagName === "BR");
+    if (lineBreak) range.setStartBefore(lineBreak);
+    else range.setStart(wrapper, 0);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return;
+  }
 }
 
 function commitVisualSource(source, caret, recordHistory = true) {
-  const previous = summaryMarkdown();
+  const ed = _editor;
+  const previous = ed.input.value;
   if (source === previous) return;
-  if (recordHistory) _visualUndo.push(previous);
-  _visualRedo = [];
-  summaryInput.value = source;
-  renderVisual();
-  updateSummaryButtons();
-  setVisualCaret(caret);
-  _savedVisualSelection = { start: caret, end: caret };
+  if (recordHistory) ed.undo.push(previous);
+  ed.redo = [];
+  ed.input.value = source;
+  renderVisual(ed);
+  ed.onChange();
+  setVisualCaret(caret, ed);
+  ed.savedSelection = { start: caret, end: caret };
 }
 
 function restoreVisualSource(source) {
-  _savedVisualSelection = null;
-  summaryInput.value = source;
-  renderVisual();
-  updateSummaryButtons();
+  const ed = _editor;
+  ed.savedSelection = null;
+  ed.input.value = source;
+  renderVisual(ed);
+  ed.onChange();
+}
+
+function stepVisualHistory(inputType) {
+  const ed = _editor;
+  const from = inputType === "historyUndo" ? ed.undo : ed.redo;
+  const to = inputType === "historyUndo" ? ed.redo : ed.undo;
+  if (!from.length) return;
+  to.push(ed.input.value);
+  restoreVisualSource(from.pop());
 }
 
 function handleVisualBeforeInput(event) {
-  if (!summaryVisual || !summaryInput) return;
+  if (!_editor?.visual || !_editor.input) return;
   const inputType = event.inputType || "";
   if (!summaryCore.isSupportedVisualInputType(inputType)) {
     event.preventDefault();
     return;
   }
-  const source = summaryMarkdown();
+  const source = editorMarkdown();
   if (inputType === "historyUndo" || inputType === "historyRedo") {
-    const from = inputType === "historyUndo" ? _visualUndo : _visualRedo;
-    const to = inputType === "historyUndo" ? _visualRedo : _visualUndo;
-    if (!from.length) { event.preventDefault(); return; }
     event.preventDefault();
-    to.push(source);
-    restoreVisualSource(from.pop());
+    stepVisualHistory(inputType);
     return;
   }
   const range = sourceRangeFromSelection();
@@ -536,6 +609,11 @@ function handleVisualBeforeInput(event) {
   let replacement = event.data || "";
   if (inputType === "insertFromPaste" || inputType === "insertFromPasteAsQuotation" || inputType === "insertFromDrop") {
     replacement = event.data || event.dataTransfer?.getData("text/plain") || "";
+    // An editor may turn a pasted link into a formatted one (Scratch Pads).
+    if (_editor.onPaste && _editor.onPaste(replacement, { start, end })) {
+      event.preventDefault();
+      return;
+    }
   } else if (inputType === "insertParagraph" || inputType === "insertLineBreak") {
     event.preventDefault();
     const paragraph = summaryCore.insertParagraph(source, start, end);
@@ -543,6 +621,14 @@ function handleVisualBeforeInput(event) {
     return;
   } else if (inputType.startsWith("delete")) {
     if (start === end) {
+      const backward = inputType === "deleteContentBackward" || inputType === "deleteWordBackward";
+      const forward = inputType === "deleteContentForward" || inputType === "deleteWordForward";
+      const joined = (backward || forward) && summaryCore.deleteLineBreak(source, start, backward ? "backward" : "forward");
+      if (joined) {
+        event.preventDefault();
+        commitVisualSource(joined.source, joined.caret);
+        return;
+      }
       const segments = summaryCore.visibleSegments(source).filter((segment) => segment.kind !== "newline");
       const segment = segments.find((item) => start >= item.sourceStart && start <= item.sourceEnd);
       if (!segment) { event.preventDefault(); return; }
@@ -558,18 +644,19 @@ function handleVisualBeforeInput(event) {
   }
 
   event.preventDefault();
-  commitVisualSource(summaryCore.safeReplaceVisibleRange(source, start, end, replacement), start + replacement.length);
+  const placed = summaryCore.safeReplaceVisibleRangeAt(source, start, end, replacement);
+  commitVisualSource(placed.source, placed.at + replacement.length);
 }
 
 function applyBlockFormat(type) {
   const range = visualCommandRange();
   if (!range) return;
-  const next = summaryCore.applyBlockFormat(summaryMarkdown(), range.start, range.end, type);
+  const next = summaryCore.applyBlockFormat(editorMarkdown(), range.start, range.end, type);
   commitVisualSource(next, range.start);
 }
 
-function refreshPaletteControls() {
-  const palette = summaryHighlightMenu?.querySelector(".summary-palette");
+function refreshPaletteControls(ed = _editor) {
+  const palette = ed?.highlightMenu?.querySelector(".summary-palette");
   if (!palette) return;
   palette.replaceChildren();
   for (const color of _summaryPalette) {
@@ -592,7 +679,7 @@ function refreshPaletteControls() {
       const next = edit.value.toLowerCase();
       _summaryPalette = _summaryPalette.map((entry) => entry === color ? next : entry);
       _summaryPalette = [...new Set(_summaryPalette)].slice(0, 32);
-      refreshPaletteControls();
+      refreshPaletteControls(ed);
       saveSummaryPalette();
     });
     const remove = document.createElement("button");
@@ -603,7 +690,7 @@ function refreshPaletteControls() {
     remove.setAttribute("aria-label", `Remove ${color} from palette`);
     remove.addEventListener("click", () => {
       _summaryPalette = _summaryPalette.filter((entry) => entry !== color);
-      refreshPaletteControls();
+      refreshPaletteControls(ed);
       saveSummaryPalette();
     });
     item.append(use, edit, remove);
@@ -611,59 +698,92 @@ function refreshPaletteControls() {
   }
 }
 
-summaryVisual?.addEventListener("beforeinput", handleVisualBeforeInput);
+// Wire one visual editor's own elements to the shared engine. Every handler
+// first makes this editor the active one, so commands always act on the
+// editor the user is working in.
+function attachVisualEditor(ed) {
+  _visualEditors.push(ed);
+  const use = (fn) => (event) => { _editor = ed; return fn(event); };
+  const preserveSelection = use(() => { rememberVisualSelection(); });
 
+  ed.visual?.addEventListener("beforeinput", use(handleVisualBeforeInput));
+  // Undo / Redo keys always reach this editor's own history, also when the
+  // browser has no native history to report through beforeinput.
+  ed.visual?.addEventListener("keydown", use((event) => {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    const key = event.key.toLowerCase();
+    if (key === "z" || key === "y") {
+      event.preventDefault();
+      stepVisualHistory(key === "y" || event.shiftKey ? "historyRedo" : "historyUndo");
+    }
+  }));
+  ed.toolbar?.addEventListener("mousedown", preserveSelection);
+  ed.highlightMenu?.addEventListener("mousedown", preserveSelection);
+
+  ed.input?.addEventListener("input", use(() => {
+    clearEditorHistory(ed);
+    ed.onChange();
+    if (ed.mode === "markdown") renderVisual(ed);
+  }));
+  ed.modeVisual?.addEventListener("click", () => setEditorMode(ed, "visual"));
+  ed.modeMarkdown?.addEventListener("click", () => setEditorMode(ed, "markdown"));
+
+  ed.toolbar?.addEventListener("click", use((e) => {
+    const button = e.target.closest("button[data-format]");
+    if (!button) return;
+    e.preventDefault();
+    const format = button.dataset.format;
+    if (["bold", "italic", "underline", "strike"].includes(format)) applyInlineFormat(format);
+    else if (format === "link") ed.onLinkCommand?.(button);
+    else applyBlockFormat(format);
+  }));
+  ed.toolbar?.querySelector("select[data-format]")?.addEventListener("change", use((e) => {
+    applyBlockFormat(e.target.value);
+    e.target.value = "normal";
+  }));
+
+  const customPicker = ed.highlightMenu?.querySelector(".summary-palette-picker");
+  if (customPicker) customPicker.value = themeValue("--summary-palette-default");
+  customPicker?.addEventListener("input", use((e) => updatePaletteFromPicker(e.target)));
+  ed.highlightMenu?.querySelector(".summary-palette-remove")?.addEventListener("click", use(removeHighlight));
+  ed.highlightButton?.addEventListener("click", use((e) => {
+    e.preventDefault();
+    if (ed.highlightMenu) ed.highlightMenu.hidden = !ed.highlightMenu.hidden;
+    refreshPaletteControls(ed);
+  }));
+}
+
+// The selection is remembered for whichever open editor holds it, so a
+// toolbar command still knows its range after focus moves to the toolbar.
 document.addEventListener("selectionchange", () => {
-  if (summaryIsOpen()) rememberVisualSelection();
-});
-const preserveSummarySelection = () => { rememberVisualSelection(); };
-summaryToolbar?.addEventListener("mousedown", preserveSummarySelection);
-summaryHighlightMenu?.addEventListener("mousedown", preserveSummarySelection);
-
-condensedInput?.addEventListener("input", updateCondensedButtons);
-summaryInput?.addEventListener("input", () => {
-  clearVisualHistory();
-  updateSummaryButtons();
-  if (_summaryMode === "markdown") renderVisual();
-});
-summaryRevertBtn?.addEventListener("click", () => {
-  clearVisualHistory();
-  summaryInput.value = _savedSummary;
-  renderVisual();
-  updateSummaryButtons();
-});
-condensedRevertBtn?.addEventListener("click", () => { condensedInput.value = _savedCondensed; updateCondensedButtons(); });
-condensedSaveBtn?.addEventListener("click", () => saveCondensedSummary());
-summarySaveBtn?.addEventListener("click", () => saveMainSummary());
-summaryModeVisual?.addEventListener("click", () => setSummaryMode("visual"));
-summaryModeMarkdown?.addEventListener("click", () => setSummaryMode("markdown"));
-
-summaryToolbar?.addEventListener("click", (e) => {
-  const button = e.target.closest("button[data-format]");
-  if (!button) return;
-  e.preventDefault();
-  const format = button.dataset.format;
-  if (["bold", "italic", "underline", "strike"].includes(format)) applyInlineFormat(format);
-  else applyBlockFormat(format);
-});
-summaryToolbar?.querySelector("select[data-format]")?.addEventListener("change", (e) => {
-  applyBlockFormat(e.target.value);
-  e.target.value = "normal";
-});
-
-const summaryCustomPicker = summaryHighlightMenu?.querySelector(".summary-palette-picker");
-if (summaryCustomPicker) summaryCustomPicker.value = themeValue("--summary-palette-default");
-summaryHighlightMenu?.querySelector(".summary-palette-picker")?.addEventListener("input", (e) => updatePaletteFromPicker(e.target));
-summaryHighlightMenu?.querySelector(".summary-palette-remove")?.addEventListener("click", removeHighlight);
-$("summary-highlight-button")?.addEventListener("click", (e) => {
-  e.preventDefault();
-  if (summaryHighlightMenu) summaryHighlightMenu.hidden = !summaryHighlightMenu.hidden;
-  refreshPaletteControls();
+  for (const ed of _visualEditors) {
+    if (!ed.isOpen() || !sourceRangeFromSelection(ed)) continue;
+    _editor = ed;
+    rememberVisualSelection();
+    return;
+  }
 });
 
 document.addEventListener("click", (e) => {
-  if (summaryHighlightMenu && !summaryHighlightMenu.hidden && !summaryHighlightMenu.contains(e.target) && e.target.id !== "summary-highlight-button") summaryHighlightMenu.hidden = true;
+  for (const ed of _visualEditors) {
+    const menu = ed.highlightMenu;
+    if (menu && !menu.hidden && !menu.contains(e.target) && !ed.highlightButton?.contains(e.target)) menu.hidden = true;
+  }
 });
+
+attachVisualEditor(summaryEditor);
+
+summaryRevertBtn?.addEventListener("click", () => {
+  clearVisualHistory();
+  summaryInput.value = _savedSummary;
+  renderVisual(summaryEditor);
+  updateSummaryButtons();
+});
+condensedInput?.addEventListener("input", updateCondensedButtons);
+condensedRevertBtn?.addEventListener("click", () => { condensedInput.value = _savedCondensed; updateCondensedButtons(); });
+condensedSaveBtn?.addEventListener("click", () => saveCondensedSummary());
+summarySaveBtn?.addEventListener("click", () => saveMainSummary());
+
 
 $("summary-toggle-btn")?.addEventListener("click", async () => {
   if (summaryIsOpen()) {

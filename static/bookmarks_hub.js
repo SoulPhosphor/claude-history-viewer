@@ -244,17 +244,47 @@ function gbRenderConv(c) {
   const bmWrap = document.createElement("div");
   bmWrap.className = "gb-bookmarks";
   for (const bm of c.bookmarks || []) {
-    const name = (bm.name || "").trim();
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "gb-bookmark" + (name ? "" : " gb-unnamed");
-    b.textContent = name || "Untitled bookmark";
-    b.title = b.textContent;
-    b.addEventListener("click", () => gbOpenConversation(c.id, bm.seq));
-    bmWrap.appendChild(b);
+    bmWrap.appendChild(gbRenderBookmark(c, bm));
   }
   wrap.appendChild(bmWrap);
   return wrap;
+}
+
+// One bookmark: its name (opens the message) and the shared bookmark ⋮ menu
+// (bookmarks.js openBookmarkMenu).
+function gbRenderBookmark(c, bm) {
+  const row = document.createElement("div");
+  row.className = "gb-bookmark-row";
+  const b = document.createElement("button");
+  b.type = "button";
+  const paint = (current) => {
+    const name = (current.name || "").trim();
+    b.className = "gb-bookmark" + (name ? "" : " gb-unnamed") + (current.missing ? " gb-missing" : "");
+    b.textContent = name || "Untitled bookmark";
+    // Its message is no longer in the chat (re-imported without it): say so,
+    // and open the chat itself rather than whatever message sits there now.
+    if (current.missing) b.textContent += " (message no longer in this chat)";
+    b.title = b.textContent;
+  };
+  paint(bm);
+  b.addEventListener("click", () => gbOpenConversation(c.id, bm.missing ? null : bm.seq));
+  const ctx = {
+    conversationId: c.id,
+    conversationTitle: c.title || "Untitled",
+    bookmark: bm,
+    onChanged: (next) => {
+      if (next) {
+        Object.assign(bm, next);
+        paint(bm);
+      } else {
+        // Deleted: reload in place, keeping the scroll position. A chat whose
+        // last bookmark went leaves the list.
+        gbRestoreHistoryList(gbScroll ? gbScroll.scrollTop : 0, gbState.offset);
+      }
+    },
+  };
+  row.append(b, bookmarkMenuButton(ctx));
+  return row;
 }
 
 function gbSetChevronState(chevron, expanded) {
@@ -384,7 +414,8 @@ if (gbSentinel && "IntersectionObserver" in window) {
   gbObserver.observe(gbSentinel);
 }
 
-// ── Briefcase footer menu (Global Bookmarks / Projects / Memories / Media Hub) ─
+// ── Briefcase footer menu (Global Bookmarks / Projects / Memories / Media Hub /
+//    Scratch Pads) ─
 const bookmarksHubBtn = $("bookmarks-hub-btn");
 const bookmarksHubMenu = $("bookmarks-hub-menu");
 
@@ -444,5 +475,6 @@ bookmarksHubMenu?.querySelectorAll(".sidebar-menu-item").forEach((item) => {
     else if (action === "projects") openProjects(true);
     else if (action === "memories") openMemories(true);
     else if (action === "media-hub") openGallery(true);
+    else if (action === "scratch-pads") openScratchPads(true);
   });
 });

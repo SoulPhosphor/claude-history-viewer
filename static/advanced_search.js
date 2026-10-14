@@ -20,6 +20,9 @@
   const upBtn = $("advanced-results-up");
   const downBtn = $("advanced-results-down");
   const resizeHandle = $("advanced-results-resize");
+  const headingEl = $("advanced-search-heading");
+  const closeBtn = $("advanced-close");
+  const LINK_ICON_PATH = "M440-280H280q-83 0-141.5-58.5T80-480q0-83 58.5-141.5T280-680h160v80H280q-50 0-85 35t-35 85q0 50 35 85t85 35h160v80ZM320-440v-80h320v80H320Zm200 160v-80h160q50 0 85-35t35-85q0-50-35-85t-85-35H520v-80h160q83 0 141.5 58.5T880-480q0 83-58.5 141.5T680-280H520Z";
 
   if (!panel || !resultsPanel) return;
 
@@ -98,6 +101,10 @@
     // chat links are being found for, or null for an ordinary search. The
     // filters, history and results are the same workspace either way.
     related: null,
+    // Link-picking mode (Insert Conversation Link, scratchpads.js): {title,
+    // pickConversation(result), ended(returnToPad)}, or null. It only changes
+    // what choosing a result does; it never creates a Related link.
+    linkPick: null,
     // Which chat the shown results left out ("" for none), so switching mode
     // re-runs a search whose results were built for the other mode.
     resultsExclude: "",
@@ -881,7 +888,10 @@
     queryEl.focus();
   }
 
-  function closeAdvancedSearch() {
+  // returnToPad: the search was cancelled from inside it (Close, Escape), so
+  // a link-picking search goes back to its Scratch Pad. Any other close (a
+  // different chat or screen was chosen) just ends the mode.
+  function closeAdvancedSearch(returnToPad = false) {
     if (!ui.open) return;
     closeResultMenu();
     ui.open = false;
@@ -893,11 +903,32 @@
       ui.related = null;
       window.relatedConversations?.searchEnded();
     }
+    endLinkPick(returnToPad === true);
   }
 
-  // Ordinary Advanced Search, or Related mode for one chat ({id, title}).
-  async function openSearchMode(related) {
+  function endLinkPick(returnToPad) {
+    const linkPick = ui.linkPick;
+    if (!linkPick) return;
+    ui.linkPick = null;
+    syncModeHeading();
+    linkPick.ended?.(returnToPad);
+  }
+
+  function syncModeHeading() {
+    headingEl.textContent = ui.linkPick ? ui.linkPick.title : "Advanced Search";
+    const closeLabel = ui.linkPick ? "Cancel and go back to the Scratch Pad" : "Close advanced search";
+    closeBtn.title = closeLabel;
+    closeBtn.setAttribute("aria-label", closeLabel);
+  }
+
+  // Ordinary Advanced Search, Related mode for one chat ({id, title}), or
+  // link-picking mode (linkPick). Searching and previewing are shared; only
+  // what a chosen result does differs.
+  async function openSearchMode(related, linkPick = null) {
+    if (ui.linkPick && ui.linkPick !== linkPick) endLinkPick(false);
     ui.related = related;
+    ui.linkPick = linkPick;
+    syncModeHeading();
     await openAdvancedSearch();
     rerunIfOtherMode();
   }
@@ -1211,6 +1242,28 @@
     return btn;
   }
 
+  // ── Link-picking mode ─────────────────────────────────────────────────────
+  // Hands the chosen chat back to whoever asked (a Scratch Pad). Never touches
+  // Related links.
+  function pickLinkResult(result) {
+    const linkPick = ui.linkPick;
+    if (!linkPick) return;
+    linkPick.pickConversation({ id: result.id, title: result.title || "Untitled" });
+  }
+
+  function linkChatButton(result) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "advanced-link-chat-btn";
+    btn.title = `Insert a link to ${result.title || "Untitled"}`;
+    btn.innerHTML = `<svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="${LINK_ICON_PATH}"/></svg><span>Link Chat</span>`;
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      pickLinkResult(result);
+    });
+    return btn;
+  }
+
   function openResultMenu(result, anchor) {
     const wasForThis = resultMenu && resultMenu.dataset.convId === result.id;
     closeResultMenu();
@@ -1220,6 +1273,7 @@
     menu.dataset.convId = result.id;
     menu.setAttribute("role", "menu");
     const items = [];
+    if (ui.linkPick) items.push(["Link Chat", () => pickLinkResult(result)]);
     if (ui.related) {
       items.push(relatedLinked(result)
         ? ["Remove Link", () => toggleRelatedLink(result)]
@@ -1369,6 +1423,7 @@
       });
       titleRow.append(title, matches, date, menuBtn);
       if (ui.related) titleRow.insertBefore(relatedLinkButton(result), title);
+      if (ui.linkPick) titleRow.insertBefore(linkChatButton(result), menuBtn);
       if (ui.resultView === "compact" && multiProvider) {
         const provider = document.createElement("span");
         provider.className = "advanced-provider-chip";
@@ -1425,9 +1480,9 @@
         }
         card.appendChild(bottom);
       }
-      // Related mode previews the chat and keeps the search open.
+      // Related and link-picking modes preview the chat and keep the search open.
       const open = () => openConversation(result.id, null, result.target_seq, {
-        keepAdvancedSearch: Boolean(ui.related),
+        keepAdvancedSearch: Boolean(ui.related || ui.linkPick),
       });
       card.addEventListener("click", open);
       resultsList.appendChild(card);
@@ -1471,10 +1526,11 @@
   }
 
   $("manage-search-btn")?.addEventListener("click", () => openSearchMode(null));
-  // Closing a Related search returns to its chat (related.js exitSearch).
+  // Closing a Related search returns to its chat (related.js exitSearch); a
+  // link-picking search returns to its Scratch Pad.
   function closeOrExitRelated() {
     if (ui.related && window.relatedConversations) window.relatedConversations.exitSearch();
-    else closeAdvancedSearch();
+    else closeAdvancedSearch(Boolean(ui.linkPick));
   }
   $("advanced-close")?.addEventListener("click", closeOrExitRelated);
   $("advanced-clear-all")?.addEventListener("click", () => {
@@ -1613,7 +1669,9 @@
   window.advancedSearchController = {
     open: () => openSearchMode(null),
     openRelated: (target) => openSearchMode(target),
-    close: closeAdvancedSearch,
+    // {title, pickConversation(result), ended(returnToPad)}; see ui.linkPick.
+    openLinkPicker: (linkPick) => openSearchMode(null, linkPick),
+    close: () => closeAdvancedSearch(false),
     isOpen: () => ui.open,
     // related.js calls this when the links change, to redraw the icons.
     refreshRelated: () => { if (ui.open && ui.related) refreshResults(); },

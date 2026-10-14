@@ -5568,6 +5568,9 @@ kbd {
 .gb-bookmark.gb-unnamed {
   font-style: italic;
 }
+.gb-bookmark.gb-missing {
+  text-decoration: line-through;
+}
 
 #global-bookmarks-meta {
   color: var(--muted);

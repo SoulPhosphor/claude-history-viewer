@@ -17,6 +17,7 @@ import json
 import re
 import sqlite3
 import sys
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -402,6 +403,7 @@ def _claude_active_path(conv: dict, cid: str, raw_msgs: list):
                 "branch_index":    b_idx_h,
                 "create_time":     _iso_to_ts(cur_human.get("created_at") or ""),
                 "seq":             seq,
+                "message_uuid":    _message_uuid(cur_human),
             })
             seq += 1
 
@@ -486,6 +488,7 @@ def _claude_active_path(conv: dict, cid: str, raw_msgs: list):
                     "branch_index":    b_idx_a,
                     "create_time":     _iso_to_ts(first_asst.get("created_at") or ""),
                     "seq":             seq,
+                    "message_uuid":    _message_uuid(first_asst),
                 })
                 seq += 1
 
@@ -564,6 +567,7 @@ def _claude_fallback_messages(conv: dict, cid: str, raw_msgs: list) -> list:
             "branch_index":    1,
             "create_time":     _iso_to_ts(m.get("created_at") or ""),
             "seq":             seq,
+            "message_uuid":    _message_uuid(m),
         })
         seq += 1
     return rows
@@ -649,6 +653,20 @@ def import_claude_conversation(conv: dict, index: int) -> dict:
 # ── Thread extraction ─────────────────────────────────────────────────────────
 
 
+def _message_uuid(msg) -> str | None:
+    """The export's own id for one message (Claude `uuid`, ChatGPT `id`).
+
+    Kept so links and bookmarks can find the same message after a re-import
+    even when its position in the chat changed (an edited or regenerated
+    earlier message switches branches). It is only ever looked up together
+    with its conversation id, so ids from different providers never meet."""
+    if not isinstance(msg, dict):
+        return None
+    value = msg.get("uuid") or msg.get("id")
+    value = str(value).strip() if value is not None else ""
+    return value or None
+
+
 def extract_thread(mapping: dict, current_node: str) -> list:
     """
     Walk from current_node back to root via parent pointers.
@@ -662,7 +680,11 @@ def extract_thread(mapping: dict, current_node: str) -> list:
         seen.add(node_id)
         node = mapping[node_id]
         if node.get("message"):
-            path.append(node["message"])
+            msg = node["message"]
+            # The node id doubles as the message id when a message lacks its own.
+            if isinstance(msg, dict) and not msg.get("id"):
+                msg = {**msg, "id": node_id}
+            path.append(msg)
         node_id = node.get("parent")
     path.reverse()
     return path
@@ -724,6 +746,7 @@ def parse_conversation(conv: dict, cid: str | None = None):
             "branch_index":    1,
             "create_time":     msg.get("create_time") or 0,
             "seq":             seq,
+            "message_uuid":    _message_uuid(msg),
             # ChatGPT exports identify the model per message. Keep the exact
             # imported value: one conversation may use several models.
             "model_slug":      model_slug,
@@ -885,12 +908,16 @@ CREATE TABLE messages (
     branch_index    INTEGER DEFAULT 1,
     create_time     REAL,
     seq             INTEGER,
+    -- The export's own message id (see _message_uuid). seq is the message's
+    -- position in the shown branch and can move on re-import; this cannot.
+    message_uuid    TEXT,
     -- ChatGPT model recorded on this exact message (NULL for Claude or when the
     -- export omitted it). Distinct values form the conversation's model list.
     model_slug      TEXT
 );
 
 CREATE INDEX idx_msg_conv ON messages (conversation_id, seq);
+CREATE INDEX idx_msg_uuid ON messages (conversation_id, message_uuid);
 CREATE INDEX idx_msg_model ON messages (model_slug, conversation_id);
 
 CREATE VIRTUAL TABLE search_index USING fts5(
@@ -1000,6 +1027,11 @@ def build(source: Path, db_path: Path) -> None:
 
     db = sqlite3.connect(db_path)
     db.executescript(SCHEMA)
+    # When this database was built. A bookmark older than the build, with no
+    # message id or fingerprint, was made against an earlier database, so its
+    # position cannot be trusted here (message_ids.reanchor_bookmarks).
+    db.execute("CREATE TABLE IF NOT EXISTS history_build (id INTEGER PRIMARY KEY CHECK (id = 1), built_at REAL)")
+    db.execute("INSERT OR REPLACE INTO history_build (id, built_at) VALUES (1, ?)", (time.time(),))
     # Recorded so the server can tell a Claude export from a ChatGPT one
     # without re-parsing the source file. Claude-only UI keys off this.
     db.execute(
@@ -1084,13 +1116,14 @@ def build(source: Path, db_path: Path) -> None:
         conv_rows,
     )
     db.executemany(
-        "INSERT INTO messages (conversation_id, role, content, attachments, artifact_ids, siblings, branch_index, create_time, seq, model_slug) "
-        "VALUES (:conversation_id, :role, :content, :attachments, :artifact_ids, :siblings, :branch_index, :create_time, :seq, :model_slug)",
+        "INSERT INTO messages (conversation_id, role, content, attachments, artifact_ids, siblings, branch_index, create_time, seq, model_slug, message_uuid) "
+        "VALUES (:conversation_id, :role, :content, :attachments, :artifact_ids, :siblings, :branch_index, :create_time, :seq, :model_slug, :message_uuid)",
         [
             {
                 **m,
                 "artifact_ids": m.get("artifact_ids"),
                 "model_slug": m.get("model_slug"),
+                "message_uuid": m.get("message_uuid"),
             }
             for m in msg_rows
         ],
@@ -1329,12 +1362,12 @@ def _insert_conv_rows(conn, meta: dict, msgs: list, artifacts: list, provider: s
     for m in msgs:
         conn.execute(
             "INSERT INTO messages "
-            "(conversation_id, role, content, attachments, artifact_ids, siblings, branch_index, create_time, seq, model_slug) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(conversation_id, role, content, attachments, artifact_ids, siblings, branch_index, create_time, seq, model_slug, message_uuid) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 m["conversation_id"], m.get("role"), m.get("content"), m.get("attachments"),
                 m.get("artifact_ids"), m.get("siblings"), m.get("branch_index", 1),
-                m.get("create_time"), m.get("seq"), m.get("model_slug"),
+                m.get("create_time"), m.get("seq"), m.get("model_slug"), m.get("message_uuid"),
             ),
         )
     conn.execute(
@@ -1359,6 +1392,35 @@ def _ts_close(a, b) -> bool:
     if not a or not b:
         return False
     return abs(float(a) - float(b)) < 1.0
+
+
+def _fill_message_ids(conn, cid: str, msgs: list) -> None:
+    conn.executemany(
+        "UPDATE messages SET message_uuid = ? WHERE conversation_id = ? AND message_uuid IS NULL "
+        "AND seq = ? AND role = ? AND content = ?",
+        [(m["message_uuid"], cid, m.get("seq"), m.get("role"), m.get("content"))
+         for m in msgs if m.get("message_uuid")],
+    )
+
+
+def _bookmarks_before_replace(conn, cid: str):
+    """message_ids.bookmarks_before_replace, when the user-data database is
+    attached (it is not during a plain build)."""
+    import message_ids
+    try:
+        return message_ids.bookmarks_before_replace(conn, cid)
+    except sqlite3.Error:
+        return None
+
+
+def _bookmarks_after_replace(conn, cid: str, remembered) -> None:
+    if remembered is None:
+        return
+    import message_ids
+    try:
+        message_ids.bookmarks_after_replace(conn, cid, remembered)
+    except sqlite3.Error:
+        pass
 
 
 def reconcile_backup(conn, records: list, provider: str) -> dict:
@@ -1415,6 +1477,10 @@ def reconcile_backup(conn, records: list, provider: str) -> dict:
                 and (existing[5] or None) == (meta.get("gizmo_type") or None)
             )
             if same:
+                # Unchanged, but this backup may carry message ids the stored
+                # copy lacks (imported before ids were kept): fill them in,
+                # matching position, role and exact text.
+                _fill_message_ids(conn, cid, msgs)
                 counts["unchanged"] += 1
                 continue
             # Never let an older backup roll a newer conversation backward: files
@@ -1432,8 +1498,12 @@ def reconcile_backup(conn, records: list, provider: str) -> dict:
             ):
                 counts["unchanged"] += 1
                 continue
+            # Bookmarks on this chat learn their message's id before the
+            # messages are replaced, so none ends up on a different message.
+            remembered = _bookmarks_before_replace(conn, cid)
             _delete_conv_rows(conn, cid)
             _insert_conv_rows(conn, meta, msgs, artifacts, provider)
+            _bookmarks_after_replace(conn, cid, remembered)
             counts["updated"] += 1
         except Exception:  # noqa: BLE001 — one bad record must not abort the merge
             counts["errors"] += 1

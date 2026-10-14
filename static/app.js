@@ -191,7 +191,8 @@ function restoreSidebarAfterOverlay() {
   if (_sidebarCollapsedBeforeOverlay === null) return;
   const notesOpen = typeof notesSidePanelIsOpen === "function" && notesSidePanelIsOpen();
   const relatedOpen = typeof relatedPanelIsOpen === "function" && relatedPanelIsOpen();
-  if (notesOpen || relatedOpen) return;
+  const scratchOpen = typeof scratchPadSidebarIsOpen === "function" && scratchPadSidebarIsOpen();
+  if (notesOpen || relatedOpen || scratchOpen) return;
   document.body.classList.toggle("sidebar-collapsed", _sidebarCollapsedBeforeOverlay);
   _sidebarCollapsedBeforeOverlay = null;
 }
@@ -1951,6 +1952,9 @@ async function saveUiPreferences(partial) {
 }
 
 async function leaveNotesForSpecialView() {
+  // Every special view comes through here, so leaving Scratch Pads (and its
+  // unsaved-changes check) happens here too.
+  if (typeof scratchPadNavigationGuard === "function" && !(await scratchPadNavigationGuard())) return false;
   if (typeof notesNavigationGuard !== "function") return true;
   return notesNavigationGuard({ endVisit: true });
 }
@@ -2207,6 +2211,7 @@ async function renderArtifactTabContent(artifactId, title) {
 // conversation, else the empty state). Used on load and by tab cycling.
 async function activateActiveTab() {
   if (state.activeSpecialView === "gallery") return openGallery(false);
+  if (state.activeSpecialView === "scratch_pads") return openScratchPads(false);
   if (state.activeSpecialView === "global_bookmarks")
     return openGlobalBookmarks(false);
   if (state.activeSpecialView === "memories") return openMemories(false);
@@ -2290,6 +2295,7 @@ function hideAllPanels() {
   labelsPanel.hidden = true;
   const gbPanelEl = document.getElementById("global-bookmarks-panel");
   if (gbPanelEl) gbPanelEl.hidden = true;
+  if (typeof scratchPadPanelsHidden === "function") scratchPadPanelsHidden();
   closeArtifactPanel();
   closeFilePanel();
   clearSearchNav();
@@ -2424,6 +2430,10 @@ const EMPTY_CONV_NOTICE = {
 };
 
 async function openConversation(id, clickedEl, targetSeq = null, { keepAdvancedSearch = false } = {}) {
+  // Leaving Scratch Pads checks for unsaved changes. A chat previewed while
+  // Advanced Search picks a link for a Scratch Pad stays inside that workspace.
+  if (typeof scratchPadNavigationGuard === "function" &&
+      !(await scratchPadNavigationGuard({ preview: keepAdvancedSearch }))) return;
   if (typeof summaryHasUnsavedChanges === "function" && summaryHasUnsavedChanges()) {
     const r = await openSummaryUnsavedModal();
     if (r === "cancel") return;
@@ -2520,6 +2530,7 @@ async function openConversation(id, clickedEl, targetSeq = null, { keepAdvancedS
     const div = document.createElement("div");
     div.className = `message ${msg.role}`;
     if (msg.seq != null) div.dataset.seq = msg.seq;
+    if (msg.message_uuid) div.dataset.messageId = msg.message_uuid;
 
     const label =
       msg.role === "user"
@@ -2581,6 +2592,10 @@ async function openConversation(id, clickedEl, targetSeq = null, { keepAdvancedS
     roleEl.after(metaRow);
     if (msg.seq != null && typeof decorateMessageBookmark === "function") {
       decorateMessageBookmark({ div, roleEl, nameEl, metaRow, seq: msg.seq, role: msg.role });
+    }
+    // "Link Message", only while Advanced Search picks a link for a Scratch Pad.
+    if (msg.seq != null && typeof decorateMessageLinkPick === "function") {
+      decorateMessageLinkPick({ div, metaRow, seq: msg.seq, messageId: msg.message_uuid || null });
     }
 
     div.appendChild(bodyEl);
@@ -5575,6 +5590,8 @@ function setThreadTitle(text) {
   if (notesSideToggleBtn) notesSideToggleBtn.hidden = !text;
   const relatedToggleBtn = $("related-toggle-btn");
   if (relatedToggleBtn) relatedToggleBtn.hidden = !text;
+  const convLinkBtn = $("conv-link-btn");
+  if (convLinkBtn) convLinkBtn.hidden = !text;
   updateSummaryToggleIcon(false);
   if (typeof updateNotesScreenIcon === "function") updateNotesScreenIcon(false);
   if (typeof updateNotesSideIcon === "function") {

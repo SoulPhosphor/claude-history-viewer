@@ -9,7 +9,7 @@ from pathlib import Path
 # Reusable business/data logic for the labeling features. server.py stays the
 # HTTP/routing shell; these modules own the SQL, validation, and transactions
 # and raise ApiError for error responses.
-import labels, bulk_labels, snapshots, gizmos, updater, advanced_search, related
+import labels, bulk_labels, snapshots, gizmos, updater, advanced_search, related, scratchpads, message_ids
 from api_common import ApiError
 
 # Set CHV_TIMING=1 to log each request's method, path, and duration to stderr.
@@ -38,7 +38,8 @@ def _code_signature() -> str:
     h = hashlib.sha256()
     for name in ("server.py", "build_db.py", "api_common.py",
                  "labels.py", "bulk_labels.py", "snapshots.py", "gizmos.py",
-                 "updater.py", "advanced_search.py", "related.py"):
+                 "updater.py", "advanced_search.py", "related.py", "scratchpads.py",
+                 "message_ids.py"):
         try:
             h.update((here / name).read_bytes())
         except OSError:
@@ -58,7 +59,8 @@ def _static_signature() -> str:
                  "advanced_search.js", "advanced_search.css",
                  "labels_screen.js", "bulk_labels.js", "snapshots.js",
                  "gizmos.js", "bookmarks.js", "bookmarks_hub.js", "notes.js",
-                 "summary.js", "summary_editor_core.js", "related.js"):
+                 "summary.js", "summary_editor_core.js", "related.js",
+                 "internal_links.js", "scratchpads.js", "scratchpads.css"):
         try:
             h.update((static_dir / name).read_bytes())
         except OSError:
@@ -195,6 +197,9 @@ def _ensure_runtime_schema(db_path: Path) -> None:
             # ChatGPT exports identify models per message. A conversation can
             # therefore retain every model used instead of one lossy value.
             "ALTER TABLE messages ADD COLUMN model_slug TEXT",
+            # The export's own message id (message_ids.py). Older databases get
+            # it filled from the backups in source/ on start.
+            "ALTER TABLE messages ADD COLUMN message_uuid TEXT",
             # Compare items carry their own provider for tab colouring.
             "ALTER TABLE workspace_tabs ADD COLUMN provider TEXT",
             # 1 only when the user explicitly added the chat to Compare.
@@ -204,13 +209,14 @@ def _ensure_runtime_schema(db_path: Path) -> None:
                 conn.execute(col_sql)
             except sqlite3.Error:
                 pass
-        try:
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_msg_model "
-                "ON messages (model_slug, conversation_id)"
-            )
-        except sqlite3.Error:
-            pass
+        for idx_sql in (
+            "CREATE INDEX IF NOT EXISTS idx_msg_model ON messages (model_slug, conversation_id)",
+            "CREATE INDEX IF NOT EXISTS idx_msg_uuid ON messages (conversation_id, message_uuid)",
+        ):
+            try:
+                conn.execute(idx_sql)
+            except sqlite3.Error:
+                pass
         # The top strip is now the Compare bar. Older versions created a tab row
         # every time a chat was opened; none of those were deliberate Compare
         # selections, so drop every non-compare row. Compare additions are
@@ -560,7 +566,13 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 source          TEXT DEFAULT 'user',
                 created_at      REAL,
                 updated_at      REAL,
-                UNIQUE(conversation_id, seq)
+                -- The bookmarked message's export id (message_ids.py). It is
+                -- the bookmark's identity; seq follows it and is unique per
+                -- message only through this id (see the indexes below).
+                message_uuid    TEXT,
+                -- Fingerprint of the message's role and text, so a bookmark
+                -- recognises its message after a rebuild even without an id.
+                message_hash    TEXT
             );
 
             -- Advanced searches intentionally live in the portable user-data
@@ -575,6 +587,19 @@ def _ensure_userdata_schema(db_path: Path) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_advanced_recent_used
                 ON advanced_search_recent (last_used_at DESC);
+            -- Scratch Pads: free-standing Markdown documents that belong to no
+            -- conversation and to neither provider. The id is generated once
+            -- and never changes on rename. See scratchpads.py.
+            CREATE TABLE IF NOT EXISTS scratch_pads (
+                id         TEXT PRIMARY KEY,
+                title      TEXT NOT NULL,
+                content    TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                version    INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_scratch_pads_updated
+                ON scratch_pads (updated_at DESC);
             CREATE TABLE IF NOT EXISTS advanced_search_saved (
                 id            TEXT PRIMARY KEY,
                 name          TEXT NOT NULL,
@@ -590,6 +615,64 @@ def _ensure_userdata_schema(db_path: Path) -> None:
             conn.execute("ALTER TABLE folders ADD COLUMN provider TEXT")
         except sqlite3.Error:
             pass
+        # Scratch Pad content version (scratchpads.update_pad).
+        try:
+            conn.execute("ALTER TABLE scratch_pads ADD COLUMN version INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.Error:
+            pass
+        # Bookmarks made before message ids were kept learn theirs on first use.
+        try:
+            conn.execute("ALTER TABLE conversation_bookmarks ADD COLUMN message_uuid TEXT")
+        except sqlite3.Error:
+            pass
+        # Bookmarks used to be unique by position (conversation_id, seq). A
+        # bookmark is now identified by its message's id, so a bookmark whose
+        # message is gone may share a position with a new one. Rebuild the
+        # table without the position rule, carrying every bookmark over.
+        try:
+            table_sql = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'conversation_bookmarks'"
+            ).fetchone()
+            if table_sql and "UNIQUE(conversation_id, seq)" in (table_sql[0] or ""):
+                conn.executescript(
+                    """
+                    CREATE TABLE conversation_bookmarks_new (
+                        id              TEXT PRIMARY KEY,
+                        conversation_id TEXT NOT NULL,
+                        seq             INTEGER NOT NULL,
+                        name            TEXT,
+                        source          TEXT DEFAULT 'user',
+                        created_at      REAL,
+                        updated_at      REAL,
+                        message_uuid    TEXT
+                    );
+                    INSERT INTO conversation_bookmarks_new
+                        SELECT id, conversation_id, seq, name, source, created_at, updated_at, message_uuid
+                        FROM conversation_bookmarks;
+                    DROP TABLE conversation_bookmarks;
+                    ALTER TABLE conversation_bookmarks_new RENAME TO conversation_bookmarks;
+                    """
+                )
+        except sqlite3.Error:
+            pass
+        # Fingerprint of the bookmarked message (message_ids.message_fingerprint).
+        try:
+            conn.execute("ALTER TABLE conversation_bookmarks ADD COLUMN message_hash TEXT")
+        except sqlite3.Error:
+            pass
+        for idx_sql in (
+            "CREATE INDEX IF NOT EXISTS idx_bookmarks_conv_seq ON conversation_bookmarks (conversation_id, seq)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_bookmarks_message "
+            "ON conversation_bookmarks (conversation_id, message_uuid) WHERE message_uuid IS NOT NULL",
+            # A message without an id is identified by its position, so only
+            # one bookmark may sit there (gone bookmarks have a non-null id).
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_bookmarks_position "
+            "ON conversation_bookmarks (conversation_id, seq) WHERE message_uuid IS NULL",
+        ):
+            try:
+                conn.execute(idx_sql)
+            except sqlite3.Error:
+                pass
         # summary column for snapshots created before it existed.
         try:
             conn.execute("ALTER TABLE snapshots ADD COLUMN summary TEXT")
@@ -1426,6 +1509,13 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/advanced-search/saved":
             payload = self._read_json_body()
             self._handle_db(lambda conn: advanced_search.save_search(conn, payload))
+        elif path == "/api/scratchpads":
+            payload = self._read_json_body()
+            self._handle_db(lambda conn: scratchpads.create_pad(conn, payload))
+        elif path.startswith("/api/scratchpads/") and path.endswith("/append"):
+            pad_id = urllib.parse.unquote(path[len("/api/scratchpads/"):-len("/append")])
+            payload = self._read_json_body()
+            self._handle_db(lambda conn: scratchpads.append_to_pad(conn, pad_id, payload))
         else:
             self.send_error(404)
 
@@ -1455,6 +1545,10 @@ class Handler(BaseHTTPRequestHandler):
             self._api_notes_update(urllib.parse.unquote(path[len("/api/notes/"):]))
         elif path.startswith("/api/bookmarks/"):
             self._api_bookmark_update(urllib.parse.unquote(path[len("/api/bookmarks/"):]))
+        elif path.startswith("/api/scratchpads/"):
+            pad_id = urllib.parse.unquote(path[len("/api/scratchpads/"):])
+            payload = self._read_json_body()
+            self._handle_db(lambda conn: scratchpads.update_pad(conn, pad_id, payload))
         else:
             self.send_error(404)
 
@@ -1502,6 +1596,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/advanced-search/saved/"):
             saved_id = urllib.parse.unquote(path[len("/api/advanced-search/saved/"):])
             self._handle_db(lambda conn: advanced_search.delete_saved(conn, saved_id))
+        elif path.startswith("/api/scratchpads/"):
+            pad_id = urllib.parse.unquote(path[len("/api/scratchpads/"):])
+            self._handle_db(lambda conn: scratchpads.delete_pad(conn, pad_id))
         else:
             self.send_error(404)
 
@@ -1643,6 +1740,20 @@ class Handler(BaseHTTPRequestHandler):
                 conn, urllib.parse.unquote(path[len("/api/related/"):])))
         elif path == "/api/advanced-search/history":
             self._handle_db(advanced_search.history)
+        elif path == "/api/scratchpads":
+            q = (qs.get("q") or [""])[0]
+            self._handle_db(lambda conn: scratchpads.list_pads(conn, q))
+        elif path.startswith("/api/scratchpads/"):
+            pad_id = urllib.parse.unquote(path[len("/api/scratchpads/"):])
+            self._handle_db(lambda conn: scratchpads.get_pad(conn, pad_id))
+        elif path == "/api/link-suggestions":
+            q = (qs.get("q") or [""])[0]
+            self._handle_db(lambda conn: scratchpads.link_suggestions(conn, q))
+        elif path == "/api/link-resolve":
+            cid = (qs.get("conversation") or [""])[0]
+            seq = (qs.get("seq") or [""])[0]
+            mid = (qs.get("message") or [""])[0]
+            self._handle_db(lambda conn: scratchpads.resolve_link(conn, cid, seq, mid))
         elif path == "/api/gallery":
             self._api_gallery()
         elif path == "/api/attachment-report":
@@ -2217,8 +2328,8 @@ class Handler(BaseHTTPRequestHandler):
             if not conv:
                 self.send_error(404); return
             msgs = conn.execute(
-                "SELECT seq, role, content, attachments, artifact_ids, siblings, branch_index, create_time "
-                "FROM messages WHERE conversation_id = ? ORDER BY seq", (conv_id,),
+                "SELECT seq, role, content, attachments, artifact_ids, siblings, branch_index, create_time, "
+                "message_uuid FROM messages WHERE conversation_id = ? ORDER BY seq", (conv_id,),
             ).fetchall()
             def parse_msg(m):
                 d = dict(m)
@@ -3737,12 +3848,15 @@ class Handler(BaseHTTPRequestHandler):
     # (UUID) so a rename never changes what identifies it; the conversation id
     # is never touched here.
     def _conv_bookmarks(self, conn, conv_id):
+        # Only bookmarks whose message is still in the chat are placed on it; one
+        # whose message is gone never moves onto a different message.
+        message_ids.reanchor_bookmarks(conn, conv_id)
         rows = conn.execute(
-            "SELECT id, conversation_id, seq, name, source, created_at, updated_at "
+            "SELECT id, conversation_id, seq, name, source, created_at, updated_at, message_uuid "
             "FROM udb.conversation_bookmarks WHERE conversation_id = ? ORDER BY seq",
             (conv_id,),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [dict(r) for r in rows if not message_ids.bookmark_missing(conn, conv_id, r)]
 
     def _api_bookmarks_get(self, conv_id):
         if not conv_id:
@@ -3837,8 +3951,9 @@ class Handler(BaseHTTPRequestHandler):
 
             convs = []
             for r in rows:
+                message_ids.reanchor_bookmarks(conn, r["id"])
                 bms = conn.execute(
-                    "SELECT id, seq, name FROM udb.conversation_bookmarks "
+                    "SELECT id, seq, name, message_uuid FROM udb.conversation_bookmarks "
                     "WHERE conversation_id = ? ORDER BY seq",
                     (r["id"],),
                 ).fetchall()
@@ -3847,7 +3962,12 @@ class Handler(BaseHTTPRequestHandler):
                     "title": r["title"],
                     "provider": r["provider"],
                     "last_user_time": r["last_user_time"],
-                    "bookmarks": [dict(b) for b in bms],
+                    # A bookmark whose message is gone stays listed (it is the
+                    # user's), marked missing so it never opens another message.
+                    "bookmarks": [
+                        {**dict(b), "missing": message_ids.bookmark_missing(conn, r["id"], b)}
+                        for b in bms
+                    ],
                 })
 
             self.send_json({
@@ -3880,25 +4000,45 @@ class Handler(BaseHTTPRequestHandler):
         try:
             now = time.time()
             # Toggling the same message on twice must not make a second bookmark:
-            # return the one already there rather than erroring on the UNIQUE key.
-            existing = conn.execute(
-                "SELECT id FROM udb.conversation_bookmarks "
-                "WHERE conversation_id = ? AND seq = ?",
-                (conv_id, seq),
-            ).fetchone()
+            # return the one already there. A bookmark belongs to a message by
+            # its id; position only identifies one made without an id.
+            message_uuid = message_ids.message_uuid_at(conn, conv_id, seq)
+            message_ids.reanchor_bookmarks(conn, conv_id)
+            if message_uuid:
+                existing = conn.execute(
+                    "SELECT id FROM udb.conversation_bookmarks "
+                    "WHERE conversation_id = ? AND message_uuid = ?",
+                    (conv_id, message_uuid),
+                ).fetchone()
+            else:
+                existing = conn.execute(
+                    "SELECT id FROM udb.conversation_bookmarks "
+                    "WHERE conversation_id = ? AND seq = ? AND message_uuid IS NULL",
+                    (conv_id, seq),
+                ).fetchone()
             if existing:
                 bid = existing["id"]
             else:
                 bid = uuid.uuid4().hex
-                conn.execute(
-                    "INSERT INTO udb.conversation_bookmarks "
-                    "(id, conversation_id, seq, name, source, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (bid, conv_id, seq, name, source, now, now),
-                )
-                conn.commit()
+                try:
+                    conn.execute(
+                        "INSERT INTO udb.conversation_bookmarks "
+                        "(id, conversation_id, seq, name, source, created_at, updated_at, message_uuid, message_hash) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (bid, conv_id, seq, name, source, now, now, message_uuid,
+                         message_ids.bookmark_fingerprint_at(conn, conv_id, seq)),
+                    )
+                    conn.commit()
+                except sqlite3.IntegrityError:
+                    # Another request bookmarked the same message first: return it.
+                    conn.rollback()
+                    bid = conn.execute(
+                        "SELECT id FROM udb.conversation_bookmarks WHERE conversation_id = ? "
+                        "AND (message_uuid = ? OR (message_uuid IS NULL AND seq = ?))",
+                        (conv_id, message_uuid, seq),
+                    ).fetchone()["id"]
             row = conn.execute(
-                "SELECT id, conversation_id, seq, name, source, created_at, updated_at "
+                "SELECT id, conversation_id, seq, name, source, created_at, updated_at, message_uuid "
                 "FROM udb.conversation_bookmarks WHERE id = ?",
                 (bid,),
             ).fetchone()
@@ -3926,7 +4066,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 conn.commit()
             out = conn.execute(
-                "SELECT id, conversation_id, seq, name, source, created_at, updated_at "
+                "SELECT id, conversation_id, seq, name, source, created_at, updated_at, message_uuid "
                 "FROM udb.conversation_bookmarks WHERE id = ?", (bid,),
             ).fetchone()
             self.send_json({"ok": True, "bookmark": dict(out)})
@@ -4433,6 +4573,21 @@ def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source"),
     _ensure_userdata_schema(db_path)
     _backfill_folder_providers(db_path)
     _build_source_index(source_dir)
+    # Messages imported before export message ids were kept get them from the
+    # backups in source/, in the background so start-up is not delayed.
+    # Finished before the server answers anything, so no link or bookmark is
+    # ever made from a message whose id is still missing. Real work happens
+    # once; later starts find nothing to do.
+    message_ids.fill_missing_from_sources(db_path, source_dir)
+    # Then every bookmark made before ids were kept learns its message's id
+    # and fingerprint while its position still points at that message.
+    conn = open_db(db_path)
+    try:
+        message_ids.bind_legacy_bookmarks(conn)
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
     Handler.db_path = db_path
     Handler.source_dir = source_dir
     # ThreadingHTTPServer: handle each request on its own thread so one slow or

@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/static/style.css" />
     <link rel="stylesheet" href="/static/settings.css" />
     <link rel="stylesheet" href="/static/advanced_search.css" />
+    <link rel="stylesheet" href="/static/scratchpads.css" />
     <link
       rel="stylesheet"
       href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
@@ -21,7 +22,7 @@
       <aside id="advanced-search-panel" aria-label="Advanced search filters" hidden>
         <div class="advanced-search-header">
           <div class="advanced-search-title-row">
-            <h2>Advanced Search</h2>
+            <h2 id="advanced-search-heading">Advanced Search</h2>
             <div class="advanced-search-header-actions">
               <button type="button" id="advanced-clear-all">Clear All</button>
               <button type="button" id="advanced-save-search">Save Search</button>
@@ -121,6 +122,28 @@
         <!-- Related Conversations temporarily covers the normal sidebar, like
              Notes. During Find Related Conversations it stays here beside
              Advanced Search. Behaviour lives in related.js. -->
+        <!-- Scratch Pads workspace sidebar (scratchpads.js). While Scratch Pads
+             is open it takes the conversation list's place above the footer;
+             the list keeps its width, scroll position and collapse state. -->
+        <nav id="scratchpad-sidebar" class="scratchpad-sidebar" aria-labelledby="scratchpad-sidebar-title" hidden>
+          <div class="scratchpad-sidebar-top">
+            <h2 class="scratchpad-sidebar-title" id="scratchpad-sidebar-title">Scratch Pads</h2>
+            <button type="button" id="scratchpad-close-btn" class="scratchpad-icon-btn" title="Back to conversations" aria-label="Close Scratch Pads and go back to conversations">
+              <!-- Google Material Symbols: close -->
+              <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z"/></svg>
+            </button>
+          </div>
+          <button type="button" id="scratchpad-new-btn" class="scratchpad-new-btn">
+            <!-- Google Material Symbols: add -->
+            <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M440-440H200v-80h240v-240h80v240h240v80H520v240h-80v-240Z"/></svg>
+            <span>New Scratch Pad</span>
+          </button>
+          <div class="scratchpad-search-wrap">
+            <svg class="scratchpad-search-icon" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M784-120 532-372q-30 24-69 38t-83 14q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l252 252-56 56ZM380-400q75 0 127.5-52.5T560-580q0-75-52.5-127.5T380-760q-75 0-127.5 52.5T200-580q0 75 52.5 127.5T380-400Z"/></svg>
+            <input id="scratchpad-search" type="search" placeholder="Search Scratch Pads…" autocomplete="off" aria-label="Search Scratch Pads by title" />
+          </div>
+          <div id="scratchpad-list" class="scratchpad-list" role="list" aria-label="Scratch Pads"></div>
+        </nav>
         <div id="related-panel" class="related-panel" hidden>
           <div class="related-panel-top">
             <button
@@ -444,6 +467,15 @@
           <span class="sidebar-menu-item-icon" aria-hidden="true">🖼️</span>
           <span class="sidebar-menu-item-label">Media Hub</span>
         </button>
+        <button
+          class="sidebar-menu-item"
+          role="menuitem"
+          data-action="scratch-pads"
+        >
+          <!-- Google Material Symbols: edit_note -->
+          <span class="sidebar-menu-item-icon" aria-hidden="true"><svg class="sidebar-menu-item-svg" viewBox="0 -960 960 960" fill="currentColor"><path d="M160-400v-80h280v80H160Zm0-160v-80h440v80H160Zm0-160v-80h440v80H160Zm360 560v-123l221-220q9-9 20-13t22-4q12 0 23 4.5t20 13.5l37 37q8 9 12.5 20t4.5 22q0 11-4 22.5T863-380L643-160H520Zm300-263-37-37 37 37ZM580-220h38l121-122-18-19-19-18-122 121v38Zm141-141-19-18 37 37-18-19Z"/></svg></span>
+          <span class="sidebar-menu-item-label">Scratch Pads</span>
+        </button>
       </div>
 
       <!-- Right-click menu for the Folders section, positioned at the click. -->
@@ -516,6 +548,12 @@
                header below it; collapsed, the bar carries the chat's name so
                the top of the pane is one slim line. -->
           <div class="thread-titlebar">
+            <!-- Shown after following a link out of a Scratch Pad. -->
+            <button id="scratchpad-return-btn" type="button" class="scratchpad-return-btn" hidden>
+              <!-- Google Material Symbols: arrow_back -->
+              <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="m313-440 224 224-57 56-320-320 320-320 57 56-224 224h487v80H313Z"/></svg>
+              <span id="scratchpad-return-label">Back to Scratch Pad</span>
+            </button>
             <span id="thread-titlebar-label" role="heading" aria-level="1"></span>
             <button
               id="related-toggle-btn"
@@ -529,6 +567,18 @@
               <svg class="related-toggle-icon" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true">
                 <path d="M240-40q-50 0-85-35t-35-85q0-50 35-85t85-35q14 0 26 3t23 8l57-71q-28-31-39-70t-5-78l-81-27q-17 25-43 40t-58 15q-50 0-85-35T0-580q0-50 35-85t85-35q50 0 85 35t35 85v8l81 28q20-36 53.5-61t75.5-32v-87q-39-11-64.5-42.5T360-840q0-50 35-85t85-35q50 0 85 35t35 85q0 42-26 73.5T510-724v87q42 7 75.5 32t53.5 61l81-28v-8q0-50 35-85t85-35q50 0 85 35t35 85q0 50-35 85t-85 35q-32 0-58.5-15T739-515l-81 27q6 39-5 77.5T614-340l57 70q11-5 23-7.5t26-2.5q50 0 85 35t35 85q0 50-35 85t-85 35q-50 0-85-35t-35-85q0-20 6.5-38.5T624-232l-57-71q-41 23-87.5 23T392-303l-56 71q11 15 17.5 33.5T360-160q0 50-35 85t-85 35ZM120-540q17 0 28.5-11.5T160-580q0-17-11.5-28.5T120-620q-17 0-28.5 11.5T80-580q0 17 11.5 28.5T120-540Zm120 420q17 0 28.5-11.5T280-160q0-17-11.5-28.5T240-200q-17 0-28.5 11.5T200-160q0 17 11.5 28.5T240-120Zm240-680q17 0 28.5-11.5T520-840q0-17-11.5-28.5T480-880q-17 0-28.5 11.5T440-840q0 17 11.5 28.5T480-800Zm0 440q42 0 71-29t29-71q0-42-29-71t-71-29q-42 0-71 29t-29 71q0 42 29 71t71 29Zm240 240q17 0 28.5-11.5T760-160q0-17-11.5-28.5T720-200q-17 0-28.5 11.5T680-160q0 17 11.5 28.5T720-120Zm120-420q17 0 28.5-11.5T880-580q0-17-11.5-28.5T840-620q-17 0-28.5 11.5T800-580q0 17 11.5 28.5T840-540ZM480-840ZM120-580Zm360 120Zm360-120ZM240-160Zm480 0Z"/>
               </svg>
+            </button>
+            <button
+              id="conv-link-btn"
+              type="button"
+              title="Link to this conversation"
+              aria-label="Link to this conversation"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              hidden
+            >
+              <!-- Google Material Symbols: link -->
+              <svg class="conv-link-icon" viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M440-280H280q-83 0-141.5-58.5T80-480q0-83 58.5-141.5T280-680h160v80H280q-50 0-85 35t-35 85q0 50 35 85t85 35h160v80ZM320-440v-80h320v80H320Zm200 160v-80h160q50 0 85-35t35-85q0-50-35-85t-85-35H520v-80h160q83 0 141.5 58.5T880-480q0 83-58.5 141.5T680-280H520Z"/></svg>
             </button>
             <button
               id="notes-side-toggle-btn"
@@ -830,6 +880,68 @@
             <div id="projects-meta"></div>
           </div>
           <div id="projects-content"></div>
+        </div>
+
+        <!-- Scratch Pads workspace (scratchpads.js). The editor is the Summary
+             editor's engine (summary.js attachVisualEditor), with a link tool. -->
+        <div id="scratchpad-panel" hidden>
+          <div class="thread-header scratchpad-header">
+            <div class="scratchpad-title-row">
+              <input id="scratchpad-title-input" class="scratchpad-title-input" type="text" autocomplete="off" spellcheck="false" aria-label="Scratch Pad title" hidden />
+              <div class="summary-section-actions">
+                <button type="button" class="summary-btn" id="scratchpad-revert-btn" disabled hidden>Revert</button>
+                <button type="button" class="summary-btn summary-btn-primary" id="scratchpad-save-btn" disabled hidden>Save</button>
+              </div>
+            </div>
+            <div id="scratchpad-status" class="scratchpad-status" role="status" aria-live="polite"></div>
+          </div>
+          <div id="scratchpad-scroll" class="scratchpad-scroll">
+            <div id="scratchpad-empty" class="scratchpad-empty">
+              <p id="scratchpad-empty-text">No Scratch Pad is open.</p>
+              <button type="button" id="scratchpad-empty-new" class="summary-btn summary-btn-primary">New Scratch Pad</button>
+            </div>
+            <div class="summary-editor scratchpad-editor" id="scratchpad-editor" hidden>
+              <div class="summary-mode-switch" role="group" aria-label="Scratch Pad editing mode">
+                <button type="button" class="summary-mode-btn" id="scratchpad-mode-visual" aria-pressed="true">Visual</button>
+                <button type="button" class="summary-mode-btn" id="scratchpad-mode-markdown" aria-pressed="false">Markdown</button>
+              </div>
+              <div class="summary-toolbar" id="scratchpad-toolbar" role="toolbar" aria-label="Scratch Pad formatting">
+                <select class="summary-format-select" data-format="normal" aria-label="Text style">
+                  <option value="normal">Normal</option>
+                  <option value="heading1">Heading 1</option>
+                  <option value="heading2">Heading 2</option>
+                  <option value="heading3">Heading 3</option>
+                </select>
+                <button type="button" class="summary-tool-btn" data-format="bold" title="Bold" aria-label="Bold"><strong>B</strong></button>
+                <button type="button" class="summary-tool-btn" data-format="italic" title="Italic" aria-label="Italic"><em>I</em></button>
+                <button type="button" class="summary-tool-btn" data-format="underline" title="Underline" aria-label="Underline"><u>U</u></button>
+                <button type="button" class="summary-tool-btn" data-format="strike" title="Strikethrough" aria-label="Strikethrough"><s>S</s></button>
+                <div class="summary-highlight-wrap">
+                  <button type="button" class="summary-tool-btn" id="scratchpad-highlight-button" title="Highlight" aria-label="Highlight">▰</button>
+                  <div class="summary-highlight-menu" id="scratchpad-highlight-menu" hidden>
+                    <div class="summary-palette" aria-label="Highlight palette"></div>
+                    <label class="summary-palette-custom">Custom <input type="color" class="summary-palette-picker" aria-label="Choose custom highlight color"></label>
+                    <button type="button" class="summary-palette-remove">Remove highlight</button>
+                  </div>
+                </div>
+                <button type="button" class="summary-tool-btn" data-format="bullet" title="Bulleted list" aria-label="Bulleted list">•≡</button>
+                <button type="button" class="summary-tool-btn" data-format="numbered" title="Numbered list" aria-label="Numbered list">1≡</button>
+                <button type="button" class="summary-tool-btn scratchpad-link-tool" data-format="link" id="scratchpad-link-button" title="Insert link" aria-label="Insert link" aria-haspopup="dialog" aria-expanded="false">
+                  <!-- Google Material Symbols: link -->
+                  <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M440-280H280q-83 0-141.5-58.5T80-480q0-83 58.5-141.5T280-680h160v80H280q-50 0-85 35t-35 85q0 50 35 85t85 35h160v80ZM320-440v-80h320v80H320Zm200 160v-80h160q50 0 85-35t35-85q0-50-35-85t-85-35H520v-80h160q83 0 141.5 58.5T880-480q0 83-58.5 141.5T680-280H520Z"/></svg>
+                </button>
+              </div>
+              <div id="scratchpad-visual" class="summary-visual scratchpad-visual" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Scratch Pad"></div>
+              <textarea id="scratchpad-input" aria-label="Scratch Pad Markdown" class="summary-textarea summary-textarea-main scratchpad-textarea" hidden></textarea>
+              <!-- Shown while the caret is in a link: follow, change or remove it. -->
+              <div id="scratchpad-link-bubble" class="scratchpad-link-bubble" role="group" aria-label="Link" hidden>
+                <span id="scratchpad-link-bubble-text" class="scratchpad-link-bubble-text"></span>
+                <button type="button" class="scratchpad-bubble-btn" data-link-action="open">Open</button>
+                <button type="button" class="scratchpad-bubble-btn" data-link-action="change">Change</button>
+                <button type="button" class="scratchpad-bubble-btn" data-link-action="remove">Remove link</button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div id="global-bookmarks-panel" hidden>
@@ -1579,6 +1691,59 @@
     </div>
 
     <!-- Unsaved summary changes dialog -->
+    <!-- Insert Link popup for the Scratch Pad toolbar (scratchpads.js). A small
+         floating panel by the link button, not a full-screen dialog. -->
+    <div id="scratchpad-link-popup" class="scratchpad-popup" role="dialog" aria-labelledby="scratchpad-link-popup-title" hidden>
+      <div class="scratchpad-popup-head">
+        <h2 class="scratchpad-popup-title" id="scratchpad-link-popup-title">Insert Link</h2>
+        <button type="button" class="scratchpad-icon-btn" id="scratchpad-link-popup-close" title="Cancel" aria-label="Cancel inserting a link">
+          <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z"/></svg>
+        </button>
+      </div>
+      <input id="scratchpad-link-input" class="scratchpad-popup-input" type="text" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="scratchpad-link-options" autocomplete="off" spellcheck="false" placeholder="Search conversations, bookmarks, or paste a link..." aria-label="Search conversations, bookmarks, or paste a link" />
+      <div id="scratchpad-link-options" class="scratchpad-options" role="listbox" aria-label="Link suggestions"></div>
+      <div id="scratchpad-link-note" class="scratchpad-popup-note" role="status" aria-live="polite"></div>
+      <button type="button" id="scratchpad-link-advanced" class="scratchpad-advanced-btn">
+        <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="M784-120 532-372q-30 24-69 38t-83 14q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l252 252-56 56ZM380-400q75 0 127.5-52.5T560-580q0-75-52.5-127.5T380-760q-75 0-127.5 52.5T200-580q0 75 52.5 127.5T380-400Z"/></svg>
+        <span>Advanced Search</span>
+        <!-- Google Material Symbols: north_east -->
+        <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="m216-160-56-56 464-464H360v-80h400v400h-80v-264L216-160Z"/></svg>
+      </button>
+    </div>
+
+    <!-- Add to Scratch Pad destination picker (conversation header link button
+         and bookmark ⋮ menus). -->
+    <div id="scratchpad-picker" class="scratchpad-popup" role="dialog" aria-labelledby="scratchpad-picker-title" hidden>
+      <div class="scratchpad-popup-head">
+        <h2 class="scratchpad-popup-title" id="scratchpad-picker-title">Add to Scratch Pad</h2>
+        <button type="button" class="scratchpad-icon-btn" id="scratchpad-picker-close" title="Cancel" aria-label="Cancel adding to a Scratch Pad">
+          <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z"/></svg>
+        </button>
+      </div>
+      <div id="scratchpad-picker-choose">
+        <input id="scratchpad-picker-input" class="scratchpad-popup-input" type="text" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="scratchpad-picker-options" autocomplete="off" placeholder="Search Scratch Pads…" aria-label="Search Scratch Pads" />
+        <div id="scratchpad-picker-options" class="scratchpad-options" role="listbox" aria-label="Scratch Pads"></div>
+      </div>
+      <form id="scratchpad-picker-create" class="scratchpad-picker-create" hidden>
+        <label for="scratchpad-picker-new-title" class="scratchpad-popup-label">New Scratch Pad title</label>
+        <input id="scratchpad-picker-new-title" class="scratchpad-popup-input" type="text" autocomplete="off" placeholder="Untitled Scratch Pad" />
+        <div class="scratchpad-picker-create-actions">
+          <button type="button" id="scratchpad-picker-create-cancel" class="summary-btn">Back</button>
+          <button type="submit" id="scratchpad-picker-create-ok" class="summary-btn summary-btn-primary">Create and Add</button>
+        </div>
+      </form>
+      <div id="scratchpad-picker-note" class="scratchpad-popup-note" role="status" aria-live="polite"></div>
+    </div>
+
+    <!-- Small confirmation after adding to or copying for a Scratch Pad. -->
+    <div id="scratchpad-toast" class="scratchpad-toast" hidden>
+      <span id="scratchpad-toast-text" role="status" aria-live="polite"></span>
+      <button type="button" id="scratchpad-toast-action" class="scratchpad-toast-action" hidden>View Scratch Pad</button>
+      <button type="button" id="scratchpad-toast-close" class="scratchpad-icon-btn" title="Dismiss" aria-label="Dismiss">
+        <svg viewBox="0 -960 960 960" fill="currentColor" aria-hidden="true"><path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z"/></svg>
+      </button>
+    </div>
+
     <div id="summary-unsaved-modal" class="modal-overlay" hidden>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="summary-unsaved-title">
         <div class="modal-title" id="summary-unsaved-title">You have unsaved changes. Save before leaving?</div>
@@ -1716,12 +1881,14 @@
     <script src="/static/bulk_labels.js"></script>
     <script src="/static/snapshots.js"></script>
     <script src="/static/summary_editor_core.js"></script>
+    <script src="/static/internal_links.js"></script>
     <script src="/static/summary.js"></script>
     <script src="/static/notes.js"></script>
     <script src="/static/bookmarks.js"></script>
     <script src="/static/bookmarks_hub.js"></script>
     <script src="/static/advanced_search.js"></script>
     <script src="/static/related.js"></script>
+    <script src="/static/scratchpads.js"></script>
     <script
       src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
       crossorigin="anonymous"

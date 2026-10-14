@@ -96,6 +96,14 @@ browser there.
     a report icon when the tagged models don't cover it end to end
   - Either can be dismissed per conversation, and returns if the tagging goes wrong again
   - **Unverified Models** joins the sidebar filter while any conversation is flagged
+- **Scratch Pads** (briefcase menu)
+  - Your own documents for notes and links to conversations or single messages. They belong to no conversation and to neither provider, so the same pads show on the Claude and ChatGPT sides
+  - The Scratch Pads sidebar (new, search by title, rename and delete from each pad's ⋮) takes the place of the conversation list; closing it brings the list back exactly as it was
+  - The editor is the Summary editor (Visual by default, Markdown optional, Save / Revert, unsaved-changes warning) with an **Insert Link** button: search conversation titles and named bookmarks, paste an internal link or a web address, or open **Advanced Search** to pick a chat (**Link Chat**) or a single message (**Link Message**)
+  - Selected text becomes the link's text. Click a link to Open, Change or Remove it (Ctrl/Cmd-click opens it); **Back to …** in the chat title bar returns to the pad, unsaved edits intact
+  - **Internal links** name their target by stable ids, so they survive renames and rebuilds: `chv://conversation/<id>` for a chat, `chv://conversation/<id>/message/<seq>/<message id>` for one message
+  - Each message keeps its own id from the export, and that id is what message links and bookmarks go by. They still find the right message after a re-import where an earlier message was edited or regenerated, and if their message is gone they say so instead of opening whatever message is now in its place. Position is only used for chats whose export has no message ids. Databases built before this get the ids filled in from the backups in `source/` the next time the app starts
+  - The link button in the chat title bar, and the ⋮ beside each bookmark in Global Bookmarks and the bookmark panel, offer **Copy Internal Link** and **Add to Scratch Pad** (adds the link to the end of any pad, or a new one, without opening it)
 - **Memories / Projects panels**
   - Quick side views for workspace-level memory and project browsing
 - **Artifact viewer**
@@ -134,6 +142,8 @@ in `userdata.db`, a sibling of `history.db`. `claude_models.json` seeds that
 database the first time the app runs and is never read again, so edits made on
 the **Add Claude Models** screen are permanent and are not overwritten by the
 shipped file.
+
+Scratch Pads live in `userdata.db` too.
 
 `userdata.db` survives `history.db` being rebuilt or deleted, and carries this
 data between browsers and machines — copy it alongside your export and your
@@ -193,7 +203,9 @@ find . -name '.DS_Store' -delete
 | `api_common.py`     | `ApiError` - how core logic signals an HTTP error status           |
 | `labels.py`         | Label definitions and conversation label assignment                |
 | `bulk_labels.py`    | Conditional bulk labeling: criteria, preview, apply, saved runs    |
-| `snapshots.py`      | Manual safety snapshots: capture, list, restore                    |
+| `snapshots.py`      | Safety Snapshots (Labels screen) of label/folder/tag metadata: capture, list, restore. Not a full backup |
+| `message_ids.py`    | Stable message ids: lookup, bookmark re-anchoring, filling older databases |
+| `scratchpads.py`    | Scratch Pad storage, link suggestions and link checks              |
 | `static/index.html` | App shell                                                          |
 | `static/theme.css`  | Central appearance variables; see [STYLE_GUIDE.md](STYLE_GUIDE.md) |
 | `static/style.css`  | UI styles                                                          |
@@ -203,7 +215,11 @@ find . -name '.DS_Store' -delete
 | `static/app.js`     | Frontend state, rendering, tabs, quick views, interactions         |
 | `static/labels_screen.js` | Labels screen: settings and label definitions                |
 | `static/bulk_labels.js`   | Bulk-label tool UI and Unfinished Label Runs                 |
-| `static/snapshots.js`     | Snapshot UI and the restore-category dialog                  |
+| `static/snapshots.js`     | Safety Snapshots UI and the restore-category dialog          |
+| `static/summary.js`       | Visual Markdown editor engine (Summary and Scratch Pads)     |
+| `static/internal_links.js`| The internal link format (`chv://…`)                         |
+| `static/scratchpads.js`   | Scratch Pads workspace, Insert Link, Add to Scratch Pad      |
+| `static/scratchpads.css`  | Scratch Pads and link-control styles                         |
 
 ---
 
@@ -250,6 +266,15 @@ DELETE /api/pinned/<conversation_id>
 DELETE /api/tabs/<id>
 DELETE /api/claude-models/<period_id>
 DELETE /api/conversation-models/<conv_id>/<model_id>
+
+GET    /api/scratchpads?q=<title search>
+GET    /api/scratchpads/<id>
+POST   /api/scratchpads                      {title?, content?}
+PATCH  /api/scratchpads/<id>                 {title?, content?}
+POST   /api/scratchpads/<id>/append          {markdown}
+DELETE /api/scratchpads/<id>
+GET    /api/link-suggestions?q=<text>
+GET    /api/link-resolve?conversation=<id>&seq=<n>
 ```
 
 ---
