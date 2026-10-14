@@ -410,5 +410,18 @@ class MessageIdTests(unittest.TestCase):
         self.assertEqual(self.seq_of("a2"), 3)
 
 
+    def test_backfill_uses_the_same_duplicate_record_as_an_import(self):
+        # One backup lists the chat twice; the import keeps the record with
+        # more messages, so its ids must win over the shorter copy's.
+        short = chat("c1", TURNS[:2], "a1")
+        short["mapping"]["u1"]["message"]["id"] = "u1-dup"
+        (self.source / "conversations.json").write_text(json.dumps([short, chat("c1", TURNS, "a2")]))
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.commit()
+        message_ids.fill_missing_from_sources(self.db, self.source)
+        self.assertEqual(self.seq_of("u1"), 0)
+        self.assertIsNone(self.seq_of("u1-dup"))
+
+
 if __name__ == "__main__":
     unittest.main()

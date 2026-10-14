@@ -265,7 +265,8 @@ def fill_missing_from_sources(db_path: Path, source_dir: Path) -> int:
             provider = build_db.detect_provider(data)
             if provider is None:
                 return None, []
-            return provider, build_db.parse_backup(data, provider)
+            # One record per chat, chosen the same way an import chooses it.
+            return provider, build_db.dedup_records(build_db.parse_backup(data, provider))
 
         # A chat can be in several backups, and a regenerated message can keep
         # its text and position while getting a new id. The stored chat is the
