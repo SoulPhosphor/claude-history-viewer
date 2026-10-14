@@ -350,6 +350,79 @@ async function scrollToBookmark(bm) {
   setTimeout(() => targetEl.classList.remove("search-highlight"), 2500);
 }
 
+// ── Bookmark ⋮ menu (shared) ──────────────────────────────────────────────────
+// One menu for a bookmark wherever bookmarks are listed: Global Bookmarks, the
+// bookmark panel and the bookmark bar. Drawn by the chat-row menu (app.js
+// showConvItemMenu). ctx: {conversationId, conversationTitle, bookmark,
+// onChanged(bookmark | null)} — onChanged lets the list redraw itself.
+function bookmarkLinkTarget(conversationId, bm) {
+  return window.InternalLinks.messageLink(conversationId, bm.seq);
+}
+
+function openBookmarkMenu(anchor, ctx) {
+  const { conversationId, conversationTitle, bookmark } = ctx;
+  const target = bookmarkLinkTarget(conversationId, bookmark);
+  const name = (bookmark.name || "").trim();
+  const label = name || `Bookmark in ${conversationTitle || "Untitled"}`;
+  showConvItemMenu({ id: `bookmark:${bookmark.id}` }, anchor, [
+    { label: "Add to Scratch Pad", fn: () => window.scratchPads?.addToPad(anchor, { label, target }) },
+    { label: "Copy Internal Link", fn: () => window.scratchPads?.copyLink(target) },
+    { label: "Rename", fn: () => renameBookmarkFromMenu(ctx) },
+    { label: "Delete", fn: () => deleteBookmarkFromMenu(ctx) },
+  ]);
+}
+
+// The ⋮ button beside a listed bookmark.
+function bookmarkMenuButton(ctx) {
+  const actions = buildConvActions({ id: `bookmark:${ctx.bookmark.id}` }, (_, btn) => openBookmarkMenu(btn, ctx));
+  const btn = actions.querySelector("button");
+  btn.title = "More";
+  btn.setAttribute("aria-label", `More actions for bookmark ${bookmarkLabel(ctx.bookmark)}`);
+  return actions;
+}
+
+// Rename and Delete use the same bookmark API and in-chat sync as the message
+// controls above, so an open conversation shows the change at once.
+async function renameBookmarkFromMenu({ conversationId, bookmark, onChanged }) {
+  const next = await openNameModal({ title: "Rename bookmark", value: bookmark.name || "", okLabel: "Rename" });
+  if (next == null || next === (bookmark.name || "").trim()) return;
+  let nb = { ...bookmark, name: next };
+  try {
+    const res = await apiRenameBookmark(bookmark.id, next);
+    if (res && res.bookmark) nb = res.bookmark;
+  } catch (_) {
+    return;
+  }
+  if (conversationId === state.activeId && bookmarkById(nb.id)) {
+    updateLocalBookmark(nb);
+    syncMessageBookmarkDom(nb.seq);
+    refreshBookmarkSurfaces();
+  }
+  onChanged?.(nb);
+}
+
+async function deleteBookmarkFromMenu({ conversationId, bookmark, onChanged }) {
+  try {
+    await apiDeleteBookmark(bookmark.id);
+  } catch (_) {
+    return;
+  }
+  if (conversationId === state.activeId) {
+    state.bookmarks = state.bookmarks.filter((b) => b.id !== bookmark.id);
+    syncMessageBookmarkDom(bookmark.seq);
+    refreshBookmarkSurfaces();
+  }
+  onChanged?.(null);
+}
+
+function activeBookmarkContext(bm) {
+  return {
+    conversationId: state.activeId,
+    conversationTitle: $("thread-title")?.textContent || "",
+    bookmark: bm,
+  };
+}
+
 // ── Survey surfaces (header button, bar, panel) ───────────────────────────────
 function hideBookmarkBarEl() {
   const b = $("bookmark-bar");
@@ -383,6 +456,12 @@ function renderBookmarkBar() {
     a.textContent = bookmarkLabel(bm);
     a.title = bookmarkLabel(bm);
     a.addEventListener("click", () => scrollToBookmark(bm));
+    // The bar stays compact: its bookmark menu opens on right-click (or the
+    // keyboard's context-menu key).
+    a.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      openBookmarkMenu(a, activeBookmarkContext(bm));
+    });
     links.appendChild(a);
   }
 }
@@ -402,13 +481,16 @@ function renderBookmarkPanel() {
   if (!list) return;
   list.innerHTML = "";
   for (const bm of orderedBookmarks()) {
+    const row = document.createElement("div");
+    row.className = "bookmark-panel-row";
     const a = document.createElement("button");
     a.type = "button";
     a.className = "bookmark-panel-item";
     a.textContent = bookmarkLabel(bm);
     a.title = bookmarkLabel(bm);
     a.addEventListener("click", () => scrollToBookmark(bm));
-    list.appendChild(a);
+    row.append(a, bookmarkMenuButton(activeBookmarkContext(bm)));
+    list.appendChild(row);
   }
 }
 

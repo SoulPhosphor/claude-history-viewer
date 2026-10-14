@@ -1,0 +1,618 @@
+/* Scratch Pads (scratchpads.js) and the link controls it adds elsewhere.
+   Every value comes from the --scratchpad-* / --conv-link-* /
+   --message-link-pick-* / --advanced-link-chat-* variables in theme.css. The
+   editor itself reuses the Summary editor's classes and values. */
+
+/* ── Workspace sidebar: covers the conversation sidebar ─────────────────── */
+.scratchpad-sidebar[hidden],
+#scratchpad-panel[hidden],
+.scratchpad-empty[hidden],
+.scratchpad-editor[hidden],
+.scratchpad-title-input[hidden],
+.scratchpad-link-bubble[hidden],
+.scratchpad-popup[hidden],
+.scratchpad-picker-create[hidden],
+#scratchpad-picker-choose[hidden],
+.scratchpad-toast[hidden],
+.scratchpad-toast-action[hidden],
+.scratchpad-return-btn[hidden],
+#conv-link-btn[hidden] {
+  display: none;
+}
+/* While the workspace is open, its sidebar takes the conversation sidebar's
+   place above the footer, so the briefcase and ⓘ menus stay reachable. The
+   conversation list is only hidden: its scroll position, width and collapse
+   state are all still there when the workspace closes. Simple search belongs
+   to the conversation list, so its footer button goes too. */
+body.scratchpads-open #sidebar > :not(#scratchpad-sidebar):not(#sidebar-footer),
+body.scratchpads-open #simple-search-toggle {
+  display: none;
+}
+.scratchpad-sidebar {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--scratchpad-sidebar-gap);
+  background: var(--scratchpad-sidebar-bg);
+  padding: var(--scratchpad-sidebar-padding);
+}
+.scratchpad-sidebar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.scratchpad-sidebar-title {
+  margin: 0;
+  font-size: var(--scratchpad-sidebar-title-size);
+  font-weight: var(--scratchpad-sidebar-title-weight);
+  color: var(--scratchpad-sidebar-title-color);
+}
+.scratchpad-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--scratchpad-icon-btn-size);
+  height: var(--scratchpad-icon-btn-size);
+  padding: 0;
+  border: none;
+  border-radius: var(--scratchpad-icon-btn-radius);
+  background: transparent;
+  color: var(--scratchpad-icon-btn-color);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.scratchpad-icon-btn:hover {
+  background: var(--scratchpad-icon-btn-hover-bg);
+  color: var(--scratchpad-icon-btn-hover-color);
+}
+.scratchpad-icon-btn svg {
+  width: var(--scratchpad-icon-size);
+  height: var(--scratchpad-icon-size);
+}
+.scratchpad-new-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-6px);
+  flex-shrink: 0;
+  padding: var(--scratchpad-new-padding);
+  border: var(--stroke-1px) solid var(--scratchpad-new-border);
+  border-radius: var(--scratchpad-new-radius);
+  background: transparent;
+  color: var(--scratchpad-new-color);
+  font-family: inherit;
+  font-size: var(--scratchpad-new-size);
+  cursor: pointer;
+}
+.scratchpad-new-btn:hover {
+  background: var(--scratchpad-new-hover-bg);
+}
+.scratchpad-new-btn svg {
+  width: var(--scratchpad-icon-size);
+  height: var(--scratchpad-icon-size);
+}
+.scratchpad-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.scratchpad-search-icon {
+  position: absolute;
+  left: var(--scratchpad-search-padding-x);
+  width: var(--scratchpad-search-icon-size);
+  height: var(--scratchpad-search-icon-size);
+  color: var(--muted);
+  pointer-events: none;
+}
+#scratchpad-search {
+  width: 100%;
+  height: var(--scratchpad-search-height);
+  padding: 0 var(--scratchpad-search-padding-x) 0
+    calc(var(--scratchpad-search-padding-x) * 2 + var(--scratchpad-search-icon-size));
+  border: var(--stroke-1px) solid var(--scratchpad-search-border);
+  border-radius: var(--scratchpad-search-radius);
+  background: var(--scratchpad-search-bg);
+  color: var(--scratchpad-search-color);
+  font-family: inherit;
+  font-size: var(--scratchpad-search-size);
+}
+#scratchpad-search:focus {
+  outline: none;
+  border-color: var(--scratchpad-search-focus-border);
+}
+.scratchpad-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2px);
+}
+.scratchpad-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4px);
+  border-radius: var(--scratchpad-row-radius);
+  border-left: var(--scratchpad-row-active-line-width) solid transparent;
+}
+.scratchpad-row:hover {
+  background: var(--scratchpad-row-hover-bg);
+}
+.scratchpad-row.active {
+  background: var(--scratchpad-row-active-bg);
+  border-left-color: var(--scratchpad-row-active-line);
+}
+.scratchpad-row .conv-actions {
+  padding-right: var(--space-4px);
+}
+.scratchpad-row:hover .conv-actions,
+.scratchpad-row.active .conv-actions,
+.scratchpad-row:focus-within .conv-actions {
+  opacity: 1;
+}
+.scratchpad-row-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2px);
+  padding: var(--scratchpad-row-padding);
+  border: none;
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+}
+.scratchpad-row-title {
+  font-size: var(--scratchpad-row-title-size);
+  font-weight: var(--scratchpad-row-title-weight);
+  color: var(--scratchpad-row-title-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scratchpad-row-meta {
+  font-size: var(--scratchpad-row-meta-size);
+  color: var(--scratchpad-row-meta-color);
+}
+.scratchpad-list-note {
+  text-align: center;
+  font-size: var(--scratchpad-list-note-size);
+  color: var(--scratchpad-list-note-color);
+  padding: var(--scratchpad-list-note-padding);
+}
+.sidebar-menu-item-svg {
+  display: block;
+  width: var(--scratchpad-menu-icon-size);
+  height: var(--scratchpad-menu-icon-size);
+}
+
+/* ── Workspace main area ─────────────────────────────────────────────────── */
+#scratchpad-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  container-type: inline-size;
+  container-name: content;
+}
+.scratchpad-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--scratchpad-title-gap);
+  min-height: var(--size-32px);
+}
+.scratchpad-title-input {
+  flex: 1;
+  min-width: 0;
+  padding: var(--scratchpad-title-padding);
+  margin-left: calc(-1 * var(--space-6px));
+  border: var(--stroke-1px) solid var(--scratchpad-title-border);
+  border-radius: var(--scratchpad-title-radius);
+  background: transparent;
+  color: var(--scratchpad-title-color);
+  font-family: inherit;
+  font-size: var(--scratchpad-title-size);
+  font-weight: var(--scratchpad-title-weight);
+}
+.scratchpad-title-input:hover {
+  border-color: var(--scratchpad-title-hover-border);
+}
+.scratchpad-title-input:focus {
+  outline: none;
+  border-color: var(--scratchpad-title-focus-border);
+}
+.scratchpad-status {
+  min-height: var(--scratchpad-status-min-height);
+  font-size: var(--scratchpad-status-size);
+  color: var(--scratchpad-status-color);
+}
+.scratchpad-status[data-kind="error"] {
+  color: var(--scratchpad-status-error-color);
+}
+.scratchpad-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--scratchpad-body-padding);
+}
+.scratchpad-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--scratchpad-empty-gap);
+  max-width: var(--scratchpad-empty-max-width);
+  color: var(--scratchpad-empty-color);
+  font-size: var(--scratchpad-empty-size);
+  line-height: var(--line-height-1-5);
+}
+.scratchpad-editor {
+  position: relative;
+  max-width: var(--scratchpad-editor-max-width);
+}
+.scratchpad-visual {
+  min-height: var(--scratchpad-editor-min-height);
+}
+.scratchpad-link-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.scratchpad-link-tool svg {
+  width: var(--scratchpad-tool-icon-size);
+  height: var(--scratchpad-tool-icon-size);
+}
+.scratchpad-link-tool[aria-expanded="true"] {
+  background: var(--summary-btn-hover-bg);
+}
+/* Links in the visual editor read as links. Summary keeps its plain look. */
+.scratchpad-editor .visual-link {
+  color: var(--scratchpad-link-color);
+  text-decoration: underline;
+  text-decoration-thickness: var(--scratchpad-link-underline);
+}
+.scratchpad-link-bubble {
+  position: absolute;
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--scratchpad-bubble-gap);
+  padding: var(--scratchpad-bubble-padding);
+  border: var(--stroke-1px) solid var(--scratchpad-bubble-border);
+  border-radius: var(--scratchpad-bubble-radius);
+  background: var(--scratchpad-bubble-bg);
+  box-shadow: var(--scratchpad-bubble-shadow);
+  font-size: var(--scratchpad-bubble-size);
+  max-width: 100%;
+}
+.scratchpad-link-bubble-text {
+  max-width: var(--scratchpad-bubble-text-max-width);
+  color: var(--scratchpad-bubble-text-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scratchpad-bubble-btn {
+  padding: var(--scratchpad-bubble-btn-padding);
+  border: none;
+  border-radius: var(--scratchpad-bubble-btn-radius);
+  background: transparent;
+  color: var(--scratchpad-bubble-btn-color);
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+}
+.scratchpad-bubble-btn:hover {
+  background: var(--scratchpad-bubble-btn-hover-bg);
+}
+
+/* ── Insert Link popup and Add to Scratch Pad picker ─────────────────────── */
+.scratchpad-popup {
+  position: fixed;
+  z-index: var(--scratchpad-popup-layer);
+  display: flex;
+  flex-direction: column;
+  gap: var(--scratchpad-popup-gap);
+  width: min(var(--scratchpad-popup-width), calc(100vw - 2 * var(--popover-safe-inset)));
+  max-height: var(--scratchpad-popup-max-height);
+  overflow-y: auto;
+  padding: var(--scratchpad-popup-padding);
+  border: var(--stroke-1px) solid var(--scratchpad-popup-border);
+  border-radius: var(--scratchpad-popup-radius);
+  background: var(--scratchpad-popup-bg);
+  box-shadow: var(--scratchpad-popup-shadow);
+  color: var(--text);
+}
+.scratchpad-popup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8px);
+}
+.scratchpad-popup-title {
+  margin: 0;
+  font-size: var(--scratchpad-popup-title-size);
+  font-weight: var(--scratchpad-popup-title-weight);
+  color: var(--scratchpad-popup-title-color);
+}
+.scratchpad-popup-label {
+  font-size: var(--scratchpad-popup-note-size);
+  color: var(--scratchpad-popup-note-color);
+}
+.scratchpad-popup-input {
+  width: 100%;
+  height: var(--scratchpad-popup-input-height);
+  padding: var(--scratchpad-popup-input-padding);
+  border: var(--stroke-1px) solid var(--scratchpad-popup-input-border);
+  border-radius: var(--scratchpad-popup-input-radius);
+  background: var(--scratchpad-popup-input-bg);
+  color: var(--scratchpad-popup-input-color);
+  font-family: inherit;
+  font-size: var(--scratchpad-popup-input-size);
+}
+.scratchpad-popup-input:focus {
+  outline: none;
+  border-color: var(--scratchpad-popup-input-focus-border);
+}
+#scratchpad-picker-choose,
+.scratchpad-picker-create {
+  display: flex;
+  flex-direction: column;
+  gap: var(--scratchpad-popup-gap);
+}
+.scratchpad-picker-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-6px);
+}
+.scratchpad-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2px);
+  max-height: var(--scratchpad-options-max-height);
+  overflow-y: auto;
+}
+.scratchpad-option {
+  display: flex;
+  align-items: center;
+  gap: var(--scratchpad-option-gap);
+  padding: var(--scratchpad-option-padding);
+  border-radius: var(--scratchpad-option-radius);
+  cursor: pointer;
+}
+.scratchpad-option.active {
+  background: var(--scratchpad-option-active-bg);
+}
+.scratchpad-option-icon {
+  display: block;
+  flex-shrink: 0;
+  width: var(--scratchpad-option-icon-size);
+  height: var(--scratchpad-option-icon-size);
+  color: var(--scratchpad-option-icon-color);
+}
+.scratchpad-option-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2px);
+}
+.scratchpad-option-title {
+  font-size: var(--scratchpad-option-title-size);
+  font-weight: var(--scratchpad-option-title-weight);
+  color: var(--scratchpad-option-title-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scratchpad-option-detail {
+  font-size: var(--scratchpad-option-detail-size);
+  color: var(--scratchpad-option-detail-color);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scratchpad-options-empty,
+.scratchpad-popup-note {
+  font-size: var(--scratchpad-popup-note-size);
+  color: var(--scratchpad-popup-note-color);
+}
+.scratchpad-popup-note:empty {
+  display: none;
+}
+.scratchpad-advanced-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--scratchpad-advanced-gap);
+  height: var(--scratchpad-advanced-height);
+  padding-top: var(--scratchpad-popup-gap);
+  border: none;
+  border-top: var(--stroke-1px) solid var(--scratchpad-advanced-border);
+  background: transparent;
+  color: var(--scratchpad-advanced-color);
+  font-family: inherit;
+  font-size: var(--scratchpad-advanced-size);
+  cursor: pointer;
+  box-sizing: content-box;
+}
+.scratchpad-advanced-btn:hover span {
+  text-decoration: underline;
+}
+.scratchpad-advanced-btn svg {
+  width: var(--scratchpad-icon-size);
+  height: var(--scratchpad-icon-size);
+}
+
+/* ── Toast ───────────────────────────────────────────────────────────────── */
+.scratchpad-toast {
+  position: fixed;
+  z-index: var(--scratchpad-popup-layer);
+  left: 50%;
+  bottom: var(--scratchpad-toast-offset);
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: var(--scratchpad-toast-gap);
+  max-width: min(var(--scratchpad-toast-max-width), calc(100vw - 2 * var(--popover-safe-inset)));
+  padding: var(--scratchpad-toast-padding);
+  border-radius: var(--scratchpad-toast-radius);
+  background: var(--scratchpad-toast-bg);
+  color: var(--scratchpad-toast-color);
+  box-shadow: var(--scratchpad-toast-shadow);
+  font-size: var(--scratchpad-toast-size);
+}
+.scratchpad-toast-action {
+  border: none;
+  background: transparent;
+  color: var(--scratchpad-toast-action-color);
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: var(--weight-semibold);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.scratchpad-toast-action:hover {
+  text-decoration: underline;
+}
+.scratchpad-toast .scratchpad-icon-btn {
+  color: inherit;
+}
+
+/* ── Chat title bar: Back to Scratch Pad, and the link button ────────────── */
+.scratchpad-return-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4px);
+  max-width: var(--scratchpad-return-max-width);
+  padding: var(--scratchpad-return-padding);
+  border: none;
+  border-radius: var(--scratchpad-return-radius);
+  background: transparent;
+  color: var(--scratchpad-return-color);
+  font-family: inherit;
+  font-size: var(--scratchpad-return-size);
+  font-weight: var(--scratchpad-return-weight);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.scratchpad-return-btn:hover {
+  background: var(--scratchpad-return-hover-bg);
+}
+.scratchpad-return-btn svg {
+  width: var(--scratchpad-return-icon-size);
+  height: var(--scratchpad-return-icon-size);
+  flex-shrink: 0;
+}
+#scratchpad-return-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#conv-link-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--conv-link-hit-size);
+  height: var(--conv-link-hit-size);
+  padding: 0;
+  border: none;
+  border-radius: var(--conv-link-radius);
+  background: transparent;
+  color: var(--conv-link-color);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#conv-link-btn:hover,
+#conv-link-btn[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--conv-link-hover-color);
+}
+.conv-link-icon {
+  display: block;
+  width: var(--conv-link-icon-size);
+  height: var(--conv-link-icon-size);
+}
+
+/* ── Link Message (previewed chat while Advanced Search picks a link) ────── */
+.message-link-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4px);
+  padding: var(--message-link-pick-padding);
+  border: var(--stroke-1px) solid var(--message-link-pick-border);
+  border-radius: var(--message-link-pick-radius);
+  background: transparent;
+  color: var(--message-link-pick-color);
+  font-family: inherit;
+  font-size: var(--message-link-pick-size);
+  cursor: pointer;
+}
+.message-link-pick:hover {
+  background: var(--message-link-pick-hover-bg);
+}
+.message-link-pick-icon {
+  width: var(--message-link-pick-icon-size);
+  height: var(--message-link-pick-icon-size);
+}
+
+/* ── Link Chat (Advanced Search results in link-picking mode) ────────────── */
+.advanced-link-chat-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4px);
+  flex-shrink: 0;
+  padding: var(--advanced-link-chat-padding);
+  border: var(--stroke-1px) solid var(--advanced-link-chat-border);
+  border-radius: var(--advanced-link-chat-radius);
+  background: transparent;
+  color: var(--advanced-link-chat-color);
+  font-family: inherit;
+  font-size: var(--advanced-link-chat-size);
+  cursor: pointer;
+}
+.advanced-link-chat-btn:hover {
+  background: var(--advanced-link-chat-hover-bg);
+}
+.advanced-link-chat-btn svg {
+  width: var(--advanced-link-chat-icon-size);
+  height: var(--advanced-link-chat-icon-size);
+}
+
+/* ── Bookmark rows with a ⋮ menu (Global Bookmarks, bookmark panel) ──────── */
+.gb-bookmark-row,
+.bookmark-panel-row {
+  display: flex;
+  align-items: center;
+  gap: var(--bookmark-menu-row-gap);
+  min-width: 0;
+}
+.gb-bookmark-row .gb-bookmark,
+.bookmark-panel-row .bookmark-panel-item {
+  min-width: 0;
+}
+.bookmark-panel-row .bookmark-panel-item {
+  flex: 1;
+}
+.gb-bookmark-row:hover .conv-actions,
+.gb-bookmark-row:focus-within .conv-actions,
+.bookmark-panel-row:hover .conv-actions,
+.bookmark-panel-row:focus-within .conv-actions {
+  opacity: 1;
+}
+
+@container content (max-width: 600px) {
+  .scratchpad-scroll {
+    padding-left: var(--content-padding-compact);
+    padding-right: var(--content-padding-compact);
+  }
+  .scratchpad-title-row {
+    flex-wrap: wrap;
+  }
+}

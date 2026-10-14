@@ -9,7 +9,7 @@ from pathlib import Path
 # Reusable business/data logic for the labeling features. server.py stays the
 # HTTP/routing shell; these modules own the SQL, validation, and transactions
 # and raise ApiError for error responses.
-import labels, bulk_labels, snapshots, gizmos, updater, advanced_search, related
+import labels, bulk_labels, snapshots, gizmos, updater, advanced_search, related, scratchpads
 from api_common import ApiError
 
 # Set CHV_TIMING=1 to log each request's method, path, and duration to stderr.
@@ -38,7 +38,7 @@ def _code_signature() -> str:
     h = hashlib.sha256()
     for name in ("server.py", "build_db.py", "api_common.py",
                  "labels.py", "bulk_labels.py", "snapshots.py", "gizmos.py",
-                 "updater.py", "advanced_search.py", "related.py"):
+                 "updater.py", "advanced_search.py", "related.py", "scratchpads.py"):
         try:
             h.update((here / name).read_bytes())
         except OSError:
@@ -58,7 +58,8 @@ def _static_signature() -> str:
                  "advanced_search.js", "advanced_search.css",
                  "labels_screen.js", "bulk_labels.js", "snapshots.js",
                  "gizmos.js", "bookmarks.js", "bookmarks_hub.js", "notes.js",
-                 "summary.js", "summary_editor_core.js", "related.js"):
+                 "summary.js", "summary_editor_core.js", "related.js",
+                 "internal_links.js", "scratchpads.js", "scratchpads.css"):
         try:
             h.update((static_dir / name).read_bytes())
         except OSError:
@@ -575,6 +576,18 @@ def _ensure_userdata_schema(db_path: Path) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_advanced_recent_used
                 ON advanced_search_recent (last_used_at DESC);
+            -- Scratch Pads: free-standing Markdown documents that belong to no
+            -- conversation and to neither provider. The id is generated once
+            -- and never changes on rename. See scratchpads.py.
+            CREATE TABLE IF NOT EXISTS scratch_pads (
+                id         TEXT PRIMARY KEY,
+                title      TEXT NOT NULL,
+                content    TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_scratch_pads_updated
+                ON scratch_pads (updated_at DESC);
             CREATE TABLE IF NOT EXISTS advanced_search_saved (
                 id            TEXT PRIMARY KEY,
                 name          TEXT NOT NULL,
@@ -1426,6 +1439,13 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/advanced-search/saved":
             payload = self._read_json_body()
             self._handle_db(lambda conn: advanced_search.save_search(conn, payload))
+        elif path == "/api/scratchpads":
+            payload = self._read_json_body()
+            self._handle_db(lambda conn: scratchpads.create_pad(conn, payload))
+        elif path.startswith("/api/scratchpads/") and path.endswith("/append"):
+            pad_id = urllib.parse.unquote(path[len("/api/scratchpads/"):-len("/append")])
+            payload = self._read_json_body()
+            self._handle_db(lambda conn: scratchpads.append_to_pad(conn, pad_id, payload))
         else:
             self.send_error(404)
 
@@ -1455,6 +1475,10 @@ class Handler(BaseHTTPRequestHandler):
             self._api_notes_update(urllib.parse.unquote(path[len("/api/notes/"):]))
         elif path.startswith("/api/bookmarks/"):
             self._api_bookmark_update(urllib.parse.unquote(path[len("/api/bookmarks/"):]))
+        elif path.startswith("/api/scratchpads/"):
+            pad_id = urllib.parse.unquote(path[len("/api/scratchpads/"):])
+            payload = self._read_json_body()
+            self._handle_db(lambda conn: scratchpads.update_pad(conn, pad_id, payload))
         else:
             self.send_error(404)
 
@@ -1502,6 +1526,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/advanced-search/saved/"):
             saved_id = urllib.parse.unquote(path[len("/api/advanced-search/saved/"):])
             self._handle_db(lambda conn: advanced_search.delete_saved(conn, saved_id))
+        elif path.startswith("/api/scratchpads/"):
+            pad_id = urllib.parse.unquote(path[len("/api/scratchpads/"):])
+            self._handle_db(lambda conn: scratchpads.delete_pad(conn, pad_id))
         else:
             self.send_error(404)
 
@@ -1643,6 +1670,19 @@ class Handler(BaseHTTPRequestHandler):
                 conn, urllib.parse.unquote(path[len("/api/related/"):])))
         elif path == "/api/advanced-search/history":
             self._handle_db(advanced_search.history)
+        elif path == "/api/scratchpads":
+            q = (qs.get("q") or [""])[0]
+            self._handle_db(lambda conn: scratchpads.list_pads(conn, q))
+        elif path.startswith("/api/scratchpads/"):
+            pad_id = urllib.parse.unquote(path[len("/api/scratchpads/"):])
+            self._handle_db(lambda conn: scratchpads.get_pad(conn, pad_id))
+        elif path == "/api/link-suggestions":
+            q = (qs.get("q") or [""])[0]
+            self._handle_db(lambda conn: scratchpads.link_suggestions(conn, q))
+        elif path == "/api/link-resolve":
+            cid = (qs.get("conversation") or [""])[0]
+            seq = (qs.get("seq") or [""])[0]
+            self._handle_db(lambda conn: scratchpads.resolve_link(conn, cid, seq))
         elif path == "/api/gallery":
             self._api_gallery()
         elif path == "/api/attachment-report":

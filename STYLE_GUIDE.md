@@ -10,6 +10,7 @@ This guide describes the **current live app**. The default colours and desktop a
 | `static/style.css` | Shared reset, app layout, conversation rendering, feature screens, shared controls, runtime state classes, responsive content, reduced motion. |
 | `static/settings.css` | Settings rows, switches, About/update controls, and existing header/folder refinements. Uses `theme.css` values. |
 | `static/advanced_search.css` | Advanced filters, search history, results, and result sizing states. Uses `theme.css` values. |
+| `static/scratchpads.css` | Scratch Pads workspace, Insert Link popup, Add to Scratch Pad picker, toast, and the link controls added to the chat title bar, Advanced Search results and bookmark lists. Uses `theme.css` values. |
 | `static/index.html` | Semantic markup and stylesheet links, in the order above. **No embedded `<style>` blocks or decorative `style` attributes.** |
 | Frontend JavaScript | Behaviour, classes, user content values, and measured positioning/resizing. It does not define the app's palette or decorative styles. |
 | `static/accessibility.js` | Shared modal focus/isolation, keyboard actions, menu navigation, resize semantics, summary-hint focus, and reduced-motion scrolling. Loaded before feature modules. |
@@ -104,6 +105,7 @@ Structural CSS can use `0`, percentages, `auto`, `none`, `inherit`, `currentColo
 | Temporary Notes sidebar | `.notes-side-panel`, `.notes-side-section`, `.notes-side-heading-row`, `.notes-side-revert` | `--notes-panel-*` |
 | Conversation bookmarks | `.bookmark-msg-btn`, `.bookmark-title`, `.bookmark-name-dialog`, `.bookmark-bar`, `.bookmark-panel` | `--bookmark-*` |
 | Global bookmarks | `.gb-*`, `#global-bookmarks-toolbar`, `#global-bookmarks-scroll` | `--gb-*` |
+| Scratch Pads | `.scratchpad-sidebar`, `.scratchpad-row`, `#scratchpad-panel`, `.scratchpad-editor` (with the Summary editor classes), `.visual-link`, `.scratchpad-link-bubble`, `.scratchpad-popup`, `.scratchpad-option`, `.scratchpad-toast`, `.scratchpad-return-btn`, `#conv-link-btn`, `.message-link-pick`, `.advanced-link-chat-btn`, `.gb-bookmark-row`, `.bookmark-panel-row` | `--scratchpad-*`, `--conv-link-*`, `--message-link-pick-*`, `--advanced-link-chat-*` (all alias existing values) |
 | Related Conversations | `#related-toggle-btn`, `.related-panel`, `.related-panel-*`, `.related-sort-row`, `.related-list`, `.related-empty`, `.related-find-*`, `.related-location*`, `.related-link-btn`; rows are sidebar `.conv-item` rows | `--related-*` (aliases the bookmark-panel, Load more and Advanced Search location values) |
 | Advanced filters/results | `.advanced-filter-*`, `.advanced-chip-*`, `.advanced-result-*`, `.advanced-results-*` | `--advanced-*` |
 | Warning / hidden accessible copy | `.warning-text`, `.sr-only` | Warning roles; keep `.sr-only` geometry intact |
@@ -122,6 +124,16 @@ Class names above are a lookup map, not interchangeable utilities: read the corr
 | Location\Title | Advanced Search results | Advanced Search: `resultLocation()` and `.advanced-result-location` (a button that lists the location). Related panel: `relatedLocationName()` and `.related-location` (plain text). `--related-location-*` aliases `--advanced-location-*`, so one change rethemes both. |
 | Find Related Conversations | Advanced Search itself | Not a copy: it is Advanced Search in Related mode (`ui.related` in `advanced_search.js`). Filters, history, result cards and the result ⋮ menu are the same code, so Advanced Search changes apply to both. Related mode only adds: `relatedLinkButton()` (Hub / Add Circle before the title), the top ⋮ item ("Add to Related Chats" / "Remove Link"), result clicks that preview without closing the search (the panel stays on the original chat until the Hub button is clicked on a previewed one), and `exclude_ids` so the chat never lists itself. |
 | "Permanently Remove this link?" | Dialog styles | `#unlink-modal` in `index.html`; standard `.modal` classes plus `.modal-check`. |
+
+**Scratch Pads** (`scratchpads.js`, `scratchpads.py`) reuse these pieces:
+
+| What | Shared with | Where |
+| --- | --- | --- |
+| The pad editor | Summary editor | One engine in `summary.js`: `createVisualEditor()` makes an editor record and `attachVisualEditor()` wires it. Rendering, source-mapped editing, toolbar commands, undo/redo and the highlight palette are the same code for both, so a change reaches both. Pure Markdown rules (including links) live in `summary_editor_core.js`. Links get `.visual-link`; only the Scratch Pad editor styles it. |
+| Internal links | Copy Internal Link, Add to Scratch Pad, Insert Link | One format in `internal_links.js`. |
+| Insert Conversation Link | Advanced Search itself | Advanced Search in link-picking mode (`ui.linkPick` in `advanced_search.js`). Only the result actions differ: **Link Chat** on each result and in its ⋮, and **Link Message** on previewed messages (`decorateMessageLinkPick()`). It never creates a Related link. |
+| ⋮ menus on pads, bookmarks and the title-bar link button | Sidebar ⋮ menu | `showConvItemMenu()` in `app.js`. The bookmark menu is `openBookmarkMenu()` in `bookmarks.js`, used by Global Bookmarks, the bookmark panel and (right-click) the bookmark bar. |
+| Unsaved-changes prompt | Summary | `#summary-unsaved-modal`. |
 
 ## State and dynamic exceptions
 
