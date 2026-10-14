@@ -108,6 +108,31 @@ class ScratchPadStorageTests(unittest.TestCase):
         with self.assertRaises(ApiError):
             scratchpads.append_to_pad(self.conn, pad_id, {"markdown": "two\nlines"})
 
+    def test_overlapping_appends_both_land(self):
+        pad_id = scratchpads.create_pad(self.conn, {"content": "start"})["scratch_pad"]["id"]
+        lines = [f"[L{i}](chv://conversation/one)" for i in range(8)]
+        errors = []
+
+        def add(line):
+            conn = open_db(self.db_path)
+            try:
+                scratchpads.append_to_pad(conn, pad_id, {"markdown": line})
+            except Exception as exc:  # pragma: no cover - reported below
+                errors.append(exc)
+            finally:
+                conn.close()
+
+        threads = [threading.Thread(target=add, args=(line,)) for line in lines]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        content = scratchpads.get_pad(self.conn, pad_id)["scratch_pad"]["content"]
+        for line in lines:
+            self.assertIn(line, content)
+        self.assertTrue(content.startswith("start\n\n"))
+
     def test_pads_survive_restart_and_history_rebuild(self):
         pad_id = scratchpads.create_pad(self.conn, {"title": "Durable", "content": "kept"})["scratch_pad"]["id"]
         self.conn.close()

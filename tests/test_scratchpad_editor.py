@@ -148,6 +148,14 @@ class LineEditingTests(unittest.TestCase):
     def test_delete_at_line_end_joins_the_next_line(self):
         self.assertEqual(self.join("abc\n- def", 3, "forward"), {"source": "abcdef", "caret": 3})
 
+    def test_formatting_and_links_at_the_edge_still_join(self):
+        # Caret before "b" (inside the bold markers) / after "a" (before them).
+        self.assertEqual(self.join("a\n**b**", 4, "backward"), {"source": "a**b**", "caret": 1})
+        self.assertEqual(self.join("**a**\nb", 3, "forward"), {"source": "**a**b", "caret": 3})
+        self.assertEqual(self.join("**a**\nb", 6, "backward"), {"source": "**a**b", "caret": 3})
+        self.assertEqual(self.join("x\n- [L](chv://conversation/1)", 5, "backward"),
+                         {"source": "x\n[L](chv://conversation/1)", "caret": 3})
+
     def test_other_positions_use_ordinary_deletion(self):
         self.assertIsNone(self.join("abc\ndef", 5, "backward"))
         self.assertIsNone(self.join("abc", 0, "backward"))
@@ -182,6 +190,8 @@ class WiringContractTests(unittest.TestCase):
         self.assertIn("scratchPadNavigationGuard({ preview: keepAdvancedSearch })", APP)
         self.assertIn("scratchPadNavigationGuard()", APP[APP.index("async function leaveNotesForSpecialView"):])
         self.assertIn("scratchPadPanelsHidden()", APP)
+        # A slower, older pad load never replaces a newer one.
+        self.assertIn("if (token !== _spLoadToken) return false;", SCRATCH)
         self.assertIn('data-action="scratch-pads"', INDEX)
         self.assertIn('placeholder="Search conversations, bookmarks, or paste a link..."', INDEX)
 

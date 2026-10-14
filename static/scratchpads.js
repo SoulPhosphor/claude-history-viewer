@@ -173,6 +173,7 @@ function spUseEditor() {
 }
 
 function spLoadIntoEditor(pad) {
+  _spLoadToken += 1;
   sp.current = { id: pad.id, title: pad.title, created_at: pad.created_at, updated_at: pad.updated_at };
   sp.saved = pad.content || "";
   spInput.value = sp.saved;
@@ -377,13 +378,20 @@ async function spDelete(pad) {
 }
 
 // ── Opening, creating, switching pads ─────────────────────────────────────────
+let _spLoadToken = 0;
+
 async function spLoadPad(id) {
+  // Only the newest request may fill the editor: a slower, older response
+  // must not replace a pad chosen after it.
+  const token = ++_spLoadToken;
   try {
     const data = await spApi.get(id);
+    if (token !== _spLoadToken) return false;
     spLoadIntoEditor(data.scratch_pad);
     spRenderList();
     return true;
   } catch (error) {
+    if (token !== _spLoadToken) return false;
     if (error.status === 404) {
       sp.pads = sp.pads.filter((p) => p.id !== id);
       spRenderList();

@@ -409,15 +409,27 @@
     if (index < 0) return null;
     const line = lines[index];
     const content = visibleContent(line);
+    // Where the visible text starts and ends; formatting or a link at the
+    // edge puts these inside its markers.
+    const edges = (row, text) => {
+      const segments = inlineSegments(text.text, text.start);
+      return segments.length
+        ? { first: segments[0].sourceStart, last: segments[segments.length - 1].sourceEnd }
+        : { first: text.start, last: row.end };
+    };
+    const own = edges(line, content);
     if (direction === "backward") {
-      if (position !== content.start) return null;
-      if (content.start > line.start) return { source: replaceRange(source, line.start, content.start, ""), caret: line.start };
+      if (position !== content.start && position !== own.first) return null;
+      const marker = content.start - line.start;
+      if (marker > 0) return { source: replaceRange(source, line.start, content.start, ""), caret: own.first - marker };
       if (index === 0) return null;
-      return { source: replaceRange(source, line.start - 1, line.start, ""), caret: line.start - 1 };
+      const previous = lines[index - 1];
+      const caret = edges(previous, visibleContent(previous)).last;
+      return { source: replaceRange(source, line.start - 1, line.start, ""), caret };
     }
-    if (position !== line.end || index === lines.length - 1) return null;
+    if ((position !== line.end && position !== own.last) || index === lines.length - 1) return null;
     const next = visibleContent(lines[index + 1]);
-    return { source: replaceRange(source, line.end, next.start, ""), caret: line.end };
+    return { source: replaceRange(source, line.end, next.start, ""), caret: position };
   }
 
   function deleteVisibleCharacter(source, sourcePosition, direction) {

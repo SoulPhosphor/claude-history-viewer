@@ -141,11 +141,15 @@ def append_to_pad(conn, pad_id: str, payload: dict) -> dict:
         raise ApiError("Nothing to add.", 400)
     if "\n" in block:
         raise ApiError("Add one line at a time.", 400)
-    row = _get(conn, pad_id)
-    content = appended_content(row["content"] or "", block)
+    _get(conn, pad_id)
+    # One UPDATE reads and writes the content, so two overlapping appends (two
+    # tabs, two quick clicks) both land. Same rule as appended_content().
     conn.execute(
-        "UPDATE udb.scratch_pads SET content = ?, updated_at = ? WHERE id = ?",
-        (content, time.time(), pad_id),
+        "UPDATE udb.scratch_pads SET content = CASE "
+        "WHEN TRIM(content, ' ' || char(9) || char(10) || char(13)) = '' THEN ?1 "
+        "ELSE RTRIM(content, char(10)) || char(10) || char(10) || ?1 END, "
+        "updated_at = ?2 WHERE id = ?3",
+        (block, time.time(), pad_id),
     )
     conn.commit()
     data = get_pad(conn, pad_id)
