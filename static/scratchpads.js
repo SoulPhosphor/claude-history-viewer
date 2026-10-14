@@ -1054,7 +1054,13 @@ spPopupInput.addEventListener("keydown", (event) => {
     // Enter on a pasted link before its option has been drawn.
     event.preventDefault();
     clearTimeout(_spPopup.timer);
-    spRefreshPopupOptions().then(() => spPopupOptions._options?.[0]?.run());
+    // Only this request's own result may run: a close, reopen or newer
+    // query in the meantime moves the token on.
+    const refresh = spRefreshPopupOptions();
+    const token = _spPopup.token;
+    refresh.then(() => {
+      if (token === _spPopup.token && _spPopup.open) spPopupOptions._options?.[0]?.run();
+    });
     return;
   }
   spOptionKeys(event, spPopupOptions, spPopupInput);
