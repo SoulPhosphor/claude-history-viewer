@@ -101,6 +101,16 @@ def _nearest_with_fingerprint(conn, conversation_id: str, fingerprint: str, seq)
     return best
 
 
+def _history_built_at(conn):
+    """When history.db was built, or None for one built before this was kept
+    (bookmarks older than such a database were made against it)."""
+    try:
+        row = conn.execute("SELECT built_at FROM history_build WHERE id = 1").fetchone()
+    except sqlite3.Error:
+        return None
+    return float(row[0]) if row and row[0] is not None else None
+
+
 def bookmark_fingerprint_at(conn, conversation_id: str, seq):
     row = _message_at(conn, conversation_id, seq)
     return message_fingerprint(row[0], row[1]) if row else None
@@ -117,12 +127,13 @@ def reanchor_bookmarks(conn, conversation_id: str) -> None:
     records that message's id and fingerprint at once. A bookmark whose
     message is gone is kept but never placed on another message."""
     rows = conn.execute(
-        "SELECT id, seq, message_uuid, message_hash FROM udb.conversation_bookmarks "
+        "SELECT id, seq, message_uuid, message_hash, created_at FROM udb.conversation_bookmarks "
         "WHERE conversation_id = ?",
         (conversation_id,),
     ).fetchall()
+    built_at = _history_built_at(conn)
     changed = False
-    for bookmark_id, seq, message_uuid, fingerprint in rows:
+    for bookmark_id, seq, message_uuid, fingerprint, created_at in rows:
         try:
             if message_uuid:
                 current = message_seq(conn, conversation_id, message_uuid)
@@ -152,6 +163,14 @@ def reanchor_bookmarks(conn, conversation_id: str) -> None:
                         (target[0], target[1], bookmark_id),
                     )
                     changed = True
+            elif built_at is not None and float(created_at or 0) < built_at:
+                # Made against an earlier database (rebuilt before this version
+                # could record its message): its position proves nothing here.
+                conn.execute(
+                    "UPDATE udb.conversation_bookmarks SET message_uuid = ? WHERE id = ?",
+                    (GONE_PREFIX + bookmark_id, bookmark_id),
+                )
+                changed = True
             elif here:
                 conn.execute(
                     "UPDATE udb.conversation_bookmarks SET message_uuid = ?, message_hash = ? WHERE id = ?",

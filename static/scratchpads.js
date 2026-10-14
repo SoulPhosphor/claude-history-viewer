@@ -641,6 +641,9 @@ async function followInternalLink(target, { fromPad = false } = {}) {
     showScratchToast("That link cannot be opened.");
     return;
   }
+  // The pad this was followed from; if another pad is chosen meanwhile, this
+  // older request is dropped.
+  const fromPadId = fromPad ? sp.current?.id : null;
   let info;
   try {
     info = await spApi.resolve(link.conversationId, link.seq, link.messageId);
@@ -648,6 +651,7 @@ async function followInternalLink(target, { fromPad = false } = {}) {
     showScratchToast("Could not check where that link points. Try again.");
     return;
   }
+  if (fromPad && (!sp.active || sp.current?.id !== fromPadId)) return;
   if (!info.exists) {
     showScratchToast("That conversation is no longer in your history, so the link cannot be opened.");
     return;
@@ -1154,8 +1158,12 @@ function decorateMessageLinkPick({ metaRow, seq, messageId = null }) {
   btn.title = "Insert a link to this message";
   btn.addEventListener("click", async () => {
     const conversationId = state.activeId;
-    if (!conversationId) return;
+    const mode = sp.linkMode;
+    if (!conversationId || !mode) return;
     const label = (await spLabelForInternal({ conversationId, seq, messageId })) || "Message";
+    // Only for the search this button belonged to: a search started since
+    // (perhaps for another pad) must not receive this message.
+    if (sp.linkMode !== mode) return;
     finishLinkSearch({ label, target: spLinks.messageLink(conversationId, seq, messageId) });
   });
   metaRow.appendChild(btn);

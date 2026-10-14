@@ -17,6 +17,7 @@ import json
 import re
 import sqlite3
 import sys
+import time
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1026,6 +1027,11 @@ def build(source: Path, db_path: Path) -> None:
 
     db = sqlite3.connect(db_path)
     db.executescript(SCHEMA)
+    # When this database was built. A bookmark older than the build, with no
+    # message id or fingerprint, was made against an earlier database, so its
+    # position cannot be trusted here (message_ids.reanchor_bookmarks).
+    db.execute("CREATE TABLE IF NOT EXISTS history_build (id INTEGER PRIMARY KEY CHECK (id = 1), built_at REAL)")
+    db.execute("INSERT OR REPLACE INTO history_build (id, built_at) VALUES (1, ?)", (time.time(),))
     # Recorded so the server can tell a Claude export from a ChatGPT one
     # without re-parsing the source file. Claude-only UI keys off this.
     db.execute(

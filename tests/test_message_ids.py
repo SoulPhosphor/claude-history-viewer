@@ -197,7 +197,7 @@ class MessageIdTests(unittest.TestCase):
                 id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, seq INTEGER NOT NULL,
                 name TEXT, source TEXT DEFAULT 'user', created_at REAL, updated_at REAL,
                 UNIQUE(conversation_id, seq));
-            INSERT INTO conversation_bookmarks VALUES ('old', 'c1', 2, 'kept', 'user', 1, 1);
+            INSERT INTO conversation_bookmarks VALUES ('old', 'c1', 2, 'kept', 'user', 9e9, 9e9);
             """
         )
         udb.commit()
@@ -220,10 +220,10 @@ class MessageIdTests(unittest.TestCase):
         cats_answer = 3
         self.conn.execute(
             "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
-            "VALUES ('bm', 'c1', ?, 'cats', 1, 1)", (cats_answer,))
+            "VALUES ('bm', 'c1', ?, 'cats', 9e9, 9e9)", (cats_answer,))
         self.conn.execute(
             "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
-            "VALUES ('bm2', 'c1', 2, 'gone', 1, 1)")
+            "VALUES ('bm2', 'c1', 2, 'gone', 9e9, 9e9)")
         self.conn.commit()
         self.reimport_branch_b()
         rows = {r[0]: (r[1], r[2]) for r in self.conn.execute(
@@ -238,7 +238,7 @@ class MessageIdTests(unittest.TestCase):
         self.conn.execute("UPDATE messages SET content = 'only in the old version' WHERE seq = 3")
         self.conn.execute(
             "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
-            "VALUES ('bm', 'c1', 3, 'x', 1, 1)")
+            "VALUES ('bm', 'c1', 3, 'x', 9e9, 9e9)")
         self.conn.commit()
         self.reimport_branch_b()
         bookmark = self.conn.execute(
@@ -249,7 +249,7 @@ class MessageIdTests(unittest.TestCase):
     def test_bind_legacy_bookmarks_at_start(self):
         self.conn.execute(
             "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
-            "VALUES ('bm', 'c1', 2, 'x', 1, 1)")
+            "VALUES ('bm', 'c1', 2, 'x', 9e9, 9e9)")
         self.conn.commit()
         message_ids.bind_legacy_bookmarks(self.conn)
         self.assertEqual(self.conn.execute(
@@ -290,7 +290,7 @@ class MessageIdTests(unittest.TestCase):
         self.conn.execute("UPDATE messages SET message_uuid = NULL")
         self.conn.execute(
             "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
-            "VALUES ('bm', 'c1', 3, 'cats', 1, 1)")  # "cats are great" (a2)
+            "VALUES ('bm', 'c1', 3, 'cats', 9e9, 9e9)")  # "cats are great" (a2)
         self.conn.commit()
         message_ids.bind_legacy_bookmarks(self.conn)  # first start: learns the fingerprint
         # Full rebuild (rm history.db) from an export where the chat shows
@@ -314,7 +314,7 @@ class MessageIdTests(unittest.TestCase):
         self.conn.execute("UPDATE messages SET message_uuid = NULL")
         self.conn.execute(
             "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
-            "VALUES ('bm', 'c1', 3, 'x', 1, 1)")
+            "VALUES ('bm', 'c1', 3, 'x', 9e9, 9e9)")
         self.conn.commit()
         message_ids.bind_legacy_bookmarks(self.conn)
         self.conn.execute("UPDATE messages SET message_uuid = NULL")
@@ -324,6 +324,47 @@ class MessageIdTests(unittest.TestCase):
         message_ids.reanchor_bookmarks(self.conn, "c1")
         row = self.conn.execute("SELECT seq, message_uuid FROM udb.conversation_bookmarks WHERE id = 'bm'").fetchone()
         self.assertTrue(row["message_uuid"].startswith(message_ids.GONE_PREFIX))
+
+    def test_rebuilt_before_upgrade_bookmark_is_not_trusted(self):
+        # history.db was rebuilt (this version records when) after the
+        # bookmark was made, and the bookmark never got an id or fingerprint.
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.execute(
+            "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
+            "VALUES ('old', 'c1', 3, 'x', 1, 1)")
+        self.conn.commit()
+        self.assertIsNotNone(message_ids._history_built_at(self.conn))
+        message_ids.bind_legacy_bookmarks(self.conn)
+        row = self.conn.execute("SELECT seq, message_uuid FROM udb.conversation_bookmarks WHERE id = 'old'").fetchone()
+        self.assertTrue(row["message_uuid"].startswith(message_ids.GONE_PREFIX))
+        # A bookmark made after the build is bound normally.
+        import time as _time
+        self.conn.execute(
+            "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
+            "VALUES ('new', 'c1', 2, 'y', ?, ?)", (_time.time() + 1, _time.time() + 1))
+        self.conn.commit()
+        message_ids.reanchor_bookmarks(self.conn, "c1")
+        row = self.conn.execute("SELECT message_hash FROM udb.conversation_bookmarks WHERE id = 'new'").fetchone()
+        self.assertIsNotNone(row["message_hash"])
+
+    def test_database_built_before_build_times_were_kept_trusts_old_bookmarks(self):
+        self.conn.execute("DROP TABLE history_build")
+        self.conn.execute(
+            "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
+            "VALUES ('old', 'c1', 2, 'x', 1, 1)")
+        self.conn.commit()
+        message_ids.bind_legacy_bookmarks(self.conn)
+        row = self.conn.execute("SELECT message_uuid FROM udb.conversation_bookmarks WHERE id = 'old'").fetchone()
+        self.assertEqual(row["message_uuid"], "u2")
+
+    def test_one_bookmark_per_position_for_messages_without_ids(self):
+        self.conn.execute(
+            "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
+            "VALUES ('a', 'c1', 2, '', 9e9, 9e9)")
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.conn.execute(
+                "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
+                "VALUES ('b', 'c1', 2, '', 9e9, 9e9)")
 
 
 if __name__ == "__main__":

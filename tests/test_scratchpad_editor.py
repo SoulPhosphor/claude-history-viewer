@@ -223,6 +223,10 @@ class WiringContractTests(unittest.TestCase):
         self.assertIn("if (token !== _spLoadToken) return false;", SCRATCH)
         # Leaving re-checks for edits typed while a save was running.
         self.assertIn("return spIsDirty() ? spConfirmLeavePad() : true;", SCRATCH)
+        # A followed link or a Link Message lookup that finishes late is dropped
+        # if the pad or the search changed meanwhile.
+        self.assertIn("if (fromPad && (!sp.active || sp.current?.id !== fromPadId)) return;", SCRATCH)
+        self.assertIn("if (sp.linkMode !== mode) return;", SCRATCH)
         # A pasted link whose title arrives late only goes into its own pad.
         self.assertIn("if (sp.current?.id !== padId || spMarkdown() !== before) return;", SCRATCH)
         self.assertIn('data-action="scratch-pads"', INDEX)

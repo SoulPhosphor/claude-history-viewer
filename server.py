@@ -664,6 +664,10 @@ def _ensure_userdata_schema(db_path: Path) -> None:
             "CREATE INDEX IF NOT EXISTS idx_bookmarks_conv_seq ON conversation_bookmarks (conversation_id, seq)",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_bookmarks_message "
             "ON conversation_bookmarks (conversation_id, message_uuid) WHERE message_uuid IS NOT NULL",
+            # A message without an id is identified by its position, so only
+            # one bookmark may sit there (gone bookmarks have a non-null id).
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_bookmarks_position "
+            "ON conversation_bookmarks (conversation_id, seq) WHERE message_uuid IS NULL",
         ):
             try:
                 conn.execute(idx_sql)
@@ -4016,14 +4020,23 @@ class Handler(BaseHTTPRequestHandler):
                 bid = existing["id"]
             else:
                 bid = uuid.uuid4().hex
-                conn.execute(
-                    "INSERT INTO udb.conversation_bookmarks "
-                    "(id, conversation_id, seq, name, source, created_at, updated_at, message_uuid, message_hash) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (bid, conv_id, seq, name, source, now, now, message_uuid,
-                     message_ids.bookmark_fingerprint_at(conn, conv_id, seq)),
-                )
-                conn.commit()
+                try:
+                    conn.execute(
+                        "INSERT INTO udb.conversation_bookmarks "
+                        "(id, conversation_id, seq, name, source, created_at, updated_at, message_uuid, message_hash) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (bid, conv_id, seq, name, source, now, now, message_uuid,
+                         message_ids.bookmark_fingerprint_at(conn, conv_id, seq)),
+                    )
+                    conn.commit()
+                except sqlite3.IntegrityError:
+                    # Another request bookmarked the same message first: return it.
+                    conn.rollback()
+                    bid = conn.execute(
+                        "SELECT id FROM udb.conversation_bookmarks WHERE conversation_id = ? "
+                        "AND (message_uuid = ? OR (message_uuid IS NULL AND seq = ?))",
+                        (conv_id, message_uuid, seq),
+                    ).fetchone()["id"]
             row = conn.execute(
                 "SELECT id, conversation_id, seq, name, source, created_at, updated_at, message_uuid "
                 "FROM udb.conversation_bookmarks WHERE id = ?",
