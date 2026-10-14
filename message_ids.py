@@ -273,8 +273,9 @@ def fill_missing_from_sources(db_path: Path, source_dir: Path) -> int:
         # newest version (imports never roll back), so take each chat's ids
         # only from the newest backup that holds it: pass one finds it, pass
         # two applies it.
-        # A backup newer than the stored chat has not been imported yet; its
-        # ids may belong to messages the database does not hold.
+        # Only a backup of the exact revision the database holds may give ids:
+        # a newer one has not been imported yet, and an older one may carry
+        # ids of messages that were regenerated since.
         stored = {
             (provider, cid): when
             for cid, provider, when in conn.execute(
@@ -287,7 +288,7 @@ def fill_missing_from_sources(db_path: Path, source_dir: Path) -> int:
                 meta = record.get("meta") or {}
                 key = (provider, meta.get("id"))
                 when = float(meta.get("update_time") or 0)
-                if stored.get(key) is not None and when > float(stored[key]):
+                if stored.get(key) is not None and abs(when - float(stored[key])) > 1e-3:
                     continue
                 if key not in newest or when >= newest[key][0]:
                     newest[key] = (when, index)

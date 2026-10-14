@@ -439,5 +439,17 @@ class MessageIdTests(unittest.TestCase):
         self.assertIsNone(self.seq_of("a2-new"))
 
 
+    def test_backfill_ignores_a_backup_older_than_the_database(self):
+        # Only an older export is left, where the last reply had another id.
+        older = dict(chat("c1", TURNS, "a2"), update_time=1)
+        older["mapping"]["a2"]["message"]["id"] = "a2-old"
+        (self.source / "conversations.json").write_text(json.dumps([older]))
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.commit()
+        message_ids.fill_missing_from_sources(self.db, self.source)
+        self.assertIsNone(self.seq_of("a2-old"))
+        self.assertIsNone(self.seq_of("u1"))
+
+
 if __name__ == "__main__":
     unittest.main()
