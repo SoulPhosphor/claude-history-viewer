@@ -198,6 +198,10 @@ class WiringContractTests(unittest.TestCase):
         self.assertIn("scratchPadPanelsHidden()", APP)
         # A slower, older pad load never replaces a newer one.
         self.assertIn("if (token !== _spLoadToken) return false;", SCRATCH)
+        # Leaving re-checks for edits typed while a save was running.
+        self.assertIn("return spIsDirty() ? spConfirmLeavePad() : true;", SCRATCH)
+        # A pasted link whose title arrives late only goes into its own pad.
+        self.assertIn("if (sp.current?.id !== padId || spMarkdown() !== before) return;", SCRATCH)
         self.assertIn('data-action="scratch-pads"', INDEX)
         self.assertIn('placeholder="Search conversations, bookmarks, or paste a link..."', INDEX)
 

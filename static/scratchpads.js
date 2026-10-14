@@ -248,7 +248,10 @@ async function spConfirmLeavePad() {
   if (!spIsDirty()) return true;
   const result = await openSummaryUnsavedModal();
   if (result === "cancel") return false;
-  return spSave();
+  if (!(await spSave())) return false;
+  // Typing while the save ran leaves newer edits it did not include: ask
+  // again rather than leave them behind.
+  return spIsDirty() ? spConfirmLeavePad() : true;
 }
 
 // ── Sidebar list ──────────────────────────────────────────────────────────────
@@ -771,10 +774,11 @@ function spPasteLink(text, range) {
   if (!link) return false;
   const selected = spSelectedText(range);
   const before = spMarkdown();
+  const padId = sp.current?.id;
   (async () => {
     const label = selected || (await spLabelForInternal(link)) || "Missing conversation";
-    // Only insert if nothing changed while the title was looked up.
-    if (spMarkdown() !== before) return;
+    // Only insert into the same pad, unchanged while the title was looked up.
+    if (sp.current?.id !== padId || spMarkdown() !== before) return;
     spInsertLink(range, label, text.trim());
   })();
   return true;
