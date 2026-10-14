@@ -31,13 +31,19 @@ class InternalLinkFormatTests(unittest.TestCase):
         result = run_node(
             "out([L.conversationLink('abc-1'), L.messageLink('abc-1', 7),"
             " L.parse('chv://conversation/abc-1'), L.parse('  chv://conversation/abc-1/message/7 '),"
-            " L.parse(L.conversationLink('a b/c'))]);"
+            " L.parse(L.conversationLink('a b/c')), L.messageLink('abc-1', 7, 'm/1'),"
+            " L.parse(L.messageLink('abc-1', 7, 'm/1'))]);"
         )
         self.assertEqual(result[0], "chv://conversation/abc-1")
         self.assertEqual(result[1], "chv://conversation/abc-1/message/7")
-        self.assertEqual(result[2], {"conversationId": "abc-1", "seq": None})
-        self.assertEqual(result[3], {"conversationId": "abc-1", "seq": 7})
-        self.assertEqual(result[4], {"conversationId": "a b/c", "seq": None})
+        self.assertEqual(result[2], {"conversationId": "abc-1", "seq": None, "messageId": None})
+        self.assertEqual(result[3], {"conversationId": "abc-1", "seq": 7, "messageId": None})
+        self.assertEqual(result[4], {"conversationId": "a b/c", "seq": None, "messageId": None})
+        self.assertEqual(result[5], "chv://conversation/abc-1/message/7/m%2F1")
+        self.assertEqual(result[6], {"conversationId": "abc-1", "seq": 7, "messageId": "m/1"})
+        # The message id rides inside Markdown links too.
+        kinds = run_node(f"out(c.inlineSegments('[x]({result[5]})').map((s) => s.kind));")
+        self.assertEqual(kinds, ["link"])
 
     def test_other_text_is_not_an_internal_link(self):
         result = run_node(

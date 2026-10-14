@@ -4,10 +4,13 @@
 // Link, bookmark menus). A link names its destination by stable ids only, never
 // by a visible title, so renaming a chat or a bookmark never breaks it:
 //
-//   chv://conversation/<conversation id>                   the whole chat
-//   chv://conversation/<conversation id>/message/<seq>     one message in it
+//   chv://conversation/<conversation id>                          the whole chat
+//   chv://conversation/<conversation id>/message/<seq>/<message id>  one message
 //
-// <seq> is the message's sequence number, the same one a bookmark stores.
+// <message id> is the export's own id for the message; it finds the message
+// even if its position moved on a re-import. <seq> (its position, as bookmarks
+// store it) is the fallback, and the whole id part is optional for links
+// made before ids were kept.
 // Pure string helpers, shared with the tests (Node) like summary_editor_core.js.
 (function (root, factory) {
   const api = factory();
@@ -15,28 +18,32 @@
   root.InternalLinks = api;
 })(typeof window !== "undefined" ? window : globalThis, function () {
   const SCHEME = "chv://";
-  const PATTERN = /^chv:\/\/conversation\/([^/\s?#]+)(?:\/message\/(\d+))?\/?$/i;
+  const PATTERN = /^chv:\/\/conversation\/([^/\s?#]+)(?:\/message\/(\d+)(?:\/([^/\s?#]+))?)?\/?$/i;
 
   function conversationLink(conversationId) {
     return `${SCHEME}conversation/${encodeURIComponent(conversationId)}`;
   }
 
-  function messageLink(conversationId, seq) {
-    return `${conversationLink(conversationId)}/message/${Number(seq)}`;
+  function messageLink(conversationId, seq, messageId = null) {
+    const base = `${conversationLink(conversationId)}/message/${Number(seq)}`;
+    return messageId ? `${base}/${encodeURIComponent(messageId)}` : base;
   }
 
-  // {conversationId, seq} for an internal link (seq is null for a whole chat),
+  // {conversationId, seq, messageId} for an internal link (seq and messageId
+  // are null for a whole chat; messageId is null for an older message link),
   // or null for anything else.
   function parse(text) {
     const match = String(text || "").trim().match(PATTERN);
     if (!match) return null;
     let conversationId;
+    let messageId = null;
     try {
       conversationId = decodeURIComponent(match[1]);
+      if (match[3] != null) messageId = decodeURIComponent(match[3]);
     } catch (_) {
       return null;
     }
-    return { conversationId, seq: match[2] == null ? null : Number(match[2]) };
+    return { conversationId, seq: match[2] == null ? null : Number(match[2]), messageId };
   }
 
   // An ordinary web address the user typed or pasted, made safe to sit inside

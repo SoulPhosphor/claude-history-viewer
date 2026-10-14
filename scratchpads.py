@@ -19,6 +19,7 @@ from __future__ import annotations
 import time
 import uuid
 
+import message_ids
 from api_common import ApiError
 
 DEFAULT_TITLE = "Untitled Scratch Pad"
@@ -181,7 +182,8 @@ def link_suggestions(conn, q: str) -> dict:
     ).fetchall()
     bookmarks = conn.execute(
         f"SELECT b.id, b.name, b.seq, b.conversation_id, {_TITLE_SQL} AS conversation_title, "
-        "c.provider "
+        "c.provider, COALESCE(b.message_uuid, (SELECT m.message_uuid FROM messages m "
+        "WHERE m.conversation_id = b.conversation_id AND m.seq = b.seq)) AS message_uuid "
         "FROM udb.conversation_bookmarks b "
         "JOIN conversations c ON c.id = b.conversation_id "
         "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
@@ -198,9 +200,13 @@ def link_suggestions(conn, q: str) -> dict:
     }
 
 
-def resolve_link(conn, conversation_id: str, seq=None) -> dict:
+def resolve_link(conn, conversation_id: str, seq=None, message_id: str = "") -> dict:
     """Where an internal link points now. Never raises for a missing target:
-    the caller explains what is gone instead of opening something else."""
+    the caller explains what is gone instead of opening something else.
+
+    A message link that carries the message's export id finds the message by
+    that id, so it still lands on the right message if its position moved; the
+    seq in the link is only the fallback. The answer's `seq` is where to go."""
     conversation_id = (conversation_id or "").strip()
     if seq in ("", None):
         seq = None
@@ -233,6 +239,12 @@ def resolve_link(conn, conversation_id: str, seq=None) -> dict:
         "deleted": bool(row["deleted"]),
         "archived": bool(row["archived"]),
     })
+    message_id = (message_id or "").strip()
+    if message_id:
+        current = message_ids.message_seq(conn, conversation_id, message_id)
+        if current is not None:
+            seq = current
+            out["seq"] = current
     if seq is not None:
         hit = conn.execute(
             "SELECT 1 FROM messages WHERE conversation_id = ? AND seq = ? LIMIT 1",

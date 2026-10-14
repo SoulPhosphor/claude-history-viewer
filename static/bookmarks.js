@@ -356,7 +356,7 @@ async function scrollToBookmark(bm) {
 // showConvItemMenu). ctx: {conversationId, conversationTitle, bookmark,
 // onChanged(bookmark | null)} — onChanged lets the list redraw itself.
 function bookmarkLinkTarget(conversationId, bm) {
-  return window.InternalLinks.messageLink(conversationId, bm.seq);
+  return window.InternalLinks.messageLink(conversationId, bm.seq, bm.message_uuid || null);
 }
 
 function openBookmarkMenu(anchor, ctx) {

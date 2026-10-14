@@ -1615,11 +1615,11 @@
 
             <!-- D. Safety Snapshots / Recent Bulk Changes ─────────────── -->
             <section class="labels-section">
-              <h3 class="labels-section-title">Safety Snapshots</h3>
+              <h3 class="labels-section-title">Backups</h3>
               <p class="labels-section-hint">
-                Manually capture a recoverable snapshot of your labels, folders,
+                Manually save a backup of your labels, folders,
                 tags, titles, pins, and archived/deleted state (never message
-                content). Snapshots are only ever made when you press the button
+                content). Backups are only ever made when you press the button
                 below. Up to 10 are kept.
               </p>
               <div class="snapshot-create-row">
@@ -1630,14 +1630,14 @@
                   spellcheck="false"
                   maxlength="120"
                 />
-                <button type="button" id="snapshot-create-btn">Create Snapshot</button>
+                <button type="button" id="snapshot-create-btn">Create Backup</button>
               </div>
               <div id="snapshot-error" role="alert" class="labels-form-error" hidden></div>
               <div id="snapshot-table-wrap">
                 <table id="snapshot-table">
                   <thead>
                     <tr>
-                      <th>Snapshot</th>
+                      <th>Backup</th>
                       <th>Created</th>
                       <th>Contents</th>
                       <th>Size</th>
@@ -1655,7 +1655,7 @@
                 Your recent bulk-label operations. Use Again loads a change's
                 criteria back into the tool above (you still Preview and Apply).
                 This is a reminder of what you did, not an undo — recovery is
-                what Safety Snapshots are for.
+                what Backups are for.
               </p>
               <div class="bulk-retention-row">
                 <label for="bulk-retention">Keep the last</label>
@@ -1825,11 +1825,11 @@
     <!-- Snapshot restore: choose which metadata categories to restore. -->
     <div id="snapshot-restore-modal" class="modal-overlay" hidden>
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="snapshot-restore-title" aria-describedby="snapshot-restore-text">
-        <div class="modal-title" id="snapshot-restore-title">Restore snapshot</div>
+        <div class="modal-title" id="snapshot-restore-title">Restore backup</div>
         <div class="modal-text" id="snapshot-restore-text">
           Choose which metadata categories to restore. Only the selected
           categories are returned to their recorded state — this can reverse
-          changes made since the snapshot. Conversation content is never touched.
+          changes made since the backup. Conversation content is never touched.
         </div>
         <div id="snapshot-restore-cats" class="snapshot-cats"></div>
         <div class="modal-buttons">

@@ -2530,6 +2530,7 @@ async function openConversation(id, clickedEl, targetSeq = null, { keepAdvancedS
     const div = document.createElement("div");
     div.className = `message ${msg.role}`;
     if (msg.seq != null) div.dataset.seq = msg.seq;
+    if (msg.message_uuid) div.dataset.messageId = msg.message_uuid;
 
     const label =
       msg.role === "user"
@@ -2594,7 +2595,7 @@ async function openConversation(id, clickedEl, targetSeq = null, { keepAdvancedS
     }
     // "Link Message", only while Advanced Search picks a link for a Scratch Pad.
     if (msg.seq != null && typeof decorateMessageLinkPick === "function") {
-      decorateMessageLinkPick({ div, metaRow, seq: msg.seq });
+      decorateMessageLinkPick({ div, metaRow, seq: msg.seq, messageId: msg.message_uuid || null });
     }
 
     div.appendChild(bodyEl);

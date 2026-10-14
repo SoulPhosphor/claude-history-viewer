@@ -74,13 +74,13 @@ async function loadSnapshots() {
   if (snapshotCreateBtn) snapshotCreateBtn.disabled = atMax;
   showSnapshotError(
     atMax
-      ? `Maximum of ${_snapshotMax} snapshots reached. Delete a snapshot before creating another.`
+      ? `Maximum of ${_snapshotMax} backups reached. Delete a backup before creating another.`
       : "",
   );
   snapshotTableBody.innerHTML = "";
   if (!snaps.length) {
     const tr = document.createElement("tr");
-    tr.innerHTML = '<td colspan="5" class="no-results">No snapshots yet.</td>';
+    tr.innerHTML = '<td colspan="5" class="no-results">No backups yet.</td>';
     snapshotTableBody.appendChild(tr);
     return;
   }
@@ -137,9 +137,9 @@ async function createSnapshot() {
 
 async function deleteSnapshot(s) {
   const ok = await openConfirm({
-    title: "Delete snapshot?",
-    text: `Delete the snapshot “${s.name || "(unnamed)"}”? This cannot be undone.`,
-    okLabel: "Delete snapshot",
+    title: "Delete backup?",
+    text: `Delete the backup “${s.name || "(unnamed)"}”? This cannot be undone.`,
+    okLabel: "Delete backup",
   });
   if (!ok) return;
   try {

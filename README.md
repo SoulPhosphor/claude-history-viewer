@@ -101,7 +101,8 @@ browser there.
   - The Scratch Pads sidebar (new, search by title, rename and delete from each pad's ⋮) takes the place of the conversation list; closing it brings the list back exactly as it was
   - The editor is the Summary editor (Visual by default, Markdown optional, Save / Revert, unsaved-changes warning) with an **Insert Link** button: search conversation titles and named bookmarks, paste an internal link or a web address, or open **Advanced Search** to pick a chat (**Link Chat**) or a single message (**Link Message**)
   - Selected text becomes the link's text. Click a link to Open, Change or Remove it (Ctrl/Cmd-click opens it); **Back to …** in the chat title bar returns to the pad, unsaved edits intact
-  - **Internal links** name their target by stable ids, so they survive renames and rebuilds: `chv://conversation/<id>` for a chat, `chv://conversation/<id>/message/<seq>` for one message
+  - **Internal links** name their target by stable ids, so they survive renames and rebuilds: `chv://conversation/<id>` for a chat, `chv://conversation/<id>/message/<seq>/<message id>` for one message
+  - Each message keeps its own id from the export, so message links and bookmarks still find the right message after a re-import where an earlier message was edited or regenerated. Databases built before this get the ids filled in from the backups in `source/` the next time the app starts
   - The link button in the chat title bar, and the ⋮ beside each bookmark in Global Bookmarks and the bookmark panel, offer **Copy Internal Link** and **Add to Scratch Pad** (adds the link to the end of any pad, or a new one, without opening it)
 - **Memories / Projects panels**
   - Quick side views for workspace-level memory and project browsing
@@ -202,7 +203,8 @@ find . -name '.DS_Store' -delete
 | `api_common.py`     | `ApiError` - how core logic signals an HTTP error status           |
 | `labels.py`         | Label definitions and conversation label assignment                |
 | `bulk_labels.py`    | Conditional bulk labeling: criteria, preview, apply, saved runs    |
-| `snapshots.py`      | Manual safety snapshots: capture, list, restore                    |
+| `snapshots.py`      | Backups (Labels screen): capture, list, restore. Called snapshots in the code |
+| `message_ids.py`    | Stable message ids: lookup, bookmark re-anchoring, filling older databases |
 | `scratchpads.py`    | Scratch Pad storage, link suggestions and link checks              |
 | `static/index.html` | App shell                                                          |
 | `static/theme.css`  | Central appearance variables; see [STYLE_GUIDE.md](STYLE_GUIDE.md) |
@@ -213,7 +215,7 @@ find . -name '.DS_Store' -delete
 | `static/app.js`     | Frontend state, rendering, tabs, quick views, interactions         |
 | `static/labels_screen.js` | Labels screen: settings and label definitions                |
 | `static/bulk_labels.js`   | Bulk-label tool UI and Unfinished Label Runs                 |
-| `static/snapshots.js`     | Snapshot UI and the restore-category dialog                  |
+| `static/snapshots.js`     | Backups UI and the restore-category dialog                   |
 | `static/summary.js`       | Visual Markdown editor engine (Summary and Scratch Pads)     |
 | `static/internal_links.js`| The internal link format (`chv://…`)                         |
 | `static/scratchpads.js`   | Scratch Pads workspace, Insert Link, Add to Scratch Pad      |

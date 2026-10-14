@@ -119,9 +119,10 @@ const spApi = {
   remove: (id) => spRequest(`/api/scratchpads/${encodeURIComponent(id)}`, { method: "DELETE" }),
   append: (id, markdown) => spRequest(`/api/scratchpads/${encodeURIComponent(id)}/append`, { method: "POST", body: { markdown } }),
   suggest: (q) => spRequest(`/api/link-suggestions?${new URLSearchParams({ q })}`),
-  resolve: (conversationId, seq = null) => spRequest(`/api/link-resolve?${new URLSearchParams({
+  resolve: (conversationId, seq = null, messageId = null) => spRequest(`/api/link-resolve?${new URLSearchParams({
     conversation: conversationId,
     seq: seq == null ? "" : String(seq),
+    message: messageId || "",
   })}`),
 };
 
@@ -606,7 +607,7 @@ async function followInternalLink(target, { fromPad = false } = {}) {
   }
   let info;
   try {
-    info = await spApi.resolve(link.conversationId, link.seq);
+    info = await spApi.resolve(link.conversationId, link.seq, link.messageId);
   } catch (_) {
     showScratchToast("Could not check where that link points. Try again.");
     return;
@@ -615,7 +616,8 @@ async function followInternalLink(target, { fromPad = false } = {}) {
     showScratchToast("That conversation is no longer in your history, so the link cannot be opened.");
     return;
   }
-  let seq = link.seq;
+  // The server found the message by its id; go where it is now.
+  let seq = info.seq ?? link.seq;
   if (seq != null && !info.message_exists) {
     showScratchToast("That message is no longer in the conversation. Opening the conversation instead.");
     seq = null;
@@ -669,7 +671,7 @@ async function showLinkBubble(token) {
   spBubbleText.textContent = link.seq == null ? "Conversation link" : "Message link";
   spBubbleText.title = target;
   try {
-    const info = await spApi.resolve(link.conversationId, link.seq);
+    const info = await spApi.resolve(link.conversationId, link.seq, link.messageId);
     if (_spBubbleToken !== token) return;
     if (!info.exists) spBubbleText.textContent = "Conversation no longer exists";
     else if (link.seq == null) spBubbleText.textContent = `Conversation: ${info.title || "Untitled"}`;
@@ -753,7 +755,7 @@ function spSelectedText(range) {
 // Label for a link to a whole chat or one message, read from the server.
 async function spLabelForInternal(link) {
   try {
-    const info = await spApi.resolve(link.conversationId, link.seq);
+    const info = await spApi.resolve(link.conversationId, link.seq, link.messageId);
     if (!info.exists) return null;
     if (link.seq == null) return info.title || "Untitled";
     return info.bookmark_name || `Message in ${info.title || "Untitled"}`;
@@ -996,7 +998,7 @@ async function spRefreshPopupOptions() {
       title: b.name,
       detail: `Bookmark · In: ${b.conversation_title || "Untitled"}`,
       trailing: "add",
-      run: () => spPickLink(b.name, spLinks.messageLink(b.conversation_id, b.seq)),
+      run: () => spPickLink(b.name, spLinks.messageLink(b.conversation_id, b.seq, b.message_uuid)),
     })),
   ];
   spRenderOptions(spPopupOptions, options, spPopupInput, "No conversations or named bookmarks match.");
@@ -1106,7 +1108,7 @@ function spRemoveLinkPickButtons() {
 
 // app.js openConversation: a "Link Message" button on each message of a chat
 // previewed while Advanced Search picks a link.
-function decorateMessageLinkPick({ metaRow, seq }) {
+function decorateMessageLinkPick({ metaRow, seq, messageId = null }) {
   if (!sp.linkMode) return;
   const btn = document.createElement("button");
   btn.type = "button";
@@ -1116,8 +1118,8 @@ function decorateMessageLinkPick({ metaRow, seq }) {
   btn.addEventListener("click", async () => {
     const conversationId = state.activeId;
     if (!conversationId) return;
-    const label = (await spLabelForInternal({ conversationId, seq })) || "Message";
-    finishLinkSearch({ label, target: spLinks.messageLink(conversationId, seq) });
+    const label = (await spLabelForInternal({ conversationId, seq, messageId })) || "Message";
+    finishLinkSearch({ label, target: spLinks.messageLink(conversationId, seq, messageId) });
   });
   metaRow.appendChild(btn);
 }

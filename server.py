@@ -9,7 +9,7 @@ from pathlib import Path
 # Reusable business/data logic for the labeling features. server.py stays the
 # HTTP/routing shell; these modules own the SQL, validation, and transactions
 # and raise ApiError for error responses.
-import labels, bulk_labels, snapshots, gizmos, updater, advanced_search, related, scratchpads
+import labels, bulk_labels, snapshots, gizmos, updater, advanced_search, related, scratchpads, message_ids
 from api_common import ApiError
 
 # Set CHV_TIMING=1 to log each request's method, path, and duration to stderr.
@@ -38,7 +38,8 @@ def _code_signature() -> str:
     h = hashlib.sha256()
     for name in ("server.py", "build_db.py", "api_common.py",
                  "labels.py", "bulk_labels.py", "snapshots.py", "gizmos.py",
-                 "updater.py", "advanced_search.py", "related.py", "scratchpads.py"):
+                 "updater.py", "advanced_search.py", "related.py", "scratchpads.py",
+                 "message_ids.py"):
         try:
             h.update((here / name).read_bytes())
         except OSError:
@@ -196,6 +197,9 @@ def _ensure_runtime_schema(db_path: Path) -> None:
             # ChatGPT exports identify models per message. A conversation can
             # therefore retain every model used instead of one lossy value.
             "ALTER TABLE messages ADD COLUMN model_slug TEXT",
+            # The export's own message id (message_ids.py). Older databases get
+            # it filled from the backups in source/ on start.
+            "ALTER TABLE messages ADD COLUMN message_uuid TEXT",
             # Compare items carry their own provider for tab colouring.
             "ALTER TABLE workspace_tabs ADD COLUMN provider TEXT",
             # 1 only when the user explicitly added the chat to Compare.
@@ -205,13 +209,14 @@ def _ensure_runtime_schema(db_path: Path) -> None:
                 conn.execute(col_sql)
             except sqlite3.Error:
                 pass
-        try:
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_msg_model "
-                "ON messages (model_slug, conversation_id)"
-            )
-        except sqlite3.Error:
-            pass
+        for idx_sql in (
+            "CREATE INDEX IF NOT EXISTS idx_msg_model ON messages (model_slug, conversation_id)",
+            "CREATE INDEX IF NOT EXISTS idx_msg_uuid ON messages (conversation_id, message_uuid)",
+        ):
+            try:
+                conn.execute(idx_sql)
+            except sqlite3.Error:
+                pass
         # The top strip is now the Compare bar. Older versions created a tab row
         # every time a chat was opened; none of those were deliberate Compare
         # selections, so drop every non-compare row. Compare additions are
@@ -561,6 +566,9 @@ def _ensure_userdata_schema(db_path: Path) -> None:
                 source          TEXT DEFAULT 'user',
                 created_at      REAL,
                 updated_at      REAL,
+                -- The bookmarked message's export id (message_ids.py). seq
+                -- follows it if the message moves on a re-import.
+                message_uuid    TEXT,
                 UNIQUE(conversation_id, seq)
             );
 
@@ -601,6 +609,11 @@ def _ensure_userdata_schema(db_path: Path) -> None:
         # were scoped by provider. ADD COLUMN errors if it already exists.
         try:
             conn.execute("ALTER TABLE folders ADD COLUMN provider TEXT")
+        except sqlite3.Error:
+            pass
+        # Bookmarks made before message ids were kept learn theirs on first use.
+        try:
+            conn.execute("ALTER TABLE conversation_bookmarks ADD COLUMN message_uuid TEXT")
         except sqlite3.Error:
             pass
         # summary column for snapshots created before it existed.
@@ -1682,7 +1695,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/link-resolve":
             cid = (qs.get("conversation") or [""])[0]
             seq = (qs.get("seq") or [""])[0]
-            self._handle_db(lambda conn: scratchpads.resolve_link(conn, cid, seq))
+            mid = (qs.get("message") or [""])[0]
+            self._handle_db(lambda conn: scratchpads.resolve_link(conn, cid, seq, mid))
         elif path == "/api/gallery":
             self._api_gallery()
         elif path == "/api/attachment-report":
@@ -2257,8 +2271,8 @@ class Handler(BaseHTTPRequestHandler):
             if not conv:
                 self.send_error(404); return
             msgs = conn.execute(
-                "SELECT seq, role, content, attachments, artifact_ids, siblings, branch_index, create_time "
-                "FROM messages WHERE conversation_id = ? ORDER BY seq", (conv_id,),
+                "SELECT seq, role, content, attachments, artifact_ids, siblings, branch_index, create_time, "
+                "message_uuid FROM messages WHERE conversation_id = ? ORDER BY seq", (conv_id,),
             ).fetchall()
             def parse_msg(m):
                 d = dict(m)
@@ -3777,8 +3791,9 @@ class Handler(BaseHTTPRequestHandler):
     # (UUID) so a rename never changes what identifies it; the conversation id
     # is never touched here.
     def _conv_bookmarks(self, conn, conv_id):
+        message_ids.reanchor_bookmarks(conn, conv_id)
         rows = conn.execute(
-            "SELECT id, conversation_id, seq, name, source, created_at, updated_at "
+            "SELECT id, conversation_id, seq, name, source, created_at, updated_at, message_uuid "
             "FROM udb.conversation_bookmarks WHERE conversation_id = ? ORDER BY seq",
             (conv_id,),
         ).fetchall()
@@ -3877,8 +3892,9 @@ class Handler(BaseHTTPRequestHandler):
 
             convs = []
             for r in rows:
+                message_ids.reanchor_bookmarks(conn, r["id"])
                 bms = conn.execute(
-                    "SELECT id, seq, name FROM udb.conversation_bookmarks "
+                    "SELECT id, seq, name, message_uuid FROM udb.conversation_bookmarks "
                     "WHERE conversation_id = ? ORDER BY seq",
                     (r["id"],),
                 ).fetchall()
@@ -3932,13 +3948,14 @@ class Handler(BaseHTTPRequestHandler):
                 bid = uuid.uuid4().hex
                 conn.execute(
                     "INSERT INTO udb.conversation_bookmarks "
-                    "(id, conversation_id, seq, name, source, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (bid, conv_id, seq, name, source, now, now),
+                    "(id, conversation_id, seq, name, source, created_at, updated_at, message_uuid) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (bid, conv_id, seq, name, source, now, now,
+                     message_ids.message_uuid_at(conn, conv_id, seq)),
                 )
                 conn.commit()
             row = conn.execute(
-                "SELECT id, conversation_id, seq, name, source, created_at, updated_at "
+                "SELECT id, conversation_id, seq, name, source, created_at, updated_at, message_uuid "
                 "FROM udb.conversation_bookmarks WHERE id = ?",
                 (bid,),
             ).fetchone()
@@ -3966,7 +3983,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 conn.commit()
             out = conn.execute(
-                "SELECT id, conversation_id, seq, name, source, created_at, updated_at "
+                "SELECT id, conversation_id, seq, name, source, created_at, updated_at, message_uuid "
                 "FROM udb.conversation_bookmarks WHERE id = ?", (bid,),
             ).fetchone()
             self.send_json({"ok": True, "bookmark": dict(out)})
@@ -4473,6 +4490,12 @@ def serve(port=8000, db_path=Path("history.db"), source_dir=Path("source"),
     _ensure_userdata_schema(db_path)
     _backfill_folder_providers(db_path)
     _build_source_index(source_dir)
+    # Messages imported before export message ids were kept get them from the
+    # backups in source/, in the background so start-up is not delayed.
+    threading.Thread(
+        target=lambda: message_ids.fill_missing_from_sources(db_path, source_dir),
+        daemon=True,
+    ).start()
     Handler.db_path = db_path
     Handler.source_dir = source_dir
     # ThreadingHTTPServer: handle each request on its own thread so one slow or
