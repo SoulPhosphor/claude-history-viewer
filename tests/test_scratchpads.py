@@ -249,6 +249,16 @@ class LinkLookupTests(unittest.TestCase):
         self.assertEqual(data["bookmarks"][0]["conversation_title"], "Emotional Intelligence")
         self.assertEqual(scratchpads.link_suggestions(self.conn, "  ")["conversations"], [])
 
+    def test_gone_bookmarks_never_crowd_out_live_ones(self):
+        for n in range(15):
+            self.conn.execute(
+                "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, source, created_at, updated_at, message_uuid) "
+                "VALUES (?, 'two', ?, ?, 'user', 1, 1, ?)",
+                (f"g{n}", 9000 + n, f"Scaffold gone {n}", f"gone:g{n}"),
+            )
+        self.conn.commit()
+        self.assertEqual([b["id"] for b in scratchpads.link_suggestions(self.conn, "scaffold")["bookmarks"]], ["bm1"])
+
     def test_renamed_conversation_title_is_searched_and_resolved(self):
         self.conn.execute("INSERT INTO conversation_meta (conversation_id, custom_title) VALUES ('two', 'Renamed Chat')")
         self.conn.commit()

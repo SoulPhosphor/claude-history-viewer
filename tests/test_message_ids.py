@@ -263,6 +263,8 @@ class MessageIdTests(unittest.TestCase):
         old["mapping"]["a2"]["message"]["id"] = "a2-old"
         (self.source / "aaa-older.json").write_text(json.dumps([old]))
         (self.source / "conversations.json").write_text(json.dumps([dict(chat("c1", TURNS, "a2"), update_time=5)]))
+        # The database holds that newest version.
+        self.conn.execute("UPDATE conversations SET update_time = 5 WHERE id = 'c1'")
         self.conn.execute("UPDATE messages SET message_uuid = NULL")
         self.conn.commit()
         message_ids.fill_missing_from_sources(self.db, self.source)
@@ -421,6 +423,20 @@ class MessageIdTests(unittest.TestCase):
         message_ids.fill_missing_from_sources(self.db, self.source)
         self.assertEqual(self.seq_of("u1"), 0)
         self.assertIsNone(self.seq_of("u1-dup"))
+
+
+    def test_backfill_ignores_a_backup_newer_than_the_database(self):
+        # The stored chat (update_time 2) is in an older backup; a newer export
+        # not imported yet regenerated the last reply with a new id.
+        (self.source / "aaa-imported.json").write_text(json.dumps([chat("c1", TURNS, "a2")]))
+        newer = dict(chat("c1", TURNS, "a2"), update_time=5)
+        newer["mapping"]["a2"]["message"]["id"] = "a2-new"
+        (self.source / "conversations.json").write_text(json.dumps([newer]))
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.commit()
+        message_ids.fill_missing_from_sources(self.db, self.source)
+        self.assertEqual(self.seq_of("a2"), 3)
+        self.assertIsNone(self.seq_of("a2-new"))
 
 
 if __name__ == "__main__":

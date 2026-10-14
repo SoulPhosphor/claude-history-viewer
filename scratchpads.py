@@ -212,14 +212,18 @@ def link_suggestions(conn, q: str) -> dict:
         "LEFT JOIN conversation_meta cm ON cm.conversation_id = c.id "
         "WHERE COALESCE(cm.deleted, 0) = 0 AND TRIM(COALESCE(b.name, '')) != '' "
         "AND b.name LIKE ? ESCAPE '\\' "
-        "ORDER BY (b.name LIKE ? ESCAPE '\\') DESC, c.update_time DESC, b.seq "
-        "LIMIT ?",
-        (like, prefix, SUGGEST_BOOKMARKS * 2),
-    ).fetchall()
-    # A bookmark whose message is gone is not offered as a link target.
-    bookmarks = [
-        b for b in bookmarks if not message_ids.bookmark_missing(conn, b["conversation_id"], b)
-    ][:SUGGEST_BOOKMARKS]
+        "ORDER BY (b.name LIKE ? ESCAPE '\\') DESC, c.update_time DESC, b.seq",
+        (like, prefix),
+    )
+    # A bookmark whose message is gone is not offered as a link target. Read
+    # on until enough live ones are found, so gone ones never crowd them out.
+    live = []
+    for b in bookmarks:
+        if not message_ids.bookmark_missing(conn, b["conversation_id"], b):
+            live.append(b)
+            if len(live) == SUGGEST_BOOKMARKS:
+                break
+    bookmarks = live
     return {
         "q": q,
         "conversations": [dict(r) for r in conversations],
