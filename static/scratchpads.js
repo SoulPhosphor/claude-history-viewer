@@ -1301,10 +1301,26 @@ function spMergeAppended(pad, line) {
   if (sp.current?.id !== pad.id) return;
   const dirty = spIsDirty();
   const draft = spMarkdown();
-  sp.saved = pad.content;
-  sp.current.updated_at = pad.updated_at;
-  sp.current.version = pad.version || 0;
-  const next = dirty ? spCore.appendBlock(draft, line) : pad.content;
+  let next = pad.content;
+  if (dirty) {
+    // Every link added since the last save (another tab's too, not only this
+    // one) joins the draft, so the next save cannot drop any of them.
+    const added = spLinks.appendedLinks(sp.saved, pad.content);
+    if (added === null) {
+      // Something else changed there as well: keep the old save point, so the
+      // next save is refused and the conflict is shown instead of overwriting.
+      next = spCore.appendBlock(draft, line);
+    } else {
+      next = added ? spCore.appendBlock(draft, added) : draft;
+      sp.saved = pad.content;
+      sp.current.updated_at = pad.updated_at;
+      sp.current.version = pad.version || 0;
+    }
+  } else {
+    sp.saved = pad.content;
+    sp.current.updated_at = pad.updated_at;
+    sp.current.version = pad.version || 0;
+  }
   if (next !== draft) {
     scratchEditor.undo.push(draft);
     scratchEditor.redo = [];

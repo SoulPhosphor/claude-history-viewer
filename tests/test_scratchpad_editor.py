@@ -227,6 +227,10 @@ class WiringContractTests(unittest.TestCase):
         # if the pad or the search changed meanwhile.
         self.assertIn("if (fromPad && (!sp.active || sp.current?.id !== fromPadId)) return;", SCRATCH)
         self.assertIn("if (sp.linkMode !== mode) return;", SCRATCH)
+        # Adding to an open, unsaved pad copies every link added since the
+        # last save into the draft, not only its own.
+        merge = SCRATCH[SCRATCH.index("function spMergeAppended"):SCRATCH.index("async function spAddToPad")]
+        self.assertIn("spLinks.appendedLinks(sp.saved, pad.content)", merge)
         # A pasted link whose title arrives late only goes into its own pad.
         self.assertIn("if (sp.current?.id !== padId || spMarkdown() !== before) return;", SCRATCH)
         self.assertIn('data-action="scratch-pads"', INDEX)

@@ -366,6 +366,23 @@ class MessageIdTests(unittest.TestCase):
                 "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at) "
                 "VALUES ('b', 'c1', 2, '', 9e9, 9e9)")
 
+    def test_two_bookmarks_competing_for_one_message_never_keep_a_stale_position(self):
+        self.conn.execute("UPDATE messages SET message_uuid = NULL")
+        self.conn.execute("UPDATE messages SET content = 'same' WHERE seq IN (0, 2)")
+        fp = message_ids.message_fingerprint("user", "same")
+        for bid, seq in (("a", 0), ("b", 2)):
+            self.conn.execute(
+                "INSERT INTO udb.conversation_bookmarks (id, conversation_id, seq, name, created_at, updated_at, message_hash) "
+                "VALUES (?, 'c1', ?, '', 9e9, 9e9, ?)", (bid, seq, fp))
+        # Only one "same" message is left, at position 2.
+        self.conn.execute("UPDATE messages SET content = 'different now' WHERE seq = 0")
+        self.conn.commit()
+        message_ids.reanchor_bookmarks(self.conn, "c1")
+        rows = {r[0]: (r[1], r[2]) for r in self.conn.execute(
+            "SELECT id, seq, message_uuid FROM udb.conversation_bookmarks")}
+        self.assertEqual(rows["b"], (2, None))
+        self.assertTrue(rows["a"][1].startswith(message_ids.GONE_PREFIX))
+
 
 if __name__ == "__main__":
     unittest.main()

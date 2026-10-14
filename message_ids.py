@@ -101,6 +101,13 @@ def _nearest_with_fingerprint(conn, conversation_id: str, fingerprint: str, seq)
     return best
 
 
+def _mark_gone(conn, bookmark_id: str) -> None:
+    conn.execute(
+        "UPDATE udb.conversation_bookmarks SET message_uuid = ? WHERE id = ?",
+        (GONE_PREFIX + bookmark_id, bookmark_id),
+    )
+
+
 def _history_built_at(conn):
     """When history.db was built, or None for one built before this was kept
     (bookmarks older than such a database were made against it)."""
@@ -178,6 +185,12 @@ def reanchor_bookmarks(conn, conversation_id: str) -> None:
                 )
                 changed = True
         except sqlite3.IntegrityError:
+            # Another bookmark already took that message (two bookmarks whose
+            # identical messages now have one match). This one is gone rather
+            # than left on a position that may hold another message.
+            if not message_uuid:
+                _mark_gone(conn, bookmark_id)
+                changed = True
             continue
     if changed:
         conn.commit()
@@ -339,4 +352,5 @@ def bookmarks_after_replace(conn, conversation_id: str, remembered: list) -> Non
                     (GONE_PREFIX + bookmark_id, bookmark_id),
                 )
         except sqlite3.IntegrityError:
+            _mark_gone(conn, bookmark_id)
             continue
