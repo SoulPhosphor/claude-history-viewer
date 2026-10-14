@@ -130,9 +130,15 @@ def update_pad(conn, pad_id: str, payload: dict) -> dict:
             f"UPDATE udb.scratch_pads SET {', '.join(sets)} WHERE {where}",
             (*params, *where_params),
         )
-        conn.commit()
         if cursor.rowcount == 0:
+            conn.commit()
             raise ApiError("This Scratch Pad was changed elsewhere since it was opened.", 409)
+        # Read back before committing, while this write still holds the lock,
+        # so the reply is exactly what was saved and never a later append
+        # whose version the editor would then take as its own.
+        result = get_pad(conn, pad_id)
+        conn.commit()
+        return result
     return get_pad(conn, pad_id)
 
 

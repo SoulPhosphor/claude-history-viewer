@@ -125,6 +125,35 @@ class ScratchPadStorageTests(unittest.TestCase):
         saved = scratchpads.update_pad(self.conn, pad["id"], {"content": "mine", "base_version": opened_at + 1})
         self.assertEqual(saved["scratch_pad"]["version"], opened_at + 2)
 
+    def test_save_reply_is_the_saved_write_even_if_an_append_follows(self):
+        pad = scratchpads.create_pad(self.conn, {"content": "start"})["scratch_pad"]
+        real_get_pad = scratchpads.get_pad
+        appender = []
+
+        def get_pad_while_another_window_appends(conn, pad_id):
+            def add():
+                other = open_db(self.db_path)
+                try:
+                    scratchpads.append_to_pad(other, pad_id, {"markdown": "[L](chv://conversation/one)"})
+                finally:
+                    other.close()
+            if not appender:
+                appender.append(threading.Thread(target=add))
+                appender[0].start()
+                appender[0].join(0.3)  # lands now unless the save still holds the lock
+            return real_get_pad(conn, pad_id)
+
+        scratchpads.get_pad = get_pad_while_another_window_appends
+        try:
+            saved = scratchpads.update_pad(self.conn, pad["id"], {"content": "mine", "base_version": pad["version"]})
+        finally:
+            scratchpads.get_pad = real_get_pad
+            appender[0].join()
+        self.assertEqual((saved["scratch_pad"]["content"], saved["scratch_pad"]["version"]),
+                         ("mine", pad["version"] + 1))
+        # The append still lands after the save.
+        self.assertIn("[L]", real_get_pad(self.conn, pad["id"])["scratch_pad"]["content"])
+
     def test_overlapping_appends_both_land(self):
         pad_id = scratchpads.create_pad(self.conn, {"content": "start"})["scratch_pad"]["id"]
         lines = [f"[L{i}](chv://conversation/one)" for i in range(8)]
